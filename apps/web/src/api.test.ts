@@ -42,6 +42,7 @@ describe("canonical HTTP adapter", () => {
       "/api/threads/thread/messages",
       {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: "change", idempotencyKey: "retry-key" }),
       },
@@ -54,6 +55,13 @@ describe("canonical HTTP adapter", () => {
       .mockRejectedValueOnce(new Error("private network details"));
     vi.stubGlobal("fetch", fetch);
     await expect(httpApi.projects()).rejects.toThrow("Access is unavailable");
+    await expect(httpApi.projects()).rejects.toEqual(new ApiError(0));
+  });
+  it("sanitizes malformed upstream responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("<html>upstream details</html>")),
+    );
     await expect(httpApi.projects()).rejects.toEqual(new ApiError(0));
   });
 });

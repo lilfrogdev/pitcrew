@@ -20,7 +20,11 @@ export class ApiError extends Error {
         ? "Access is unavailable. Ask the project owner to enable protected access."
         : status === 409
           ? "The thread changed. Refresh before trying again."
-          : "Could not reach Pitcrew. Your draft is saved here; try again.",
+          : status === 413
+            ? "This message is too large. Shorten it and try again."
+            : status === 429
+              ? "The crew is at capacity. Wait for an active change to finish, then try again."
+              : "Could not reach Pitcrew. Your draft is saved here; try again.",
     );
   }
 }
@@ -29,6 +33,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   try {
     response = await fetch(`/api${path}`, {
       method: body ? "POST" : "GET",
+      signal: AbortSignal.timeout(10000),
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -36,7 +41,11 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
     throw new ApiError(0);
   }
   if (!response.ok) throw new ApiError(response.status);
-  return response.json() as Promise<T>;
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiError(0);
+  }
 }
 export const httpApi: Api = {
   projects: () => request("/projects"),
