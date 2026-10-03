@@ -54,15 +54,27 @@ export interface OperationJournal {
   complete(key: string, fingerprint: string, result: unknown): Promise<void>;
 }
 export class ExecutionError extends Error {
-  constructor(readonly code: string) { super(code); }
+  constructor(readonly code: string) {
+    super(code);
+  }
 }
 export function assertSha(value: string): void {
   if (!/^[a-f0-9]{40}$/.test(value)) throw new ExecutionError("INVALID_SHA");
 }
 export function assertCommand(command: Command): void {
-  if (!command.commandId || command.argv.length === 0 || command.argv.length > 128 ||
-      command.argv.some(arg => typeof arg !== "string" || arg.includes("\0") || arg.length > 8192) ||
-      !Number.isInteger(command.timeoutMs) || command.timeoutMs < 1 || command.timeoutMs > 600_000 ||
-      !Number.isInteger(command.maxOutputBytes) || command.maxOutputBytes < 1 || command.maxOutputBytes > 1_048_576)
+  if (
+    !command.commandId ||
+    command.argv.length === 0 ||
+    command.argv.length > 128 ||
+    command.argv.some(
+      (arg) => typeof arg !== "string" || arg.includes("\0") || arg.length > 8192,
+    ) ||
+    !Number.isInteger(command.timeoutMs) ||
+    command.timeoutMs < 1 ||
+    command.timeoutMs > 600_000 ||
+    !Number.isInteger(command.maxOutputBytes) ||
+    command.maxOutputBytes < 1 ||
+    command.maxOutputBytes > 1_048_576
+  )
     throw new ExecutionError("INVALID_COMMAND");
 }

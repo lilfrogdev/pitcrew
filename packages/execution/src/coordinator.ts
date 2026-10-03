@@ -1,5 +1,13 @@
 import { ExecutionError, assertSha, assertCommand } from "./contracts.ts";
-import type { PrepareInput, Workspace, Command, TestEvidence, ForkTransport, WorkspaceTransport, OperationJournal } from "./contracts.ts";
+import type {
+  PrepareInput,
+  Workspace,
+  Command,
+  TestEvidence,
+  ForkTransport,
+  WorkspaceTransport,
+  OperationJournal,
+} from "./contracts.ts";
 
 export class ExecutionCoordinator {
   constructor(
@@ -27,12 +35,20 @@ export class ExecutionCoordinator {
 
   async prepare(input: PrepareInput): Promise<Workspace> {
     assertSha(input.baseSha);
-    if (![input.runId, input.projectId].every(id => /^[a-zA-Z0-9_-]{1,64}$/.test(id)) ||
-        !/^[a-zA-Z0-9_-]{1,128}$/.test(input.repository) ||
-        !input.configurationRevision || input.configurationRevision.length > 128)
+    if (
+      ![input.runId, input.projectId].every((id) => /^[a-zA-Z0-9_-]{1,64}$/.test(id)) ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(input.repository) ||
+      !input.configurationRevision ||
+      input.configurationRevision.length > 128
+    )
       throw new ExecutionError("INVALID_WORKSPACE");
-    input = { runId: input.runId, projectId: input.projectId, repository: input.repository,
-      baseSha: input.baseSha, configurationRevision: input.configurationRevision };
+    input = {
+      runId: input.runId,
+      projectId: input.projectId,
+      repository: input.repository,
+      baseSha: input.baseSha,
+      configurationRevision: input.configurationRevision,
+    };
     const fingerprint = JSON.stringify(input);
     return this.once(`prepare:${input.projectId}:${input.runId}`, fingerprint, async () => {
       // Unambiguous lengths prevent collisions such as project=a-b/run=c vs a/run=b-c.
@@ -44,7 +60,12 @@ export class ExecutionCoordinator {
     });
   }
 
-  async test(workspace: Workspace, candidateSha: string, command: Command, signal?: AbortSignal): Promise<TestEvidence> {
+  async test(
+    workspace: Workspace,
+    candidateSha: string,
+    command: Command,
+    signal?: AbortSignal,
+  ): Promise<TestEvidence> {
     assertSha(candidateSha);
     assertCommand(command);
     if (signal?.aborted) throw new ExecutionError("STOPPED");
@@ -56,28 +77,47 @@ export class ExecutionCoordinator {
       const result = await this.transport.run(workspace, command, signal);
       if (result.status === "completed") {
         const after = await this.transport.inspect(workspace);
-        if (after.sha !== candidateSha || !after.clean) throw new ExecutionError("CHANGED_DURING_TEST");
+        if (after.sha !== candidateSha || !after.clean)
+          throw new ExecutionError("CHANGED_DURING_TEST");
       }
-      return { ...result, argv: [...command.argv], runId: workspace.runId, commandId: command.commandId,
-        baseSha: workspace.baseSha, candidateSha, configurationRevision: workspace.configurationRevision };
+      return {
+        ...result,
+        argv: [...command.argv],
+        runId: workspace.runId,
+        commandId: command.commandId,
+        baseSha: workspace.baseSha,
+        candidateSha,
+        configurationRevision: workspace.configurationRevision,
+      };
     });
   }
 
   async publish(workspace: Workspace, candidateSha: string): Promise<void> {
     assertSha(candidateSha);
     await this.assertWorkspace(workspace);
-    await this.once(`publish:${workspace.workerId}:${candidateSha}`, JSON.stringify({ workspace, candidateSha }), async () => {
-      const candidate = await this.transport.inspect(workspace);
-      if (candidate.sha !== candidateSha || !candidate.clean) throw new ExecutionError("STALE_CANDIDATE");
-      await this.transport.publish(workspace, candidateSha);
-      return true;
-    });
+    await this.once(
+      `publish:${workspace.workerId}:${candidateSha}`,
+      JSON.stringify({ workspace, candidateSha }),
+      async () => {
+        const candidate = await this.transport.inspect(workspace);
+        if (candidate.sha !== candidateSha || !candidate.clean)
+          throw new ExecutionError("STALE_CANDIDATE");
+        await this.transport.publish(workspace, candidateSha);
+        return true;
+      },
+    );
   }
 
   private async assertWorkspace(workspace: Workspace): Promise<void> {
-    const recovered = await this.prepare({ runId: workspace.runId, projectId: workspace.projectId,
-      repository: workspace.repository, baseSha: workspace.baseSha, configurationRevision: workspace.configurationRevision });
-    if (JSON.stringify(recovered) !== JSON.stringify(workspace)) throw new ExecutionError("WORKSPACE_MISMATCH");
+    const recovered = await this.prepare({
+      runId: workspace.runId,
+      projectId: workspace.projectId,
+      repository: workspace.repository,
+      baseSha: workspace.baseSha,
+      configurationRevision: workspace.configurationRevision,
+    });
+    if (JSON.stringify(recovered) !== JSON.stringify(workspace))
+      throw new ExecutionError("WORKSPACE_MISMATCH");
   }
 
   async stop(workspace: Workspace): Promise<void> {
@@ -90,21 +130,45 @@ export interface ReviewedCandidate {
   workspace: Workspace;
   candidateSha: string;
   tests: TestEvidence[];
-  review: { candidateSha: string; baseSha: string; configurationRevision: string; decision: "accepted" | "changes_requested" };
+  review: {
+    candidateSha: string;
+    baseSha: string;
+    configurationRevision: string;
+    decision: "approve" | "changes_requested";
+  };
 }
 // Application port only: Artifacts does not expose a merge or CAS binding method.
 // A future trusted Git implementation must use a ref lease, never check-then-push.
 export interface TrustedMergeTransport {
-  compareAndSwap(input: { repository: string; expectedBaseSha: string; candidateSha: string }): Promise<void>;
+  compareAndSwap(input: {
+    repository: string;
+    expectedBaseSha: string;
+    candidateSha: string;
+  }): Promise<void>;
 }
 export function assertMergeEvidence(candidate: ReviewedCandidate, currentBaseSha: string): void {
   const { workspace, candidateSha, tests, review } = candidate;
-  assertSha(candidateSha); assertSha(currentBaseSha); assertSha(workspace.baseSha);
-  if (currentBaseSha !== workspace.baseSha || review.baseSha !== workspace.baseSha ||
-      review.candidateSha !== candidateSha || review.configurationRevision !== workspace.configurationRevision ||
-      review.decision !== "accepted" || tests.length === 0 || tests.some(t =>
-        t.runId !== workspace.runId || t.baseSha !== workspace.baseSha || t.candidateSha !== candidateSha ||
-        t.configurationRevision !== workspace.configurationRevision || t.status !== "completed" || t.exitCode !== 0 || t.truncated))
+  assertSha(candidateSha);
+  assertSha(currentBaseSha);
+  assertSha(workspace.baseSha);
+  if (
+    currentBaseSha !== workspace.baseSha ||
+    review.baseSha !== workspace.baseSha ||
+    review.candidateSha !== candidateSha ||
+    review.configurationRevision !== workspace.configurationRevision ||
+    review.decision !== "approve" ||
+    tests.length === 0 ||
+    tests.some(
+      (t) =>
+        t.runId !== workspace.runId ||
+        t.baseSha !== workspace.baseSha ||
+        t.candidateSha !== candidateSha ||
+        t.configurationRevision !== workspace.configurationRevision ||
+        t.status !== "completed" ||
+        t.exitCode !== 0 ||
+        t.truncated,
+    )
+  )
     throw new ExecutionError("MERGE_EVIDENCE_REJECTED");
 }
 
