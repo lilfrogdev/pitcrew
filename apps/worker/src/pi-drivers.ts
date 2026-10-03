@@ -89,3 +89,28 @@ export async function reviewCandidate(
     actor: `pi-reviewer:${workspace.runId}`,
   };
 }
+
+export interface MutationStore {
+  read(id: string): { body: string; state: "pending" | "complete"; result?: unknown } | undefined;
+  hasPending(): boolean;
+  start(id: string, body: string): void;
+  finish(id: string, result: unknown): void;
+}
+export async function guardedMutation<T>(
+  store: MutationStore,
+  id: string,
+  body: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const existing = store.read(id);
+  if (existing) {
+    if (existing.body !== body) throw Error("mutation_conflict");
+    if (existing.state !== "complete") throw Error("reconciliation_required");
+    return existing.result as T;
+  }
+  if (store.hasPending()) throw Error("reconciliation_required");
+  store.start(id, body);
+  const result = await action();
+  store.finish(id, result);
+  return result;
+}

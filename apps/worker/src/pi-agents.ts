@@ -13,7 +13,7 @@ import {
   type TestEvidence,
 } from "../../../packages/execution/src/index";
 import { configureModels } from "./pi-models";
-import { applyChange, reviewCandidate } from "./pi-drivers";
+import { applyChange, reviewCandidate, guardedMutation } from "./pi-drivers";
 export interface PiEnv {
   ENVIRONMENT: string;
   EXECUTION_MODE: string;
@@ -94,6 +94,36 @@ abstract class TaskAgent extends Agent<PiEnv> {
   }
 }
 export class ChangeAgent extends TaskAgent {
+  private mutate<T>(callId: string, body: unknown, action: () => Promise<T>) {
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS tool_mutations(id TEXT PRIMARY KEY,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT)`;
+    return guardedMutation(
+      {
+        read: (id) => {
+          const [row] = this.sql<{
+            body: string;
+            state: "pending" | "complete";
+            result: string | null;
+          }>`SELECT body,state,result FROM tool_mutations WHERE id=${id}`;
+          return row
+            ? { ...row, result: row.result ? JSON.parse(row.result) : undefined }
+            : undefined;
+        },
+        hasPending: () =>
+          this.sql`SELECT id FROM tool_mutations WHERE state='pending' LIMIT 1`.length > 0,
+        start: (id, body) => {
+          void this.sql`INSERT INTO tool_mutations VALUES(${id},${body},'pending',NULL)`;
+        },
+        finish: (id, result) => {
+          void this
+            .sql`UPDATE tool_mutations SET state='complete',result=${JSON.stringify(result ?? null)} WHERE id=${id}`;
+        },
+      },
+      callId,
+      JSON.stringify(body),
+      action,
+    );
+  }
   private transport() {
     if (!this.env.ARTIFACTS || !this.ctx.container || !this.env.SANDBOX_IMAGE)
       throw Error("execution_not_configured");
@@ -145,9 +175,13 @@ export class ChangeAgent extends TaskAgent {
           description: "Write one bounded relative source file",
           parameters: Write,
           replay: "unsafe",
-          execute: async ({ path, content }) => {
+          executionMode: "sequential",
+          execute: async ({ path, content }, api) => {
             this.countTool();
-            await this.transport().writeFile(this.context().workspace, path, content);
+            await this.mutate(api.callId, { path, content }, async () => {
+              await this.transport().writeFile(this.context().workspace, path, content);
+              return null;
+            });
             return { content: [{ type: "text", text: "written" }] };
           },
         }),
@@ -157,12 +191,15 @@ export class ChangeAgent extends TaskAgent {
             "Execute bounded argv in this isolated checkout; use git to commit a candidate",
           parameters: Run,
           replay: "unsafe",
-          execute: async ({ argv }, _api, context) => {
+          executionMode: "sequential",
+          execute: async ({ argv }, api, context) => {
             this.countTool();
-            const result = await this.transport().run(
-              this.context().workspace,
-              { commandId: crypto.randomUUID(), argv, timeoutMs: 60000, maxOutputBytes: 16384 },
-              context.abortSignal,
+            const result = await this.mutate(api.callId, { argv }, () =>
+              this.transport().run(
+                this.context().workspace,
+                { commandId: api.callId, argv, timeoutMs: 60000, maxOutputBytes: 16384 },
+                context.abortSignal,
+              ),
             );
             return { content: [{ type: "text", text: JSON.stringify(result) }] };
           },
