@@ -1,0 +1,11 @@
+{
+  "name": "pitcrew-private-poc",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "durable_objects": {"bindings": [{"name": "REPOSITORY", "class_name": "RepositoryAgent"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["RepositoryAgent"]}],
+  "vars": {"ENVIRONMENT": "production", "EXECUTION_MODE": "disabled"},
+  "env": {"development": {"vars": {"ENVIRONMENT": "development", "FIXTURE_IDENTITY": "lilfrogdev", "EXECUTION_MODE": "fake"}, "durable_objects": {"bindings": [{"name": "REPOSITORY", "class_name": "RepositoryAgent"}]}}}
+}

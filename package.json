@@ -1,0 +1,23 @@
+{
+  "name": "pitcrew",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "check": "vp check",
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run",
+    "build:worker": "wrangler deploy --dry-run --outdir dist/worker --config apps/worker/wrangler.jsonc"
+  },
+  "devDependencies": {
+    "vite-plus": "1.0.0",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0",
+    "typescript": "7.0.2",
+    "@cloudflare/workers-types": "5.20261003.1",
+    "wrangler": "4.147.0"
+  }
+}

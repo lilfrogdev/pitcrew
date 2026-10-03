@@ -1,0 +1,1 @@
+{"name":"@pitcrew/worker","version":"0.0.0","private":true,"type":"module","dependencies":{"@pitcrew/protocol":"workspace:*","agents":"0.26.0","hono":"4.13.12"}}
