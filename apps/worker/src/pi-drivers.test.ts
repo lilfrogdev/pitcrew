@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { configureModels } from "./pi-models";
-import { applyChange, reviewCandidate, type DurablePrompt } from "./pi-drivers";
+import { applyChange, reviewCandidate, guardedMutation, type DurablePrompt } from "./pi-drivers";
 import type {
   Workspace,
   WorkspaceTransport,
@@ -154,5 +154,34 @@ describe("independent durable Pi drivers", () => {
         {},
       ),
     ).toThrow("model_not_configured");
+  });
+  it("quarantines uncertain tool mutations across new model calls and replays completed acknowledgement", async () => {
+    const rows = new Map<
+      string,
+      { body: string; state: "pending" | "complete"; result?: unknown }
+    >();
+    const store = {
+      read: (id: string) => rows.get(id),
+      hasPending: () => [...rows.values()].some((row) => row.state === "pending"),
+      start: (id: string, body: string) => {
+        rows.set(id, { body, state: "pending" });
+      },
+      finish: (id: string, result: unknown) => {
+        rows.set(id, { body: rows.get(id)!.body, state: "complete", result });
+      },
+    };
+    let edits = 0;
+    expect(await guardedMutation(store, "one", "body", async () => ++edits)).toBe(1);
+    expect(await guardedMutation(store, "one", "body", async () => ++edits)).toBe(1);
+    await expect(
+      guardedMutation(store, "two", "body", async () => {
+        edits++;
+        throw Error("lost outcome");
+      }),
+    ).rejects.toThrow("lost outcome");
+    await expect(
+      guardedMutation(store, "new-model-call", "retry", async () => ++edits),
+    ).rejects.toThrow("reconciliation_required");
+    expect(edits).toBe(2);
   });
 });
