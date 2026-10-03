@@ -26,6 +26,7 @@ export type RunStatus =
   | "failed"
   | "stopped";
 export interface Run {
+  messageId?: string;
   id: string;
   threadId: string;
   status: RunStatus;
@@ -81,6 +82,7 @@ export interface SubmitResult {
   run: Run;
 }
 export interface ExecutionInput {
+  repositoryContext?: RepositoryContext;
   runId: string;
   projectId: string;
   threadId: string;
@@ -114,3 +116,17 @@ export type ModelConfiguration =
   | { provider: "fake" }
   | { provider: "cloudflare"; model: string }
   | { provider: "byok"; providerId: string; model: string; secretBinding: string };
+
+export interface RepositoryContext {
+  revision: string;
+  baseSha: string;
+  configurationRevision: string;
+  acceptedDecisions: { id: string; text: string; sourceRevision: string }[];
+  activeWork: {
+    runId: string;
+    threadId: string;
+    title: string;
+    status: RunStatus;
+    intent: string;
+  }[];
+}

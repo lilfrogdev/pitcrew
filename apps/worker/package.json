@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@earendil-works/pi-ai": "1.0.1",
+    "@earendil-works/pi-durable": "1.0.1",
+    "@pitcrew/execution": "workspace:*",
     "@pitcrew/protocol": "workspace:*",
     "agents": "0.26.0",
     "hono": "4.13.12"

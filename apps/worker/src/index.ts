@@ -1,7 +1,11 @@
 import { Agent } from "agents";
+import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
+export { ChangeAgent, ReviewAgent };
 import { api, fixtureAccess } from "./api";
 import { Coordinator, fakeExecution, initialState, type State } from "./coordinator";
-interface Env {
+interface Env extends PiEnv {
+  CHANGE: DurableObjectNamespace<ChangeAgent>;
+  ARTIFACT_REPOSITORY?: string;
   REPOSITORY: DurableObjectNamespace<RepositoryAgent>;
   ENVIRONMENT: string;
   FIXTURE_IDENTITY?: string;
@@ -33,6 +37,20 @@ export class RepositoryAgent extends Agent<Env> {
     const app = api(coordinator, (id) => {
       if (this.env.EXECUTION_MODE === "fake")
         this.ctx.waitUntil(coordinator.dispatch(id, fakeExecution));
+      if (this.env.EXECUTION_MODE === "cloud")
+        this.ctx.waitUntil(
+          coordinator.dispatch(id, {
+            delegate: async (input) => {
+              if (!this.env.ARTIFACT_REPOSITORY || !this.env.MODEL_CONFIGURATION)
+                throw Error("execution_not_configured");
+              // The canonical Artifacts name is configured by the server, never by a browser.
+              const worker = this.env.CHANGE.get(
+                this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
+              );
+              return worker.execute({ ...input, repository: this.env.ARTIFACT_REPOSITORY });
+            },
+          }),
+        );
     });
     return app.fetch(request);
   }

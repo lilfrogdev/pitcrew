@@ -175,4 +175,24 @@ describe("durable coordinator", () => {
     });
     expect(response.status).toBe(413);
   });
+  it("briefs workers on accepted versioned context and other active thread intents", async () => {
+    const f = fixture(),
+      a = f.core.createThread("a", "a"),
+      b = f.core.createThread("b", "b");
+    const run = f.core.submit(a.id, "fix a", "a").run;
+    f.core.submit(b.id, "fix b", "b");
+    let seen: Parameters<typeof fakeExecution.delegate>[0] | undefined;
+    await f.core.dispatch(run.id, {
+      delegate: async (input) => {
+        seen = input;
+        return fakeExecution.delegate(input);
+      },
+    });
+    expect(seen!.repositoryContext!.activeWork.map((work) => work.intent)).toEqual([
+      "fix a",
+      "fix b",
+    ]);
+    expect(seen!.repositoryContext!.acceptedDecisions).toHaveLength(1);
+    expect(seen!.repositoryContext!.baseSha).toBe(run.baseSha);
+  });
 });

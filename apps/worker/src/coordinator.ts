@@ -9,6 +9,7 @@ import type {
   SubmitResult,
   TestEvidence,
   Thread,
+  RepositoryContext,
 } from "@pitcrew/protocol";
 export class AdmissionError extends Error {
   constructor(
@@ -119,6 +120,7 @@ export class Coordinator {
         createdAt: this.now(),
       };
       const run: Run = {
+        messageId: message.id,
         id: this.id(),
         threadId,
         status: "queued",
@@ -139,6 +141,34 @@ export class Coordinator {
       run,
       tests: this.state.evidence[runId],
       reviews: this.state.reviews.filter((r) => r.runId === runId),
+    };
+  }
+  repositoryContext(): RepositoryContext {
+    return {
+      revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}`,
+      baseSha: this.state.project.baseSha,
+      configurationRevision: this.state.project.configurationRevision,
+      acceptedDecisions: [
+        {
+          id: "delegation-boundary",
+          text: "The repository coordinator delegates implementation and cannot edit source.",
+          sourceRevision: this.state.project.configurationRevision,
+        },
+      ],
+      activeWork: this.state.runs
+        .filter((run) =>
+          ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status),
+        )
+        .map((run) => ({
+          runId: run.id,
+          threadId: run.threadId,
+          title: this.thread(run.threadId).title,
+          status: run.status,
+          intent:
+            this.state.messages
+              .find((message) => message.id === run.messageId)
+              ?.content.slice(0, 512) ?? "",
+        })),
     };
   }
   recover() {
@@ -163,6 +193,7 @@ export class Coordinator {
         repository: this.state.project.repository,
         baseSha: run.baseSha,
         configurationRevision: run.configurationRevision,
+        repositoryContext: this.repositoryContext(),
         messages: structuredClone(this.state.messages.filter((m) => m.threadId === run.threadId)),
       });
       if (result.baseSha !== run.baseSha || !/^[a-f0-9]{40}$/.test(result.candidateSha))
