@@ -91,7 +91,9 @@ describe("durable coordinator", () => {
       body: JSON.stringify({ content: "fix", idempotencyKey: "k" }),
     });
     expect(response.status).toBe(201);
-    expect((await app.request("/api/runs/x/reviews", { method: "POST" })).status).toBe(404);
+    expect((await app.request("/api/runs/x/reviews", { method: "POST", body: "{}" })).status).toBe(
+      404,
+    );
   });
   it("fails closed outside loopback development fixture", () => {
     expect(
@@ -112,5 +114,65 @@ describe("durable coordinator", () => {
         FIXTURE_IDENTITY: "lilfrogdev",
       }),
     ).toBe(true);
+  });
+  it("rejects missing keys before namespacing and quarantines admitted queued work", () => {
+    const f = fixture();
+    expect(() => f.core.createThread("change", undefined as unknown as string)).toThrow(
+      "invalid_idempotency_key",
+    );
+    const t = f.core.createThread("change", "t");
+    const { run } = f.core.submit(t.id, "fix", "k");
+    f.core.recover();
+    expect(run.status).toBe("waiting_user");
+    expect(run.error).toBe("reconciliation_required");
+  });
+  it("rejects mismatched original reviewer evidence", async () => {
+    const f = fixture(),
+      t = f.core.createThread("change", "t"),
+      { run } = f.core.submit(t.id, "fix", "k");
+    await f.core.dispatch(run.id, {
+      delegate: async (input) => ({
+        ...(await fakeExecution.delegate(input)),
+        review: {
+          decision: "approve",
+          summary: "wrong run",
+          actor: "reviewer",
+          baseSha: "f".repeat(40),
+          candidateSha: input.baseSha,
+          configurationRevision: input.configurationRevision,
+        },
+      }),
+    });
+    expect(run.status).toBe("failed");
+    expect(f.core.state.reviews).toHaveLength(0);
+  });
+  it("runs separate threads concurrently with isolated context", async () => {
+    const f = fixture(),
+      a = f.core.createThread("a", "a"),
+      b = f.core.createThread("b", "b");
+    const ar = f.core.submit(a.id, "only a", "a").run,
+      br = f.core.submit(b.id, "only b", "b").run;
+    const seen: string[][] = [];
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => (release = resolve));
+    const adapter = {
+      delegate: async (input: Parameters<typeof fakeExecution.delegate>[0]) => {
+        seen.push(input.messages.map((m) => m.content));
+        if (seen.length === 2) release();
+        await barrier;
+        return fakeExecution.delegate(input);
+      },
+    };
+    await Promise.all([f.core.dispatch(ar.id, adapter), f.core.dispatch(br.id, adapter)]);
+    expect(seen).toEqual([["only a"], ["only b"]]);
+    expect(ar.status).toBe("awaiting_review");
+    expect(br.status).toBe("awaiting_review");
+  });
+  it("bounds actual request bytes without Content-Length", async () => {
+    const response = await api(fixture().core, () => {}).request("/api/projects/pitcrew/threads", {
+      method: "POST",
+      body: JSON.stringify({ title: "a".repeat(17000), idempotencyKey: "a" }),
+    });
+    expect(response.status).toBe(413);
   });
 });

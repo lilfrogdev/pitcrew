@@ -12,7 +12,38 @@ export function fixtureAccess(
   );
 }
 export function api(coordinator: Coordinator, dispatch: (id: string) => void) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
+  app.use("*", async (c, next) => {
+    if (c.req.method === "POST") {
+      const reader = c.req.raw.body?.getReader();
+      let size = 0;
+      const chunks: Uint8Array[] = [];
+      if (reader) {
+        while (true) {
+          const result = await reader.read();
+          if (result.done) break;
+          size += result.value.byteLength;
+          if (size > 16384) {
+            await reader.cancel();
+            throw new AdmissionError("body_too_large", 413);
+          }
+          chunks.push(result.value);
+        }
+      }
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.length;
+      }
+      try {
+        c.set("body", JSON.parse(new TextDecoder().decode(bytes)));
+      } catch {
+        throw new AdmissionError("invalid_json");
+      }
+    }
+    await next();
+  });
   app.onError((error, c) =>
     c.json(
       { error: error instanceof AdmissionError ? error.code : "internal_error" },
@@ -28,16 +59,23 @@ export function api(coordinator: Coordinator, dispatch: (id: string) => void) {
   app.post("/api/projects/:projectId/threads", async (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
-    const body = await c.req.json();
-    return c.json(coordinator.createThread(body.title, body.idempotencyKey), 201);
+    const body = c.get("body");
+    return c.json(
+      coordinator.createThread(body.title as string, body.idempotencyKey as string),
+      201,
+    );
   });
   app.get("/api/threads/:threadId/messages", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(coordinator.state.messages.filter((m) => m.threadId === c.req.param("threadId")));
   });
   app.post("/api/threads/:threadId/messages", async (c) => {
-    const body = await c.req.json();
-    const result = coordinator.submit(c.req.param("threadId"), body.content, body.idempotencyKey);
+    const body = c.get("body");
+    const result = coordinator.submit(
+      c.req.param("threadId"),
+      body.content as string,
+      body.idempotencyKey as string,
+    );
     dispatch(result.run.id);
     return c.json(result, 201);
   });

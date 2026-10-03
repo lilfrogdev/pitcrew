@@ -51,8 +51,11 @@ export class Coordinator {
     private now = () => new Date().toISOString(),
     private id: () => string = () => crypto.randomUUID(),
   ) {}
+  private validateKey(key: unknown): asserts key is string {
+    if (typeof key !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(key))
+      throw new AdmissionError("invalid_idempotency_key");
+  }
   private transaction<T>(key: string, body: unknown, operation: () => T): T {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(key)) throw new AdmissionError("invalid_idempotency_key");
     const serialized = JSON.stringify(body),
       previous = this.state.keys[key];
     if (previous) {
@@ -86,6 +89,7 @@ export class Coordinator {
     return thread;
   }
   createThread(title: string, key: string) {
+    this.validateKey(key);
     return this.transaction(`thread_${key}`, { title }, () => {
       if (typeof title !== "string" || !title.trim() || title.length > 200)
         throw new AdmissionError("invalid_title");
@@ -97,6 +101,7 @@ export class Coordinator {
     });
   }
   submit(threadId: string, content: string, key: string): SubmitResult {
+    this.validateKey(key);
     return this.transaction(`message_${key}`, { threadId, content }, () => {
       this.thread(threadId);
       if (typeof content !== "string" || !content.trim() || content.length > 8000)
@@ -138,7 +143,7 @@ export class Coordinator {
   }
   recover() {
     for (const run of this.state.runs)
-      if (run.status === "running") {
+      if (run.status === "running" || run.status === "queued") {
         run.status = "waiting_user";
         run.error = "reconciliation_required";
       }
@@ -162,6 +167,14 @@ export class Coordinator {
       });
       if (result.baseSha !== run.baseSha || !/^[a-f0-9]{40}$/.test(result.candidateSha))
         throw new Error("invalid evidence");
+      for (const evidence of [result.tests, result.review].filter(Boolean)) {
+        if (
+          evidence!.baseSha !== run.baseSha ||
+          evidence!.candidateSha !== result.candidateSha ||
+          evidence!.configurationRevision !== run.configurationRevision
+        )
+          throw new Error("invalid evidence binding");
+      }
       run.workerId = result.workerId;
       run.artifactId = result.artifactId;
       run.candidateSha = result.candidateSha;
@@ -197,6 +210,9 @@ export const fakeExecution: ExecutionAdapter = {
       candidateSha: input.baseSha,
       summary: "Development fixture: no code executed.",
       tests: {
+        baseSha: input.baseSha,
+        candidateSha: input.baseSha,
+        configurationRevision: input.configurationRevision,
         status: "not_run",
         argv: [],
         exitCode: null,

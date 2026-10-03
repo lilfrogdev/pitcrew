@@ -37,6 +37,9 @@ export interface Run {
   error?: "execution_unavailable" | "execution_failed" | "reconciliation_required";
 }
 export interface TestEvidence {
+  baseSha: string;
+  candidateSha: string;
+  configurationRevision: string;
   status: "passed" | "failed" | "not_run";
   argv: string[];
   exitCode: number | null;
@@ -93,7 +96,10 @@ export interface ExecutionResult {
   candidateSha: string;
   summary: string;
   tests: TestEvidence;
-  review?: Pick<Review, "decision" | "summary" | "actor">;
+  review?: Pick<
+    Review,
+    "decision" | "summary" | "actor" | "baseSha" | "candidateSha" | "configurationRevision"
+  >;
 }
 // Implementations must reconcile persisted runId operations before repeating mutations.
 export interface ExecutionAdapter {
