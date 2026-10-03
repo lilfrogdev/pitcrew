@@ -49,11 +49,12 @@ export class CloudflareExecutionAdapter implements ExecutionAdapter {
           !["approve", "request_changes"].includes(review.decision)) throw new ExecutionError("STALE_REVIEW");
       if (review.decision === "approve" && (evidence.status !== "completed" || evidence.exitCode !== 0 || evidence.truncated))
         throw new ExecutionError("INVALID_APPROVAL");
+      const tests = { status: evidence.status === "completed" && evidence.exitCode === 0 ? "passed" as const : "failed" as const,
+        argv: evidence.argv, exitCode: evidence.exitCode, stdout: evidence.stdout, stderr: evidence.stderr, truncated: evidence.truncated,
+        baseSha: evidence.baseSha, candidateSha: evidence.candidateSha, configurationRevision: evidence.configurationRevision };
       const result: ExecutionResult = { workerId: workspace.workerId, artifactId: workspace.artifactId,
         baseSha: input.baseSha, candidateSha: evidence.candidateSha, summary: change.summary.slice(0, 4096),
-        tests: { status: evidence.status === "completed" && evidence.exitCode === 0 ? "passed" : "failed",
-          argv: evidence.argv, exitCode: evidence.exitCode, stdout: evidence.stdout, stderr: evidence.stderr, truncated: evidence.truncated },
-        review: { decision: review.decision, summary: review.summary.slice(0, 4096), actor: review.actor } };
+        tests, review: { ...review, summary: review.summary.slice(0, 4096) } };
       if (signal?.aborted) throw new ExecutionError("STOPPED");
       await this.coordinator.stop(workspace);
       workspace = undefined;
