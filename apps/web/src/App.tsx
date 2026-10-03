@@ -91,10 +91,13 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     }
     let cancelled = false;
     let requestSequence = 0;
+    let inFlight = false;
     setSnapshot(empty);
     setLoading(true);
     setError("");
     const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
       const sequence = ++requestSequence;
       try {
         const next = await api.snapshot(threadId);
@@ -110,6 +113,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           setLoading(false);
           setConnection("Disconnected");
         }
+      } finally {
+        inFlight = false;
       }
     };
     void load();
@@ -217,6 +222,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               aria-current={item.id === projectId ? "page" : undefined}
               disabled={busy}
               onClick={() => {
+                if (item.id === projectId) return;
                 setProjectId(item.id);
                 setThreads([]);
                 setThreadId("");
@@ -445,6 +451,15 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                       Tests {evidence.tests.status.replace("_", " ")} · exit{" "}
                       {evidence.tests.exitCode ?? "unavailable"}
                     </p>
+                    <p>
+                      {evidence.tests.baseSha === run.baseSha &&
+                      evidence.tests.candidateSha === run.candidateSha &&
+                      evidence.tests.configurationRevision === run.configurationRevision
+                        ? "Tests match current candidate"
+                        : "Stale test evidence — inspect exact hashes"}
+                    </p>
+                    <code>{evidence.tests.candidateSha}</code>
+                    <br />
                     <code>{evidence.tests.argv.join(" ")}</code>
                     <pre>
                       {evidence.tests.stdout || "No stdout recorded."}

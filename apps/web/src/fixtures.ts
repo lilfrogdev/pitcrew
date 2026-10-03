@@ -20,6 +20,9 @@ export function createFixtureApi(): Api {
             configurationRevision: "fixture-v1",
           },
           tests: {
+            baseSha,
+            candidateSha,
+            configurationRevision: "fixture-v1",
             status: "passed",
             argv: ["synthetic-test", "--all"],
             exitCode: 0,
