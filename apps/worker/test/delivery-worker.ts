@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
+import { ChangeAgent, type PiEnv } from "../src/pi-agents";
 import worker, { RepositoryAgent } from "../src/index";
 import type { State } from "../src/coordinator";
 import type { ExecutionInput, ExecutionResult } from "@pitcrew/protocol";
 interface Env {
   PAUSE_ACK?: string;
+  FAIL_START_ONCE?: string;
   REPOSITORY: DurableObjectNamespace<DeliveryRepositoryAgent>;
   CHANGE: DurableObjectNamespace<DeliveryChangeAgent>;
 }
@@ -28,12 +30,22 @@ export class DeliveryChangeAgent extends DurableObject<Env> {
     );
   }
   async start(input: ExecutionInput) {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS starts(id INTEGER PRIMARY KEY,calls INTEGER NOT NULL)",
+    );
+    this.ctx.storage.sql.exec(
+      "INSERT INTO starts VALUES(1,1) ON CONFLICT(id) DO UPDATE SET calls=calls+1",
+    );
+    const [attempt] = this.ctx.storage.sql
+      .exec<{ calls: number }>("SELECT calls FROM starts WHERE id=1")
+      .toArray();
+    if (this.env.FAIL_START_ONCE && attempt.calls === 1) throw Error(this.env.FAIL_START_ONCE);
     const [existing] = this.ctx.storage.sql
       .exec<{ input: string }>("SELECT input FROM delivery WHERE id=1")
       .toArray();
     if (existing) {
       if (existing.input !== JSON.stringify(input)) throw Error("context_conflict");
-      return;
+      return { runId: input.runId, stage: "done" as const };
     }
     const candidateSha = "b".repeat(40);
     const binding = {
@@ -68,6 +80,7 @@ export class DeliveryChangeAgent extends DurableObject<Env> {
       JSON.stringify(input),
       JSON.stringify(result),
     );
+    return { runId: input.runId, stage: "done" as const };
   }
   async result(runId: string) {
     const [row] = this.ctx.storage.sql
@@ -96,14 +109,36 @@ export class DeliveryChangeAgent extends DurableObject<Env> {
     this.ctx.storage.sql.exec("UPDATE delivery SET acknowledged=1 WHERE id=1");
   }
   async status() {
-    return this.ctx.storage.sql
-      .exec<{
-        effects: number;
-        ack_attempts: number;
-        acknowledged: number;
-        observed_commit: number;
-      }>("SELECT effects,ack_attempts,acknowledged,observed_commit FROM delivery WHERE id=1")
-      .toArray()[0];
+    return (
+      this.ctx.storage.sql
+        .exec<{
+          effects: number;
+          ack_attempts: number;
+          acknowledged: number;
+          observed_commit: number;
+        }>(
+          "SELECT effects,ack_attempts,acknowledged,observed_commit,(SELECT calls FROM starts WHERE id=1) AS calls FROM delivery WHERE id=1",
+        )
+        .toArray()[0] ?? null
+    );
+  }
+}
+export class PreflightChangeAgent extends ChangeAgent {
+  constructor(ctx: DurableObjectState, env: PiEnv & { CHILD_REVISION?: string }) {
+    super(ctx, {
+      ...env,
+      CONFIGURATION_REVISION: env.CHILD_REVISION ?? env.CONFIGURATION_REVISION,
+    });
+  }
+  async start(input: ExecutionInput) {
+    void this.sql`CREATE TABLE IF NOT EXISTS starts(id INTEGER PRIMARY KEY,calls INTEGER NOT NULL)`;
+    void this.sql`INSERT INTO starts VALUES(1,1) ON CONFLICT(id) DO UPDATE SET calls=calls+1`;
+    return super.start(input);
+  }
+  async status() {
+    const [row] = this.sql<{ calls: number }>`SELECT calls FROM starts WHERE id=1`;
+    const [state] = this.sql<{ value: string }>`SELECT value FROM change_pipeline WHERE id=1`;
+    return { calls: row?.calls ?? 0, pipeline: state ? JSON.parse(state.value) : null };
   }
 }
 export default {

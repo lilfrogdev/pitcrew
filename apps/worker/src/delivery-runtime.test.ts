@@ -2,7 +2,7 @@ import { expect, it } from "vite-plus/test";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import type { RunEvidence, Event, SubmitResult } from "@pitcrew/protocol";
-it("redelivers a committed RepositoryAgent result after lost child acknowledgement and restart", async () => {
+async function fixtureOptions() {
   const bundle = await build({
     entryPoints: [new URL("../test/delivery-worker.ts", import.meta.url).pathname],
     bundle: true,
@@ -27,7 +27,7 @@ it("redelivers a committed RepositoryAgent result after lost child acknowledgeme
       },
     ],
   });
-  const options = {
+  return {
     telemetry: { enabled: false },
     cf: false,
     modules: true,
@@ -50,6 +50,9 @@ it("redelivers a committed RepositoryAgent result after lost child acknowledgeme
     },
     resourcePersistencePath: `/tmp/pitcrew-delivery-${crypto.randomUUID()}`,
   };
+}
+it("redelivers a committed RepositoryAgent result after lost child acknowledgement and restart", async () => {
+  const options = await fixtureOptions();
   const mf = new Miniflare(convertV4MiniflareOptions(options));
   const get = async <T>(path: string) =>
     (await (await mf.dispatchFetch(`http://localhost${path}`)).json()) as T;
@@ -135,3 +138,109 @@ it("redelivers a committed RepositoryAgent result after lost child acknowledgeme
     await mf.dispose();
   }
 }, 25000);
+
+for (const [reason, overrides] of [
+  ["configuration_mismatch", { CHILD_REVISION: "changed" }],
+  ["execution_not_configured", {}],
+] as const) {
+  it(`quarantines terminal child preflight ${reason} without retrying on restart`, async () => {
+    const source = await fixtureOptions();
+    const options = {
+      ...source,
+      bindings: { ...source.bindings, ...overrides },
+      durableObjects: {
+        ...source.durableObjects,
+        CHANGE: { className: "PreflightChangeAgent", useSQLite: true },
+      },
+    };
+    const mf = new Miniflare(convertV4MiniflareOptions(options));
+    try {
+      const run = await submitFixture(mf);
+      await waitForFixture(mf, run.id, (value) => value.calls > 0);
+      await new Promise((resolve) => setTimeout(resolve, 1250));
+      const evidence = await readFixture<RunEvidence>(mf, `/api/runs/${run.id}/evidence`);
+      expect(evidence.run).toMatchObject({
+        status: "waiting_user",
+        error: "reconciliation_required",
+      });
+      const child = await readFixture<{ calls: number; pipeline: unknown }>(
+        mf,
+        `/fixture/delivery?runId=${run.id}`,
+      );
+      expect(child).toEqual({ calls: 1, pipeline: null });
+      expect(evidence.reviews).toEqual([]);
+      await mf.setOptions(
+        convertV4MiniflareOptions({
+          ...options,
+          script: options.script + "\n// terminal preflight restart",
+        }),
+      );
+      await readFixture(mf, `/api/runs/${run.id}/evidence`);
+      await new Promise((resolve) => setTimeout(resolve, 1250));
+      expect(await readFixture(mf, `/fixture/delivery?runId=${run.id}`)).toEqual(child);
+      expect(await readFixture(mf, `/api/runs/${run.id}/evidence`)).toEqual(evidence);
+    } finally {
+      await mf.dispose();
+    }
+  }, 15000);
+}
+for (const message of ["fixture_transport_unavailable", "configuration_mismatch"]) {
+  it(`retries a thrown start error ${message} and recovers a single durable result`, async () => {
+    const source = await fixtureOptions();
+    const { PAUSE_ACK: _pause, ...bindings } = source.bindings;
+    const mf = new Miniflare(
+      convertV4MiniflareOptions({ ...source, bindings: { ...bindings, FAIL_START_ONCE: message } }),
+    );
+    try {
+      const run = await submitFixture(mf);
+      const child = await waitForFixture(mf, run.id, (value) => value.acknowledged === 1);
+      expect(child).toMatchObject({ effects: 1, acknowledged: 1, observed_commit: 1 });
+      expect(child.calls).toBeGreaterThan(1);
+      const evidence = await readFixture<RunEvidence>(mf, `/api/runs/${run.id}/evidence`);
+      expect(evidence.run.status).toBe("awaiting_review");
+      expect(evidence.reviews).toHaveLength(1);
+    } finally {
+      await mf.dispose();
+    }
+  }, 15000);
+}
+async function readFixture<T>(mf: Miniflare, path: string): Promise<T> {
+  return (await (await mf.dispatchFetch(`http://localhost${path}`)).json()) as T;
+}
+async function submitFixture(mf: Miniflare) {
+  const post = async <T>(path: string, body: unknown) => {
+    const response = await mf.dispatchFetch(`http://localhost/api${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(201);
+    return (await response.json()) as T;
+  };
+  const thread = await post<{ id: string }>("/projects/pitcrew/threads", {
+    title: "preflight",
+    idempotencyKey: "thread",
+  });
+  return (
+    await post<SubmitResult>(`/threads/${thread.id}/messages`, {
+      content: "fixture",
+      idempotencyKey: "message",
+    })
+  ).run;
+}
+async function waitForFixture(
+  mf: Miniflare,
+  runId: string,
+  accepted: (value: { calls: number; acknowledged: number }) => boolean,
+) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const value = await readFixture<{ calls: number; acknowledged: number }>(
+      mf,
+      `/fixture/delivery?runId=${runId}`,
+    );
+    if (value && accepted(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw Error("fixture_timeout");
+}
