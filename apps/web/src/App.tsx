@@ -32,6 +32,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [error, setError] = useState("");
   const [announcement, setAnnouncement] = useState("");
   const [revision, setRevision] = useState(0);
+  const [sidebarRevision, setSidebarRevision] = useState(0);
   const requestedThread = useRef<string | undefined>(undefined);
   const generation = useRef(0);
   const pending = useRef<{ threadId: string; content: string; key: string } | null>(null);
@@ -92,7 +93,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           requestedThread.current = undefined;
           setThreadId((id) => {
             const desired = requested ?? id;
-            return items.some((item) => item.id === desired) ? desired : (items[0]?.id ?? "");
+            return items.some((item) => item.id === desired)
+              ? desired
+              : (items.find((item) => !item.archived)?.id ?? "");
           });
           setLoading(false);
           setError("");
@@ -216,6 +219,25 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       setBusy(false);
     }
   }
+  async function archiveThread(item: Thread, archived: boolean) {
+    if (mutation.current || !api.setThreadArchived) return;
+    mutation.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await api.setThreadArchived(item.projectId, item.id, archived);
+      setThreads((all) => all.map((thread) => (thread.id === updated.id ? updated : thread)));
+      // Revalidate other repository lists without clearing the selected transcript/draft.
+      setSidebarRevision((value) => value + 1);
+      setAnnouncement(archived ? "Conversation archived." : "Conversation restored.");
+      return updated;
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      mutation.current = false;
+      setBusy(false);
+    }
+  }
   const project = projects.find((item) => item.id === projectId);
   const thread = threads.find((item) => item.id === threadId);
   const latest = snapshot.runs.at(-1);
@@ -230,7 +252,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         projectId={projectId}
         threads={threads}
         threadId={threadId}
-        revision={revision}
+        revision={revision + sidebarRevision}
+        onArchive={archiveThread}
         busy={busy}
         activeRun={latest}
         onSelect={(repository, conversation) => {

@@ -86,12 +86,14 @@ export class Coordinator {
     private id: () => string = () => crypto.randomUUID(),
   ) {
     const needsMigration =
+      state.threads.some((thread) => thread.archived === undefined) ||
       !state.changes ||
       state.runs.some(
         (run) => !run.changeId || !state.changes?.some((change) => change.id === run.changeId),
       );
     if (needsMigration)
       this.durableUpdate(() => {
+        for (const thread of this.state.threads) thread.archived ??= false;
         this.state.changes ??= [];
         for (const run of this.state.runs) {
           if (run.changeId && this.state.changes.some((change) => change.id === run.changeId))
@@ -292,7 +294,12 @@ export class Coordinator {
                 this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4
               )
                 throw new AdmissionError("capacity", 429);
-              const thread = { id: this.id(), projectId: project.id, title: group.title };
+              const thread = {
+                id: this.id(),
+                projectId: project.id,
+                title: group.title,
+                archived: false,
+              };
               this.state.threads.push(thread);
               const messages: Message[] = reports.map((report) => ({
                 id: this.id(),
@@ -432,13 +439,28 @@ export class Coordinator {
     if (!thread) throw new AdmissionError("not_found", 404);
     return thread;
   }
+  setThreadArchived(threadId: string, archived: unknown): Thread {
+    const thread = this.thread(threadId);
+    if (typeof archived !== "boolean") throw new AdmissionError("invalid_archived");
+    // Desired-state writes are idempotent without growing the bounded key/event journals.
+    if (thread.archived === archived) return structuredClone(thread);
+    return this.durableUpdate(() => {
+      thread.archived = archived;
+      return structuredClone(thread);
+    });
+  }
   createThread(title: string, key: string) {
     this.validateKey(key);
     return this.transaction(`thread_${key}`, { title }, () => {
       if (typeof title !== "string" || !title.trim() || title.length > 200)
         throw new AdmissionError("invalid_title");
       if (this.state.threads.length >= 50) throw new AdmissionError("capacity", 429);
-      const thread = { id: this.id(), projectId: this.state.project.id, title: title.trim() };
+      const thread = {
+        id: this.id(),
+        projectId: this.state.project.id,
+        title: title.trim(),
+        archived: false,
+      };
       this.state.threads.push(thread);
       this.event("thread.created", thread.id);
       return thread;

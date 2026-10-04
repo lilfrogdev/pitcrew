@@ -10,6 +10,8 @@ export interface Thread {
   id: string;
   projectId: string;
   title: string;
+  // Optional for legacy clients; persisted coordinators normalize this to false.
+  archived?: boolean;
 }
 export interface Change {
   id: string;

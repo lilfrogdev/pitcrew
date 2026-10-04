@@ -147,6 +147,11 @@ export function api(
       201,
     );
   });
+  app.post("/api/projects/:projectId/threads/:threadId/archive", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    return c.json(coordinator.setThreadArchived(c.req.param("threadId"), c.get("body").archived));
+  });
   app.get("/api/threads/:threadId/messages", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(coordinator.state.messages.filter((m) => m.threadId === c.req.param("threadId")));

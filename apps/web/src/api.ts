@@ -31,6 +31,7 @@ export interface Api {
   reconcile(runId: string, authorizationId: string): Promise<LandingResult>;
   projects(): Promise<Project[]>;
   threads(projectId: string): Promise<Thread[]>;
+  setThreadArchived?(projectId: string, threadId: string, archived: boolean): Promise<Thread>;
   snapshot(threadId: string): Promise<Snapshot>;
   latestRun?(threadId: string): Promise<Run | undefined>;
   createThread(projectId: string, title: string, key: string): Promise<Thread>;
@@ -79,6 +80,11 @@ export const httpApi: Api = {
     request(`/runs/${encodeURIComponent(id)}/landing/reconcile`, { authorizationId }),
   projects: () => request("/projects"),
   threads: (id) => request(`/projects/${encodeURIComponent(id)}/threads`),
+  setThreadArchived: (projectId, id, archived) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/threads/${encodeURIComponent(id)}/archive`,
+      { archived },
+    ),
   latestRun: async (id) => (await request<Run[]>(`/threads/${encodeURIComponent(id)}/runs`)).at(-1),
   snapshot: async (id) => {
     const path = `/threads/${encodeURIComponent(id)}`;

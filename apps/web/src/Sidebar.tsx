@@ -100,6 +100,7 @@ export function Sidebar({
   busy,
   onSelect,
   onCreate,
+  onArchive,
   activeRun,
   children,
 }: {
@@ -112,10 +113,12 @@ export function Sidebar({
   busy: boolean;
   onSelect: (repository: string, conversation?: string) => void;
   onCreate: (repository: string) => void;
+  onArchive?: (thread: Thread, archived: boolean) => Promise<Thread | undefined>;
   activeRun?: Run;
   children?: ReactNode;
 }) {
   const [query, setQuery] = useState("");
+  const [archiveUpdates, setArchiveUpdates] = useState<Record<string, Thread>>({});
   const [searching, setSearching] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [pins, setPins] = useState(readPins);
@@ -158,7 +161,22 @@ export function Sidebar({
       /* Navigation works without storage. */
     }
   }, [pins]);
-  const conversations = (id: string) => (id === projectId ? threads : (others[id] ?? []));
+  useEffect(() => {
+    const savedConversations = projects.flatMap((item) =>
+      item.id === projectId ? threads : (others[item.id] ?? []),
+    );
+    setArchiveUpdates((all) => {
+      const next = { ...all };
+      for (const item of savedConversations) {
+        if (next[item.id]?.archived === item.archived) delete next[item.id];
+      }
+      return Object.keys(next).length === Object.keys(all).length ? all : next;
+    });
+  }, [threads, others, projectId, projects]);
+  const conversations = (id: string) =>
+    (id === projectId ? threads : (others[id] ?? [])).map(
+      (item) => archiveUpdates[item.id] ?? item,
+    );
   const knownConversations = projects.flatMap((item) => conversations(item.id));
   const associations = { ...pins.conversationRepositories };
   for (const item of knownConversations) {
@@ -174,7 +192,11 @@ export function Sidebar({
   }, [associationKey]);
   const pinnedRepositories = new Set([
     ...pins.repositories,
-    ...pins.conversations.flatMap((id) => (associations[id] ? [associations[id]] : [])),
+    ...pins.conversations.flatMap((id) =>
+      associations[id] && !knownConversations.find((item) => item.id === id)?.archived
+        ? [associations[id]]
+        : [],
+    ),
   ]);
   const toggleConversationPin = (item: Thread) =>
     setPins((all) => {
@@ -213,6 +235,31 @@ export function Sidebar({
         <span className="row-name conversation-name">{item.title}</span>
         {stateIndicator(item)}
       </button>
+      {onArchive && api.setThreadArchived && (
+        <details
+          className="conversation-actions"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") event.currentTarget.open = false;
+          }}
+        >
+          <summary className="row-action" aria-label={`Conversation actions ${item.title}`}>
+            ⋯
+          </summary>
+          <div className="conversation-menu">
+            <button
+              disabled={busy}
+              onClick={async (event) => {
+                event.currentTarget.closest("details")?.removeAttribute("open");
+                const updated = await onArchive(item, !item.archived);
+                // A committed response hides/restores cached rows even if list revalidation fails.
+                if (updated) setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
+              }}
+            >
+              {item.archived ? "Restore" : "Archive"} conversation
+            </button>
+          </div>
+        </details>
+      )}
       <PinButton
         name={`conversation ${item.title}`}
         pinned={pins.conversations.includes(item.id)}
@@ -306,7 +353,7 @@ export function Sidebar({
           <input
             autoFocus
             aria-label="Search repositories"
-            placeholder="Search repositories"
+            placeholder="Search repositories or conversations"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
@@ -323,6 +370,13 @@ export function Sidebar({
           )}
         </div>
       )}
+      {searching && query.trim() && (
+        <section className="sidebar-section" aria-label="Conversation search results">
+          {knownConversations
+            .filter((item) => item.title.toLowerCase().includes(query.trim().toLowerCase()))
+            .map(conversationRow)}
+        </section>
+      )}
       <section className="sidebar-section" aria-label="Pinned">
         <h2 className="section-label">Pinned</h2>
         {projects
@@ -335,7 +389,10 @@ export function Sidebar({
                 aria-label={`Pinned conversations in ${item.name}`}
               >
                 {conversations(item.id)
-                  .filter((conversation) => pins.conversations.includes(conversation.id))
+                  .filter(
+                    (conversation) =>
+                      !conversation.archived && pins.conversations.includes(conversation.id),
+                  )
                   .map(conversationRow)}
               </div>
             </div>
@@ -351,13 +408,19 @@ export function Sidebar({
                 className="repository-conversations"
                 aria-label={`Conversations in ${item.name}`}
               >
-                {conversations(item.id).map((conversation) => conversationRow(conversation))}
+                {conversations(item.id)
+                  .filter((conversation) => !conversation.archived)
+                  .map((conversation) => conversationRow(conversation))}
                 {item.id === projectId && children}
               </div>
             )}
           </div>
         ))}
-        {!matching.length && query.trim() && <p className="search-empty">No repositories found.</p>}
+        {!matching.length &&
+          query.trim() &&
+          !knownConversations.some((item) =>
+            item.title.toLowerCase().includes(query.trim().toLowerCase()),
+          ) && <p className="search-empty">No repositories found.</p>}
       </nav>
     </aside>
   );

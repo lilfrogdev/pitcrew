@@ -2,6 +2,26 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, httpApi } from "./api";
 afterEach(() => vi.unstubAllGlobals());
 describe("canonical HTTP adapter", () => {
+  it("posts repository-scoped archive/restore state with escaped identifiers", async () => {
+    const fetch = vi
+      .fn()
+      .mockImplementation(
+        async (_path, input) =>
+          new Response(
+            JSON.stringify({ id: "thread/1", archived: JSON.parse(input.body).archived }),
+          ),
+      );
+    vi.stubGlobal("fetch", fetch);
+    expect((await httpApi.setThreadArchived!("project/1", "thread/1", true)).archived).toBe(true);
+    expect((await httpApi.setThreadArchived!("project/1", "thread/1", false)).archived).toBe(false);
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual(
+      Array(2).fill("/api/projects/project%2F1/threads/thread%2F1/archive"),
+    );
+    expect(fetch.mock.calls.map(([, input]) => JSON.parse(input.body))).toEqual([
+      { archived: true },
+      { archived: false },
+    ]);
+  });
   it("reads the latest sidebar run with one request, independent of historical run count", async () => {
     const runs = Array.from({ length: 1000 }, (_, i) => ({
       id: `run-${i}`,

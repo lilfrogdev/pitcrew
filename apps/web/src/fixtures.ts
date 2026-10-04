@@ -175,6 +175,12 @@ export function createFixtureApi(): Api {
       },
     ],
     threads: async (id) => threads.filter((thread) => thread.projectId === id),
+    setThreadArchived: async (projectId, id, archived) => {
+      const thread = threads.find((item) => item.projectId === projectId && item.id === id);
+      if (!thread) throw Error("Conversation not found.");
+      thread.archived = archived;
+      return structuredClone(thread);
+    },
     latestRun: async (id) => structuredClone(data[id]?.runs.at(-1)),
     snapshot: async (id) =>
       structuredClone(data[id] ?? { messages: [], runs: [], reviews: [], evidence: [] }),

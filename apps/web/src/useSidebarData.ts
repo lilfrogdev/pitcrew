@@ -103,7 +103,8 @@ function createScheduler(publish: (data: Data) => void) {
     for (const project of projects) {
       const items = project.id === projectId ? threads : (lists.get(project.id)?.value ?? []);
       for (const item of items)
-        if (visible.has(project.id) || pinned.has(item.id)) conversations.set(item.id, item);
+        if (!item.archived && (visible.has(project.id) || pinned.has(item.id)))
+          conversations.set(item.id, item);
     }
     for (const item of conversations.values()) {
       if (pending >= 4) break;
