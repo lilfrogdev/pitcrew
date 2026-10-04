@@ -1,3 +1,13 @@
+import { applyKnowledgePage, projectKnowledge, validKnowledge } from "./knowledge";
+import type {
+  CurrentKnowledge,
+  KnowledgeMutation,
+  KnowledgeRecord,
+  KnowledgeReport,
+  WorkerKnowledgeContext,
+  KnowledgeAck,
+  KnowledgeCheckpoint,
+} from "@pitcrew/protocol";
 import {
   initialIntake,
   receiveReport,
@@ -46,6 +56,9 @@ export class AdmissionError extends Error {
   }
 }
 export interface State {
+  // Latest explicit checkpoint per run; never a per-note causal watermark.
+  knowledgeObservations?: Record<string, number>;
+  knowledgeProjection?: { projectId: string; repository: string; current: CurrentKnowledge };
   intake?: IntakeState;
   profile?: VerificationProfile;
   plans?: Record<string, VerificationPlan>;
@@ -61,23 +74,66 @@ export interface State {
   changes?: Change[];
   requests?: Record<string, ExecutionInput>;
 }
-export const initialState = (): State => ({
-  project: {
+export const initialState = (overrides: Partial<Project> = {}): State => {
+  const project: Project = {
     id: "pitcrew",
     name: "Pitcrew",
     repository: "https://github.com/lilfrogdev/pitcrew",
     baseSha: "851b619d31a4f1b769b8046a3d306122097ac036",
     configurationRevision: "poc-v1",
-  },
-  threads: [],
-  messages: [],
-  runs: [],
-  changes: [],
-  reviews: [],
-  events: [],
-  keys: {},
-  evidence: {},
-});
+    ...overrides,
+  };
+  const record = delegationPolicy(project);
+  const event: Event = {
+    sequence: 1,
+    projectId: project.id,
+    type: "knowledge.changed",
+    entityId: record.id,
+    createdAt: new Date().toISOString(),
+    knowledge: record,
+  };
+  return {
+    project,
+    threads: [],
+    messages: [],
+    runs: [],
+    changes: [],
+    reviews: [],
+    events: [event],
+    keys: {},
+    evidence: {},
+    knowledgeProjection: {
+      projectId: project.id,
+      repository: project.repository,
+      current: applyKnowledgePage(
+        { revision: 0, complete: true, entries: [] },
+        [event],
+        project.id,
+        project.repository,
+      ),
+    },
+  };
+};
+function delegationPolicy(project: Project): KnowledgeRecord {
+  return {
+    id: "delegation-boundary",
+    version: 1,
+    status: "accepted",
+    kind: "constraint",
+    text: "The repository coordinator delegates implementation and cannot edit source.",
+    sourceRefs: [
+      { kind: "policy", id: "coordinator-delegation", revision: project.configurationRevision },
+    ],
+    reason: "Existing application policy; no inferred user decision.",
+    eventId: "application:delegation-boundary",
+    actor: { kind: "application", id: "coordinator" },
+    projectId: project.id,
+    repository: project.repository,
+    visibility: "repository",
+    baseSha: project.baseSha,
+    configurationRevision: project.configurationRevision,
+  };
+}
 export class Coordinator {
   constructor(
     public state: State,
@@ -127,6 +183,201 @@ export class Coordinator {
             };
         }
       });
+    if (
+      !this.state.knowledgeProjection ||
+      this.state.knowledgeProjection.projectId !== this.state.project.id ||
+      this.state.knowledgeProjection.repository !== this.state.project.repository
+    )
+      this.durableUpdate(() => {
+        this.state.knowledgeProjection = {
+          projectId: this.state.project.id,
+          repository: this.state.project.repository,
+          current: projectKnowledge(
+            this.state.events,
+            this.state.project.id,
+            this.state.project.repository,
+          ),
+        };
+        if (!this.currentKnowledge().entries.some((entry) => entry.id === "delegation-boundary"))
+          this.recordKnowledge(delegationPolicy(this.state.project));
+      });
+  }
+  private currentKnowledge(): CurrentKnowledge {
+    const cached = this.state.knowledgeProjection;
+    if (
+      cached?.projectId === this.state.project.id &&
+      cached.repository === this.state.project.repository
+    )
+      return structuredClone(cached.current);
+    return projectKnowledge(
+      this.state.events,
+      this.state.project.id,
+      this.state.project.repository,
+    );
+  }
+  private recordKnowledge(record: KnowledgeRecord) {
+    const event: Event = {
+      sequence: this.state.events.length + 1,
+      projectId: this.state.project.id,
+      type: "knowledge.changed",
+      entityId: record.id,
+      createdAt: this.now(),
+      knowledge: structuredClone(record),
+    };
+    let current: CurrentKnowledge;
+    try {
+      current = applyKnowledgePage(
+        this.currentKnowledge(),
+        [event],
+        this.state.project.id,
+        this.state.project.repository,
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === "knowledge_projection_capacity")
+        throw new AdmissionError("knowledge_projection_capacity", 429);
+      throw error;
+    }
+    this.state.events.push(event);
+    this.state.knowledgeProjection = {
+      projectId: this.state.project.id,
+      repository: this.state.project.repository,
+      current,
+    };
+    return structuredClone(record);
+  }
+  // Only an explicit authenticated operation invokes this method. Message text
+  // and model output never supply this principal or acceptance authority.
+  appendKnowledge(actor: string, key: string, input: KnowledgeMutation): KnowledgeRecord {
+    this.validateKey(key);
+    if (!actor || !validKnowledge(input)) throw new AdmissionError("invalid_knowledge");
+    const body = {
+      id: input.id,
+      expectedVersion: input.expectedVersion,
+      status: input.status,
+      text: input.text,
+      kind: input.kind,
+      sourceRefs: input.sourceRefs.map((ref) => ({
+        kind: ref.kind,
+        id: ref.id,
+        ...(ref.revision !== undefined ? { revision: ref.revision } : {}),
+        ...(ref.path !== undefined ? { path: ref.path } : {}),
+      })),
+      reason: input.reason,
+    };
+    return this.transaction(`knowledge_${actor}_${key}`, body, () => {
+      const previous = this.currentKnowledge().entries.find((entry) => entry.id === body.id);
+      if ((previous?.version ?? 0) !== body.expectedVersion)
+        throw new AdmissionError("knowledge_version_conflict", 409);
+      if (
+        (!previous && body.status === "superseded") ||
+        (previous?.status === "accepted" && body.status === "proposed") ||
+        previous?.status === "superseded"
+      )
+        throw new AdmissionError("knowledge_transition_conflict", 409);
+      const { expectedVersion, ...value } = body;
+      return this.recordKnowledge({
+        ...value,
+        version: expectedVersion + 1,
+        eventId: `principal:${actor}:${key}`,
+        actor: { kind: "principal", id: actor },
+        projectId: this.state.project.id,
+        repository: this.state.project.repository,
+        visibility: "repository",
+        baseSha: this.state.project.baseSha,
+        configurationRevision: this.state.project.configurationRevision,
+        threadId: previous?.threadId,
+        changeId: previous?.changeId,
+        runId: previous?.runId,
+      });
+    });
+  }
+  refreshWorkerKnowledge(context: WorkerKnowledgeContext): KnowledgeCheckpoint {
+    const request = context && this.state.requests?.[context.runId];
+    const run = context && this.state.runs.find((run) => run.id === context.runId);
+    if (
+      !request?.knowledgeContext ||
+      JSON.stringify(context) !== JSON.stringify(request.knowledgeContext) ||
+      !run ||
+      ["failed", "stopped", "waiting_user"].includes(run.status) ||
+      context.baseSha !== this.state.project.baseSha ||
+      context.configurationRevision !== this.state.project.configurationRevision
+    )
+      return { status: "stale" };
+    const currentKnowledge = this.currentKnowledge();
+    this.durableUpdate(() => {
+      (this.state.knowledgeObservations ??= {})[context.runId] = currentKnowledge.revision;
+    });
+    return {
+      status: "current",
+      observedKnowledgeRevision: currentKnowledge.revision,
+      currentKnowledge,
+    };
+  }
+  appendWorkerKnowledge(context: WorkerKnowledgeContext, report: KnowledgeReport): KnowledgeAck {
+    const eventId = `worker:${context?.runId}:${report?.key}`;
+    if (
+      !context ||
+      !report ||
+      typeof report.key !== "string" ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(report.key)
+    )
+      return { eventId, status: "rejected" };
+    const input: KnowledgeMutation = {
+      id: eventId,
+      expectedVersion: 0,
+      status: "proposed",
+      text: report.text,
+      kind: report.kind,
+      sourceRefs: Array.isArray(report.sourceRefs)
+        ? report.sourceRefs.map((ref) => ({
+            kind: ref?.kind,
+            id: ref?.id,
+            ...(ref?.revision !== undefined ? { revision: ref.revision } : {}),
+            ...(ref?.path !== undefined ? { path: ref.path } : {}),
+          }))
+        : report.sourceRefs,
+      reason: "Worker discovery; acceptance required.",
+    };
+    if (!validKnowledge(input)) return { eventId, status: "rejected" };
+    const request = this.state.requests?.[context.runId];
+    if (
+      !request?.knowledgeContext ||
+      JSON.stringify(context) !== JSON.stringify(request.knowledgeContext)
+    )
+      return { eventId, status: "stale" };
+    const run = this.evidence(context.runId).run;
+    const previous = this.state.keys[`worker_knowledge_${context.runId}_${report.key}`];
+    const body = { context: request.knowledgeContext, input };
+    if (previous) {
+      if (previous.body !== JSON.stringify(body))
+        throw new AdmissionError("idempotency_conflict", 409);
+      return { eventId, status: "duplicate" };
+    }
+    if (
+      ["failed", "stopped", "waiting_user"].includes(run.status) ||
+      context.baseSha !== this.state.project.baseSha ||
+      context.configurationRevision !== this.state.project.configurationRevision
+    )
+      return { eventId, status: "stale" };
+    return this.transaction(`worker_knowledge_${context.runId}_${report.key}`, body, () => {
+      const { expectedVersion: _expectedVersion, ...value } = input;
+      this.recordKnowledge({
+        ...value,
+        version: 1,
+        eventId,
+        actor: { kind: "worker", id: context.attemptId },
+        projectId: context.projectId,
+        repository: context.repository,
+        visibility: "repository",
+        baseSha: context.baseSha,
+        configurationRevision: context.configurationRevision,
+        threadId: context.threadId,
+        changeId: context.changeId,
+        runId: context.runId,
+        contextRevision: context.contextRevision,
+      });
+      return { eventId, status: "recorded" as const };
+    });
   }
   private intakeContext(actor: string) {
     return { scope: this.state.project.id, actor, now: this.now, id: this.id };
@@ -328,8 +579,10 @@ export class Coordinator {
               this.state.runs.push(run);
               (this.state.plans ??= {})[run.id] = plan;
               this.event("thread.created", thread.id);
-              messages.forEach((m) => this.event("message.created", m.id));
-              this.event("change.created", change.id);
+              messages.forEach((m) =>
+                this.event("message.created", m.id, { kind: "principal", id: actor }),
+              );
+              this.event("change.created", change.id, { kind: "principal", id: actor });
               this.event("run.queued", run.id);
               return { threadId: thread.id, changeId, runId: run.id };
             },
@@ -425,13 +678,68 @@ export class Coordinator {
       throw error;
     }
   }
-  private event(type: Event["type"], entityId: string) {
+  private event(
+    type: Event["type"],
+    entityId: string,
+    actor: KnowledgeRecord["actor"] = { kind: "application", id: "coordinator" },
+  ) {
+    const review =
+      type === "review.created"
+        ? this.state.reviews.find((item) => item.id === entityId)
+        : undefined;
+    const run = review
+      ? this.state.runs.find((item) => item.id === review.runId)
+      : type.startsWith("run.")
+        ? this.state.runs.find((item) => item.id === entityId)
+        : undefined;
+    const change = this.state.changes?.find(
+      (item) => item.id === (run?.changeId ?? (type === "change.created" ? entityId : undefined)),
+    );
+    const message =
+      type === "message.created"
+        ? this.state.messages.find((item) => item.id === entityId)
+        : undefined;
+    const threadId =
+      run?.threadId ??
+      change?.threadId ??
+      message?.threadId ??
+      (type === "thread.created" || type.startsWith("thread.") ? entityId : undefined);
+    const outcome =
+      type === "run.awaiting_review"
+        ? "candidate_recorded"
+        : review
+          ? review.decision === "approve"
+            ? "review_approved"
+            : "review_changes_requested"
+          : type === "run.completed" && run?.landing?.backend === "fixture"
+            ? "fixture_landed"
+            : undefined;
     this.state.events.push({
       sequence: this.state.events.length + 1,
       projectId: this.state.project.id,
       type,
       entityId,
       createdAt: this.now(),
+      provenance: {
+        actor: review ? { kind: "worker", id: `review:${review.runId}` } : actor,
+        repository: this.state.project.repository,
+        baseSha: run?.baseSha ?? this.state.project.baseSha,
+        candidateSha: run?.candidateSha,
+        configurationRevision:
+          run?.configurationRevision ?? this.state.project.configurationRevision,
+        threadId,
+        changeId: change?.id,
+        runId: run?.id,
+        sourceRefs: review
+          ? [{ kind: "review", id: review.id, revision: review.candidateSha }]
+          : run?.artifactId
+            ? [{ kind: "artifact", id: run.artifactId, revision: run.candidateSha }]
+            : (change?.originMessageIds ?? (message ? [message.id] : [])).map((id) => ({
+                kind: "message" as const,
+                id,
+              })),
+        outcome,
+      },
     });
   }
   thread(threadId: string) {
@@ -466,7 +774,7 @@ export class Coordinator {
       return thread;
     });
   }
-  submit(threadId: string, content: string, key: string): SubmitResult {
+  submit(threadId: string, content: string, key: string, actor = "local-fixture"): SubmitResult {
     this.validateKey(key);
     return this.transaction(`message_${key}`, { threadId, content }, () => {
       this.thread(threadId);
@@ -503,8 +811,8 @@ export class Coordinator {
       };
       this.state.messages.push(message);
       this.state.runs.push(run);
-      this.event("message.created", message.id);
-      this.event("change.created", change.id);
+      this.event("message.created", message.id, { kind: "principal", id: actor });
+      this.event("change.created", change.id, { kind: "principal", id: actor });
       this.event("run.queued", run.id);
       return { message, run, change };
     });
@@ -565,22 +873,41 @@ export class Coordinator {
       reviews: this.state.reviews.filter((r) => r.runId === runId),
     };
   }
+  eventsAfter(sequence: number): Event[] {
+    let low = 0,
+      high = this.state.events.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.state.events[middle].sequence <= sequence) low = middle + 1;
+      else high = middle;
+    }
+    return structuredClone(this.state.events.slice(low, low + 256));
+  }
   repositoryContext(): RepositoryContext {
+    const currentKnowledge = this.currentKnowledge();
     return {
-      revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}`,
+      revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}:${currentKnowledge.revision}`,
       baseSha: this.state.project.baseSha,
       configurationRevision: this.state.project.configurationRevision,
-      acceptedDecisions: [
-        {
-          id: "delegation-boundary",
-          text: "The repository coordinator delegates implementation and cannot edit source.",
-          sourceRevision: this.state.project.configurationRevision,
-        },
-      ],
+      currentKnowledge,
+      acceptedDecisions: currentKnowledge.entries
+        .filter((entry) => entry.status === "accepted")
+        .map((entry) => ({
+          id: entry.id,
+          text: entry.text,
+          sourceRevision: entry.configurationRevision,
+        })),
+      activeWorkOmitted: Math.max(
+        0,
+        this.state.runs.filter((run) =>
+          ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status),
+        ).length - 20,
+      ),
       activeWork: this.state.runs
         .filter((run) =>
           ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status),
         )
+        .slice(0, 20)
         .map((run) => ({
           runId: run.id,
           threadId: run.threadId,
@@ -612,6 +939,17 @@ export class Coordinator {
       run.status = "running";
       this.event("run.started", run.id);
       const request: ExecutionInput = {
+        knowledgeContext: {
+          attemptId: runId,
+          projectId: this.state.project.id,
+          repository: this.state.project.repository,
+          threadId: run.threadId,
+          changeId: run.changeId!,
+          runId,
+          baseSha: run.baseSha,
+          configurationRevision: run.configurationRevision,
+          contextRevision: this.repositoryContext().revision,
+        },
         verificationPlan: this.state.plans?.[runId],
         runId,
         changeId: run.changeId,

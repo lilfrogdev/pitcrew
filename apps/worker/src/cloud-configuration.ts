@@ -9,10 +9,10 @@ export function cloudInitialState(env: {
     env.CONFIGURATION_REVISION.length > 128
   )
     throw Error("project_not_configured");
-  const state = initialState();
-  state.project.baseSha = env.PROJECT_BASE_SHA!;
-  state.project.configurationRevision = env.CONFIGURATION_REVISION;
-  return state;
+  return initialState({
+    baseSha: env.PROJECT_BASE_SHA!,
+    configurationRevision: env.CONFIGURATION_REVISION,
+  });
 }
 export function sandboxImage(name: string | undefined, images: Record<string, string>) {
   if (!name || !/^[a-zA-Z0-9_-]{1,128}$/.test(name)) throw Error("image_not_configured");

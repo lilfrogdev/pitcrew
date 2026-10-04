@@ -32,7 +32,7 @@ describe("thread/change/run traceability", () => {
     expect(retry.id).not.toBe(first.run.id);
     expect(retry.changeId).toBe(first.run.changeId);
     expect(retry.baseSha).toBe("c".repeat(40));
-    expect(first.change!.contextRevision).toBe(`${first.run.baseSha}:poc-v1`);
+    expect(first.change!.contextRevision).toBe(`${first.run.baseSha}:poc-v1:1`);
     const input = f.core.begin(retry.id)!;
     expect(input.messages.map((message) => message.content)).toEqual(["implement alpha"]);
     expect(input.changeId).toBe(first.change!.id);

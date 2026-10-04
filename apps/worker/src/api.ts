@@ -74,6 +74,19 @@ export function api(
       throw new AdmissionError("not_found", 404);
     return c.json(coordinator.repositoryContext());
   });
+  app.post("/api/projects/:projectId/knowledge", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    const body = c.get("body");
+    return c.json(
+      coordinator.appendKnowledge(
+        identity.actor,
+        body.idempotencyKey as string,
+        body.mutation as Parameters<Coordinator["appendKnowledge"]>[2],
+      ),
+      201,
+    );
+  });
   app.post("/api/projects/:projectId/verification-profile", async (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
@@ -162,6 +175,7 @@ export function api(
       c.req.param("threadId"),
       body.content as string,
       body.idempotencyKey as string,
+      identity.actor,
     );
     await dispatch(result.run.id);
     return c.json(result, 201);
@@ -198,7 +212,10 @@ export function api(
       throw new AdmissionError("not_found", 404);
     const after = Number(c.req.query("after") ?? 0);
     if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_cursor");
-    return c.json(coordinator.state.events.filter((e) => e.sequence > after));
+    if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_event_cursor");
+    const page = coordinator.eventsAfter(after);
+    c.header("X-Next-Sequence", String(page.at(-1)?.sequence ?? after));
+    return c.json(page);
   });
   app.get("/api/capabilities", (c) =>
     c.json({ landing: { enabled: !!landing, backend: landing?.backend ?? null } }),

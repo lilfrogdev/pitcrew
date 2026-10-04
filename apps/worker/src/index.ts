@@ -1,3 +1,4 @@
+import type { WorkerKnowledgeContext, KnowledgeReport } from "@pitcrew/protocol";
 import { SqliteLandingStore } from "../../../packages/execution/src/landing-store";
 import { fixtureLandingApi, assertConfigurationIdle, type LandingApi } from "./landing-api";
 import { cloudInitialState } from "./cloud-configuration";
@@ -114,6 +115,14 @@ export class RepositoryAgent extends Agent<Env> {
     this.lifecycle.use(this.jobs);
   }
 
+  // Internal DO RPC only. The coordinator verifies this against its own frozen
+  // request; worker-supplied principals/statuses cannot grant acceptance.
+  async refreshWorkerKnowledge(context: WorkerKnowledgeContext) {
+    return this.getCoordinator().refreshWorkerKnowledge(context);
+  }
+  async appendWorkerKnowledge(context: WorkerKnowledgeContext, report: KnowledgeReport) {
+    return this.getCoordinator().appendWorkerKnowledge(context, report);
+  }
   private getCoordinator() {
     if (this.coordinator) return this.coordinator;
     void this
