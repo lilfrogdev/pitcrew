@@ -120,6 +120,26 @@ describe("independent durable Pi drivers", () => {
       actor: "pi-reviewer:r1",
     });
   });
+  it("gives the independent reviewer the pinned requested intent and worker summary", async () => {
+    let submitted = "";
+    const harness = prompt('{"decision":"approve","summary":"checked"}');
+    const brief = { messages: input.messages, implementationSummary: "implemented fix" };
+    await reviewCandidate(
+      {
+        ...harness,
+        async submit(body, options) {
+          submitted = body;
+          return harness.submit(body, options);
+        },
+      },
+      workspace,
+      evidence,
+      undefined,
+      brief,
+    );
+    expect(JSON.parse(submitted).requestedChange).toEqual(brief);
+    expect(JSON.parse(submitted).candidateSha).toBe(candidate);
+  });
   it("rejects stale review context and failing or truncated test approval", async () => {
     await expect(
       reviewCandidate(prompt('{"decision":"approve","summary":"checked"}'), workspace, {

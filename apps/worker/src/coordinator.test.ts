@@ -24,6 +24,33 @@ describe("durable coordinator", () => {
     expect(recovered.state.runs).toHaveLength(1);
     expect(() => recovered.submit(t.id, "different", "k")).toThrow("idempotency_conflict");
   });
+  it("recovers pinned dispatch input and retries lost result persistence without duplicating evidence", async () => {
+    let saved = initialState(),
+      fail = false;
+    const core = new Coordinator(saved, (state) => {
+      if (fail) throw Error("disk");
+      saved = structuredClone(state);
+    });
+    const thread = core.createThread("request", "thread");
+    const { run } = core.submit(thread.id, "first intent", "message");
+    const input = core.begin(run.id)!;
+    core.submit(thread.id, "later intent", "later");
+    const recovered = new Coordinator(saved, (state) => {
+      if (fail) throw Error("disk");
+      saved = structuredClone(state);
+    });
+    recovered.recover(true);
+    expect(recovered.begin(run.id)).toEqual(input);
+    expect(input.messages.map((message) => message.content)).toEqual(["first intent"]);
+    const result = await fakeExecution.delegate(input);
+    fail = true;
+    expect(() => recovered.complete(run.id, result)).toThrow("disk");
+    expect(recovered.evidence(run.id).run.candidateSha).toBeUndefined();
+    fail = false;
+    recovered.complete(run.id, result);
+    recovered.complete(run.id, result);
+    expect(saved.events.filter((event) => event.type === "run.awaiting_review")).toHaveLength(1);
+  });
   it("bounds admission without persisting partial message", () => {
     const f = fixture(),
       t = f.core.createThread("change", "t");

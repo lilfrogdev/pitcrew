@@ -11,7 +11,7 @@ export function fixtureAccess(
     ["localhost", "127.0.0.1", "[::1]"].includes(host)
   );
 }
-export function api(coordinator: Coordinator, dispatch: (id: string) => void) {
+export function api(coordinator: Coordinator, dispatch: (id: string) => void | Promise<void>) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
     if (c.req.method === "POST") {
@@ -81,7 +81,7 @@ export function api(coordinator: Coordinator, dispatch: (id: string) => void) {
       body.content as string,
       body.idempotencyKey as string,
     );
-    dispatch(result.run.id);
+    await dispatch(result.run.id);
     return c.json(result, 201);
   });
   app.get("/api/threads/:threadId/runs", (c) => {
