@@ -122,3 +122,49 @@ describe("conversation read ordering", () => {
     );
   });
 });
+
+it("does not retain an old conversation send error after navigation", async () => {
+  const api = await mount();
+  api.send = vi.fn().mockRejectedValue(Error("Welcome send failed"));
+  fireEvent.change(screen.getByLabelText("Message your crew"), { target: { value: "message" } });
+  fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
+  await screen.findByRole("alert");
+  fireEvent.click(screen.getByRole("button", { name: "Recover interrupted work" }));
+  await screen.findByText(/Worker execution stopped/);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+it("clears a post-send read failure when a later read recovers", async () => {
+  const api = await mount();
+  const read = api.snapshot;
+  api.snapshot = vi
+    .fn()
+    .mockRejectedValueOnce(Error("Post-send connection failure"))
+    .mockImplementation(read);
+  fireEvent.change(screen.getByLabelText("Message your crew"), {
+    target: { value: "Committed message" },
+  });
+  fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
+  await screen.findByRole("alert");
+  expect((screen.getByLabelText("Message your crew") as HTMLTextAreaElement).value).toBe("");
+  fireEvent(window, new Event("online"));
+  await screen.findByText("Committed message");
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("keeps a failed write and its draft visible when background reads succeed", async () => {
+  const api = await mount();
+  api.send = vi.fn().mockRejectedValue(Error("Write response uncertain"));
+  fireEvent.change(screen.getByLabelText("Message your crew"), {
+    target: { value: "Retain this draft" },
+  });
+  fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
+  await screen.findByRole("alert");
+  const read = vi.spyOn(api, "snapshot");
+  fireEvent(window, new Event("online"));
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  await act(async () => {});
+  expect(screen.getByRole("alert").textContent).toContain("Write response uncertain");
+  expect((screen.getByLabelText("Message your crew") as HTMLTextAreaElement).value).toBe(
+    "Retain this draft",
+  );
+});

@@ -132,6 +132,10 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       cancelled = true;
     };
   }, [api, projectId, revision]);
+  // Failed writes belong to the selected conversation/repository, not its destination.
+  useEffect(() => {
+    setMutationError("");
+  }, [api, projectId, threadId]);
   useEffect(() => {
     const current = ++generation.current;
     if (!threadId) {
@@ -203,13 +207,21 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       pending.current = null;
       setDrafts((all) => ({ ...all, [selected]: "" }));
       setAnnouncement("Message sent and change queued.");
-      const next = await api.snapshot(selected);
-      if (
-        selectedGeneration === generation.current &&
-        selectedSequence === snapshotSequence.current
-      ) {
-        setSnapshot(next);
-        setSnapshotError("");
+      try {
+        const next = await api.snapshot(selected);
+        if (
+          selectedGeneration === generation.current &&
+          selectedSequence === snapshotSequence.current
+        ) {
+          setSnapshot(next);
+          setSnapshotError("");
+        }
+      } catch (cause) {
+        if (
+          selectedGeneration === generation.current &&
+          selectedSequence === snapshotSequence.current
+        )
+          setSnapshotError(errorText(cause));
       }
     } catch (cause) {
       if (selectedGeneration === generation.current) setMutationError(errorText(cause));
