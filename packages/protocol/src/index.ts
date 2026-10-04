@@ -59,6 +59,8 @@ export interface TestEvidence {
   truncated: boolean;
 }
 export interface Review {
+  verificationGaps?: string[];
+  planFingerprint?: string;
   id: string;
   runId: string;
   decision: "approve" | "request_changes";

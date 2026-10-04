@@ -1,3 +1,4 @@
+import { verificationGaps } from "../../../packages/verification/src/index.ts";
 import type { ExecutionInput } from "@pitcrew/protocol";
 import type {
   Workspace,
@@ -80,7 +81,9 @@ export async function reviewCandidate(
     throw Error("context_mismatch");
   await harness.submit(
     JSON.stringify({
-      task: 'Independently review the pinned candidate using read_candidate tools. Return only JSON {decision:"approve"|"request_changes",summary:string}. Never modify source. Tests alone do not prove the change correct.',
+      task: brief?.verification
+        ? "Independently review pinned acceptance criteria and candidate source using read_candidate tools. Return only JSON {gaps:string[],summary:string}, where gaps contains check IDs for missing or incorrect behavior/coverage. Never modify source or set check outcomes. Executor outcomes remain authoritative."
+        : 'Independently review the pinned candidate using read_candidate tools. Return only JSON {decision:"approve"|"request_changes",summary:string}. Never modify source. Tests alone do not prove the change correct.',
       baseSha: evidence.baseSha,
       candidateSha: evidence.candidateSha,
       configurationRevision: evidence.configurationRevision,
@@ -92,7 +95,27 @@ export async function reviewCandidate(
   const result = await harness.wait(`review:${workspace.runId}`, { signal });
   if (result.status !== "done" || !result.text || result.text.length > 8192)
     throw Error("review_unanswered");
-  const parsed = JSON.parse(result.text) as { decision: string; summary: string };
+  const parsed = JSON.parse(result.text) as { decision: string; summary: string; gaps?: string[] };
+  let gaps: string[] | undefined;
+  if (brief?.verification) {
+    if (
+      !Array.isArray(parsed.gaps) ||
+      parsed.gaps.length > 32 ||
+      parsed.gaps.some(
+        (id) =>
+          typeof id !== "string" ||
+          !brief.verification!.plan.profile.checks.some((check) => check.id === id),
+      )
+    )
+      throw Error("invalid_review");
+    gaps = [
+      ...new Set([
+        ...parsed.gaps,
+        ...(await verificationGaps(brief.verification.plan, brief.verification.outcomes)),
+      ]),
+    ];
+    parsed.decision = gaps.length ? "request_changes" : "approve";
+  }
   if (
     !["approve", "request_changes"].includes(parsed.decision) ||
     typeof parsed.summary !== "string" ||
@@ -111,6 +134,9 @@ export async function reviewCandidate(
     decision: parsed.decision as "approve" | "request_changes",
     summary: parsed.summary,
     actor: `pi-reviewer:${workspace.runId}`,
+    ...(gaps
+      ? { verificationGaps: gaps, planFingerprint: brief!.verification!.plan.fingerprint }
+      : {}),
   };
 }
 
