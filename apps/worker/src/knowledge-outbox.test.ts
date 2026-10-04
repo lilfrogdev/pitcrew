@@ -158,3 +158,90 @@ it("backs off null and undefined acknowledgements with durable diagnostics", asy
     db.close();
   }
 });
+
+it("settles independent reports behind a failed delivery and retries only the unacknowledged event", async () => {
+  const db = new DatabaseSync(":memory:"),
+    outbox = new KnowledgeOutbox(sqlitePort(db));
+  try {
+    for (let i = 1; i <= 16; i++)
+      outbox.enqueue({ ...delivery, report: { ...delivery.report, key: `call-${i}` } });
+    const calls: string[] = [];
+    await expect(
+      outbox.deliver(async (value) => {
+        calls.push(value.report.key);
+        if (value.report.key === "call-1") throw Error("transport_unavailable");
+        return { eventId: `worker:run:${value.report.key}`, status: "recorded" };
+      }),
+    ).rejects.toThrow("transport_unavailable");
+    expect(calls).toHaveLength(16);
+    expect(outbox.pending().map((row) => row.id)).toEqual(["worker:run:call-1"]);
+    await outbox.deliver(async (value) => {
+      expect(value).toEqual(delivery);
+      return { eventId: "worker:run:call-1", status: "duplicate" };
+    });
+    expect(outbox.pending()).toHaveLength(0);
+  } finally {
+    db.close();
+  }
+});
+
+it("does not let invalid or capacity acknowledgements block stale and rejected settlements", async () => {
+  const db = new DatabaseSync(":memory:"),
+    outbox = new KnowledgeOutbox(sqlitePort(db));
+  try {
+    for (let i = 1; i <= 4; i++)
+      outbox.enqueue({ ...delivery, report: { ...delivery.report, key: `call-${i}` } });
+    await expect(
+      outbox.deliver(async (value) => {
+        if (value.report.key === "call-1") return { eventId: "wrong", status: "recorded" };
+        if (value.report.key === "call-2") throw Error("knowledge_projection_capacity");
+        return {
+          eventId: `worker:run:${value.report.key}`,
+          status: value.report.key === "call-3" ? "stale" : "rejected",
+        };
+      }),
+    ).rejects.toThrow("invalid_knowledge_ack");
+    expect(outbox.pending().map((row) => row.last_error)).toEqual([
+      "invalid_ack",
+      "capacity_or_conflict",
+    ]);
+    expect(outbox.nextRetryAt()).toBeGreaterThan(Date.now() + 59000);
+    await outbox.deliver(async () => {
+      throw Error("must_not_retry_during_backoff");
+    });
+  } finally {
+    db.close();
+  }
+});
+
+it("coalesces concurrent flushes and releases the pass after failure for recovery", async () => {
+  const db = new DatabaseSync(":memory:"),
+    outbox = new KnowledgeOutbox(sqlitePort(db));
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    outbox.enqueue(delivery);
+    let calls = 0;
+    const send = async () => {
+      calls++;
+      await waiting;
+      throw Error("lost_ack");
+    };
+    const passes = Array.from({ length: 32 }, () => outbox.deliver(send));
+    const settled = Promise.allSettled(passes);
+    expect(calls).toBe(1);
+    release();
+    expect((await settled).every((result) => result.status === "rejected")).toBe(true);
+    expect(outbox.pending()).toHaveLength(1);
+    await outbox.deliver(async () => ({ eventId: "worker:run:call-1", status: "recorded" }));
+    expect(outbox.pending()).toHaveLength(0);
+    await outbox.deliver(async () => {
+      throw Error("settled_event_was_resent");
+    });
+  } finally {
+    release();
+    db.close();
+  }
+});

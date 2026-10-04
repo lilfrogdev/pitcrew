@@ -349,12 +349,18 @@ export class CloudflareSandbox implements WorkspaceTransport {
           collect(process.stderr, "stderr"),
         ]);
         if (stopping) return stopping;
+        // The in-container timeout may win the host timer. Still destroy the owned
+        // instance so detached descendants cannot survive a terminal command timeout.
+        if (exitCode === 124 || exitCode === 137) {
+          stop("timed_out");
+          return stopping!;
+        }
         return {
           exitCode,
           stdout,
           stderr,
           truncated: false,
-          status: exitCode === 124 || exitCode === 137 ? "timed_out" : "completed",
+          status: "completed",
         };
       })();
       return await Promise.race([completed, stopped]);

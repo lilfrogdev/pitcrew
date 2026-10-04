@@ -323,3 +323,38 @@ test("native abort port stops a real owned process and descendant while unrelate
     await unrelatedExit;
   }
 });
+
+for (const code of [124, 137]) {
+  test(`in-container timeout exit ${code} destroys the instance before acknowledging timeout`, async () => {
+    const f = fixture();
+    let release;
+    const destroyed = new Promise((resolve) => {
+      release = resolve;
+    });
+    f.container.exec = async () => ({
+      stdout: stream(["partial"]),
+      stderr: stream([]),
+      exitCode: Promise.resolve(code),
+    });
+    f.container.destroy = async (reason) => {
+      f.calls.destroy.push(reason);
+      await destroyed;
+    };
+    let acknowledged = false;
+    const pending = f.sandbox.run(workspace, cmd).then((result) => {
+      acknowledged = true;
+      return result;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(f.calls.destroy, ["timed_out"]);
+    assert.equal(acknowledged, false);
+    release();
+    assert.deepEqual(await pending, {
+      status: "timed_out",
+      exitCode: null,
+      stdout: "partial",
+      stderr: "",
+      truncated: false,
+    });
+  });
+}

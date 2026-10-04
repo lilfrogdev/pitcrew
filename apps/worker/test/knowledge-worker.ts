@@ -5,6 +5,7 @@ import type { KnowledgeAck, KnowledgeReport, WorkerKnowledgeContext } from "@pit
 interface Env extends PiEnv {
   FIXTURE: DurableObjectNamespace<KnowledgeChangeAgent>;
   PAUSE_ACK?: string;
+  FAIL_FIRST?: string;
 }
 export class KnowledgeChangeAgent extends ChangeAgent {
   async queueFixture() {
@@ -25,6 +26,17 @@ export class KnowledgeChangeAgent extends ChangeAgent {
         ],
       },
     });
+    if ((this.env as Env).FAIL_FIRST) {
+      await this.enqueueKnowledge({
+        context,
+        report: {
+          key: "note-2",
+          text: "Independent synthetic constraint",
+          kind: "constraint",
+          sourceRefs: [{ kind: "code", id: "fixture.ts", revision: context.baseSha }],
+        },
+      });
+    }
     return { queued: true, checkpoint };
   }
   async fixtureStatus() {
@@ -77,6 +89,8 @@ export class KnowledgeReceiver extends RepositoryAgent {
     if (existing && existing.body !== body) throw Error("idempotency_conflict");
     void this
       .sql`INSERT INTO fixture_notes VALUES(${eventId},${body},1) ON CONFLICT(id) DO UPDATE SET attempts=attempts+1`;
+    if ((this.env as unknown as Env).FAIL_FIRST && report.key === "note-1")
+      throw Error("fixture_transport_unavailable");
     const ack = await super.appendWorkerKnowledge(context, report);
     if ((this.env as unknown as Env).PAUSE_ACK) throw Error("fixture_lost_ack");
     return ack;
