@@ -2,6 +2,23 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, httpApi } from "./api";
 afterEach(() => vi.unstubAllGlobals());
 describe("canonical HTTP adapter", () => {
+  it("reads the latest sidebar run with one request, independent of historical run count", async () => {
+    const runs = Array.from({ length: 1000 }, (_, i) => ({
+      id: `run-${i}`,
+      threadId: "thread/1",
+      status: "completed",
+      baseSha: "base",
+      configurationRevision: "v1",
+    }));
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(runs)));
+    vi.stubGlobal("fetch", fetch);
+    expect(await httpApi.latestRun!("thread/1")).toEqual(runs.at(-1));
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual(["/api/threads/thread%2F1/runs"]);
+  });
+  it("returns no sidebar status for a conversation without runs", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("[]")));
+    expect(await httpApi.latestRun!("empty")).toBeUndefined();
+  });
   it("loads messages and per-run evidence using escaped identifiers", async () => {
     const run = {
       id: "run/1",

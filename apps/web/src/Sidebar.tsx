@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Api, Project, Thread, Run } from "./api";
+import { useSidebarData } from "./useSidebarData";
 
 const preferenceKey = "pitcrew.sidebar.pins.v1";
 type Pins = { repositories: string[]; conversations: string[] };
@@ -79,53 +80,22 @@ export function Sidebar({
   const [notifications, setNotifications] = useState(false);
   const [pins, setPins] = useState(readPins);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [runStates, setRunStates] = useState<Record<string, Run | undefined>>({});
-  const [others, setOthers] = useState<Record<string, Thread[]>>({});
-  useEffect(() => {
-    let cancelled = false;
-    setOthers({});
-    for (const repository of projects) {
-      if (repository.id === projectId) continue;
-      void api
-        .threads(repository.id)
-        .then((items) => {
-          if (!cancelled) setOthers((all) => ({ ...all, [repository.id]: items }));
-        })
-        .catch(() => {});
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [api, projects, projectId, revision]);
-  useEffect(() => {
-    let cancelled = false;
-    let inFlight = false;
-    const load = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      await Promise.all(
-        [...Object.values(others).flat(), ...threads]
-          .filter((item) => item.id !== threadId)
-          .map(async (item) => {
-            try {
-              const snapshot = await api.snapshot(item.id);
-              if (!cancelled) setRunStates((all) => ({ ...all, [item.id]: snapshot.runs.at(-1) }));
-            } catch {
-              /* Unknown state has no indicator. */
-            }
-          }),
-      );
-      inFlight = false;
-    };
-    void load();
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void load();
-    }, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [api, others, threads, threadId, revision]);
+  const matching = projects.filter((item) =>
+    `${item.name} ${item.repository}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const { lists: others, runs: runStates } = useSidebarData({
+    api,
+    projects,
+    projectId,
+    threads,
+    threadId,
+    activeRun,
+    revision,
+    visibleRepositories: matching
+      .filter((item) => !(collapsed[item.id] ?? item.id !== projectId))
+      .map((item) => item.id),
+    pinnedConversations: pins.conversations,
+  });
   const stateIndicator = (item: Thread) => {
     const run = item.id === threadId ? activeRun : runStates[item.id];
     if (!run) return null;
@@ -223,9 +193,6 @@ export function Sidebar({
         onClick={() => togglePin("repositories", item.id)}
       />
     </div>
-  );
-  const matching = projects.filter((item) =>
-    `${item.name} ${item.repository}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
   return (
     <aside className="sidebar" aria-label="Repositories and conversations">
