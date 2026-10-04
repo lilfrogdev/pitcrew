@@ -29,7 +29,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [connection, setConnection] = useState("Connecting");
   const [announcement, setAnnouncement] = useState("");
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
@@ -65,14 +64,12 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           setProjects(items);
           setProjectId((id) => (items.some((item) => item.id === id) ? id : (items[0]?.id ?? "")));
           setLoading(false);
-          setConnection("Connected");
           setError("");
         }
       })
       .catch((cause: unknown) => {
         if (!cancelled) {
           setError(errorText(cause));
-          setConnection("Disconnected");
           setLoading(false);
         }
       });
@@ -98,7 +95,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         if (!cancelled) {
           setError(errorText(cause));
           setLoading(false);
-          setConnection("Disconnected");
         }
       });
     return () => {
@@ -126,14 +122,12 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         if (!cancelled && current === generation.current && sequence === requestSequence) {
           setSnapshot(next);
           setLoading(false);
-          setConnection("Connected");
           setError("");
         }
       } catch (cause) {
         if (!cancelled && current === generation.current && sequence === requestSequence) {
           setError(errorText(cause));
           setLoading(false);
-          setConnection("Disconnected");
         }
       } finally {
         inFlight = false;
@@ -147,14 +141,11 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     const onOnline = () => {
       void load();
     };
-    const onOffline = () => setConnection("Offline");
     window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
     };
   }, [api, threadId, revision]);
 
@@ -232,7 +223,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             P
           </span>
           <strong>Pitcrew</strong>
-          <span className="private">Private PoC</span>
         </div>
         <div className="section-label">Projects</div>
         <nav aria-label="Projects">
@@ -309,11 +299,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           <p className="hint">No threads yet. Create one to start a change.</p>
         )}
         <div className="sidebar-footer">
-          <span
-            className={`connection ${connection === "Connected" ? "online" : ""}`}
-            aria-hidden="true"
-          />
-          {connection}
           <button onClick={refresh} disabled={busy} aria-label="Reconnect and refresh">
             ↻
           </button>
@@ -332,11 +317,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             <summary>Collect and group reports</summary>
             <Intake key={projectId} projectId={projectId} onDispatch={refresh} />
           </details>
-        )}
-        {demo && (
-          <div className="demo-banner">
-            Synthetic preview · No cloud execution, model calls, or repository changes.
-          </div>
         )}
         {error && (
           <div role="alert" className="error">
@@ -384,7 +364,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                             ? "Change worker"
                             : "Reviewer"}
                     </strong>
-                    <span className="role-label">{message.role}</span>
                     <time dateTime={message.createdAt}>
                       {new Date(message.createdAt).toLocaleTimeString([], {
                         hour: "2-digit",
@@ -410,7 +389,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             onChange={(event) => setDrafts((all) => ({ ...all, [threadId]: event.target.value }))}
           />
           <div className="composer-footer">
-            <span>Work runs in isolated cloud sandboxes.</span>
             <button
               type="submit"
               disabled={!threadId || busy || loading || !(drafts[threadId] ?? "").trim()}
@@ -440,10 +418,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           return (
             <section className="run-card" key={run.id}>
               <div className="run-title">
-                <strong>{run.workerId ? `Worker ${run.workerId}` : "Change run"}</strong>
+                <strong>Change run</strong>
                 <span className={`status ${run.status}`}>{labels[run.status]}</span>
               </div>
-              <p className="run-id">{run.id}</p>
               {run.error && (
                 <p className="run-error">
                   {run.error === "reconciliation_required"
@@ -453,26 +430,45 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                       : "Execution failed. Inspect the evidence before trying a new change."}
                 </p>
               )}
-              <dl>
-                <dt>Base</dt>
-                <dd>
-                  <code>{run.baseSha}</code>
-                </dd>
-                <dt>Candidate</dt>
-                <dd>
-                  <code>{run.candidateSha ?? "Not available yet"}</code>
-                </dd>
-                <dt>Configuration</dt>
-                <dd>{run.configurationRevision}</dd>
-                {run.artifactId && (
-                  <>
-                    <dt>Artifacts fork</dt>
-                    <dd>{run.artifactId}</dd>
-                  </>
-                )}
-              </dl>
               <details>
                 <summary>Tests and tool output</summary>
+                <p className="run-id">{run.id}</p>
+                <dl>
+                  <dt>Base</dt>
+                  <dd>
+                    <code>{run.baseSha}</code>
+                  </dd>
+                  <dt>Candidate</dt>
+                  <dd>
+                    <code>{run.candidateSha ?? "Not available yet"}</code>
+                  </dd>
+                  {run.workerId && (
+                    <>
+                      <dt>Worker</dt>
+                      <dd>{run.workerId}</dd>
+                    </>
+                  )}
+                  <dt>Configuration</dt>
+                  <dd>{run.configurationRevision}</dd>
+                  {run.artifactId && (
+                    <>
+                      <dt>Artifacts fork</dt>
+                      <dd>{run.artifactId}</dd>
+                    </>
+                  )}
+                </dl>
+                {evidence?.verification && (
+                  <div className="verification-evidence">
+                    <p>Plan {evidence.verification.plan.fingerprint}</p>
+                    <p>
+                      Profile {evidence.verification.plan.profile.revision} · Acceptance{" "}
+                      {evidence.verification.plan.acceptance.revision}
+                    </p>
+                    {evidence.verification.plan.acceptance.criteria.map((c) => (
+                      <p key={c.id}>{c.text}</p>
+                    ))}
+                  </div>
+                )}
                 {evidence?.tests ? (
                   <>
                     <p className={`test-result ${evidence.tests.status}`}>
@@ -525,14 +521,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               {evidence?.verification && (
                 <div className="verification-evidence" aria-label="Verification evidence">
                   <h3>Verification checks</h3>
-                  <p>Plan {evidence.verification.plan.fingerprint}</p>
-                  <p>
-                    Profile {evidence.verification.plan.profile.revision} · Acceptance{" "}
-                    {evidence.verification.plan.acceptance.revision}
-                  </p>
-                  {evidence.verification.plan.acceptance.criteria.map((c) => (
-                    <p key={c.id}>{c.text}</p>
-                  ))}
                   {evidence.verification.outcomes.map((o) => (
                     <details key={`${o.phase}:${o.checkId}`}>
                       <summary>

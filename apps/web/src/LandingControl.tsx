@@ -151,11 +151,8 @@ export function LandingControl({
   }
   return (
     <div className="merge-control">
-      <p>
-        <strong>Fixture landing simulation</strong> · No real repository merge.
-      </p>
       {!enabled ? (
-        <p>Landing is unconfigured. Cloud access remains disabled.</p>
+        <p>Landing is unavailable.</p>
       ) : !eligible ? (
         <p>
           Requires passing tests and an approving review bound to this run’s exact base, candidate,
