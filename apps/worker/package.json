@@ -9,6 +9,7 @@
     "@pitcrew/execution": "workspace:*",
     "@pitcrew/protocol": "workspace:*",
     "agents": "0.26.0",
-    "hono": "4.13.12"
+    "hono": "4.13.12",
+    "jose": "6.2.12"
   }
 }

@@ -11,8 +11,15 @@ import {
   type OperationRecord,
   type TestEvidence,
 } from "../../../packages/execution/src/index";
+import { sandboxImage } from "./cloud-configuration";
 import { configureModels } from "./pi-models";
-import { applyChange, reviewCandidate, guardedMutation, type ReviewBrief } from "./pi-drivers";
+import {
+  applyChange,
+  bootstrapDependencies,
+  reviewCandidate,
+  guardedMutation,
+  type ReviewBrief,
+} from "./pi-drivers";
 import { DurableChangePipeline, type PipelineState } from "./durable-pipeline";
 import { DurableJobs } from "./durable-jobs";
 export interface PiEnv {
@@ -60,7 +67,10 @@ abstract class TaskAgent extends Agent<PiEnv> {
         const fingerprint = JSON.stringify({
           model: env.MODEL_CONFIGURATION,
           revision: env.CONFIGURATION_REVISION,
-          image: env.SANDBOX_IMAGE,
+          imageName: env.SANDBOX_IMAGE,
+          imageDigest: ctx.container
+            ? sandboxImage(env.SANDBOX_IMAGE, ctx.container.images)
+            : undefined,
         });
         void this
           .sql`CREATE TABLE IF NOT EXISTS runtime_configuration(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
@@ -153,7 +163,7 @@ export class ChangeAgent extends TaskAgent {
     return new CloudflareSandbox(
       this.env.ARTIFACTS,
       () => this.ctx.container!,
-      this.env.SANDBOX_IMAGE,
+      sandboxImage(this.env.SANDBOX_IMAGE, this.ctx.container.images),
     );
   }
   protected installTools() {
@@ -258,6 +268,9 @@ export class ChangeAgent extends TaskAgent {
         await this.pipeline.advance({
           prepare: (input) => coordinator.prepare(input),
           change: async (workspace, input) => {
+            await this.mutate("dependencies", workspace, () =>
+              bootstrapDependencies(transport, workspace),
+            );
             this.bind({ workspace, input });
             const signal = AbortSignal.timeout(500);
             try {

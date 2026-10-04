@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { configureModels } from "./pi-models";
-import { applyChange, reviewCandidate, guardedMutation, type DurablePrompt } from "./pi-drivers";
+import {
+  applyChange,
+  reviewCandidate,
+  guardedMutation,
+  bootstrapDependencies,
+  type DurablePrompt,
+} from "./pi-drivers";
 import type {
   Workspace,
   WorkspaceTransport,
@@ -71,6 +77,40 @@ const evidence: TestEvidence = {
   status: "completed",
 };
 describe("independent durable Pi drivers", () => {
+  it("prepares frozen dependencies only in the isolated base checkout and rejects source changes", async () => {
+    let inspected = 0;
+    const commands: unknown[] = [];
+    const fixture = {
+      ...transport,
+      inspect: async () => ({ sha: base, clean: true }),
+      run: async (_workspace: Workspace, command: unknown) => {
+        commands.push(command);
+        return {
+          status: "completed" as const,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          truncated: false,
+        };
+      },
+    };
+    expect(await bootstrapDependencies(fixture, workspace)).toEqual({ prepared: true });
+    expect(commands).toMatchObject([
+      {
+        argv: ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts", "--reporter=silent"],
+        timeoutMs: 180000,
+      },
+    ]);
+    await expect(
+      bootstrapDependencies(
+        {
+          ...fixture,
+          inspect: async () => ({ sha: ++inspected === 1 ? base : candidate, clean: true }),
+        },
+        workspace,
+      ),
+    ).rejects.toThrow("bootstrap_changed_source");
+  });
   it("takes exact candidate from sandbox inspection rather than model text", async () => {
     expect(await applyChange(prompt("candidate: invented"), transport, workspace, input)).toEqual({
       candidateSha: candidate,
@@ -163,6 +203,23 @@ describe("independent durable Pi drivers", () => {
     });
     expect(result.content).toMatchObject([{ type: "text", text: "local result" }]);
     expect(faux.state.callCount).toBe(1);
+  });
+  it("resolves the concrete Workers AI demo model through the pinned provider catalog without calling it", () => {
+    let calls = 0;
+    const { models, model } = configureModels(
+      { provider: "cloudflare", model: "@cf/qwen/qwen3-30b-a3b-fp8" },
+      {
+        AI: {
+          run: () => {
+            calls++;
+            throw Error("no paid calls");
+          },
+        } as unknown as Ai,
+      },
+    );
+    expect(model.id).toBe("@cf/qwen/qwen3-30b-a3b-fp8");
+    expect(models.getModel(model.provider, model.id)).toMatchObject({ id: model.id });
+    expect(calls).toBe(0);
   });
   it("fails closed for absent explicit cloud/BYOK model configuration", () => {
     expect(() => configureModels({ provider: "cloudflare", model: "@cf/example" }, {})).toThrow(
