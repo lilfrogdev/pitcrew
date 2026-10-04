@@ -1,3 +1,25 @@
+import {
+  initialIntake,
+  receiveReport,
+  intakeGroups,
+  moveReports,
+  dispatchIntake,
+  type IntakeState,
+  type IntakeReportInput,
+  type MoveReports,
+  type DispatchIntake,
+} from "./intake";
+import {
+  pinPlan,
+  assertPinned,
+  pendingOutcomes,
+  verificationMetrics,
+  verificationGaps,
+  type VerificationProfile,
+  type AcceptanceCriteria,
+  type VerificationPlan,
+} from "../../../packages/verification/src/index.ts";
+import type { VerificationEvidence } from "@pitcrew/protocol";
 import type {
   Change,
   Event,
@@ -24,6 +46,10 @@ export class AdmissionError extends Error {
   }
 }
 export interface State {
+  intake?: IntakeState;
+  profile?: VerificationProfile;
+  plans?: Record<string, VerificationPlan>;
+  verification?: Record<string, VerificationEvidence>;
   project: Project;
   threads: Thread[];
   messages: Message[];
@@ -99,6 +125,264 @@ export class Coordinator {
             };
         }
       });
+  }
+  private intakeContext(actor: string) {
+    return { scope: this.state.project.id, actor, now: this.now, id: this.id };
+  }
+  groups() {
+    return intakeGroups(this.state.intake ?? initialIntake(), this.state.project.id);
+  }
+  receive(actor: string, input: IntakeReportInput) {
+    return this.durableUpdate(() =>
+      receiveReport((this.state.intake ??= initialIntake()), this.intakeContext(actor), input),
+    );
+  }
+  move(actor: string, key: string, input: MoveReports) {
+    return this.durableUpdate(() =>
+      moveReports((this.state.intake ??= initialIntake()), this.intakeContext(actor), key, input),
+    );
+  }
+  profile(): VerificationProfile {
+    return structuredClone(
+      this.state.profile ?? {
+        projectId: this.state.project.id,
+        revision: "poc-checks-v1",
+        checks: [
+          {
+            id: "tests",
+            kind: "command",
+            command: { argv: ["pnpm", "test"], timeoutMs: 60000, maxOutputBytes: 16384 },
+          },
+          {
+            id: "types",
+            kind: "command",
+            command: { argv: ["pnpm", "typecheck"], timeoutMs: 60000, maxOutputBytes: 16384 },
+          },
+        ],
+      },
+    );
+  }
+  async updateProfile(profile: VerificationProfile, expectedRevision: string) {
+    const old = this.profile();
+    if (old.revision !== expectedRevision || profile.revision === old.revision)
+      throw new AdmissionError("profile_revision_conflict", 409);
+    await pinPlan({
+      projectId: this.state.project.id,
+      changeId: "profile-validation",
+      baseSha: this.state.project.baseSha,
+      candidateSha: this.state.project.baseSha,
+      configurationRevision: this.state.project.configurationRevision,
+      profile,
+      acceptance: {
+        revision: "validation",
+        criteria: [
+          {
+            id: "all",
+            text: "Validate configured checks",
+            checkIds: profile.checks.map((c) => c.id),
+          },
+        ],
+      },
+      reproduceBaseline: false,
+    });
+    if (this.profile().revision !== expectedRevision)
+      throw new AdmissionError("profile_revision_conflict", 409);
+    this.durableUpdate(() => {
+      this.state.profile = structuredClone(profile);
+    });
+    return this.profile();
+  }
+  metrics() {
+    return verificationMetrics(
+      this.state.events,
+      this.state.reviews,
+      Object.values(this.state.verification ?? {}).flatMap((e) => e.outcomes),
+    );
+  }
+  async dispatchGroup(
+    actor: string,
+    key: string,
+    input: DispatchIntake,
+    acceptance: AcceptanceCriteria,
+    profileRevision: string,
+  ) {
+    this.validateKey(key);
+    const saved = this.state.keys[`intake_dispatch_${actor}_${key}`];
+    if (saved) {
+      if (saved.body !== JSON.stringify({ input, acceptance, profileRevision }))
+        throw new AdmissionError("idempotency_conflict", 409);
+      return structuredClone(saved.result) as {
+        threadId: string;
+        changeId: string;
+        runId: string;
+        groupId: string;
+        revision: number;
+        reportIds: string[];
+      };
+    }
+    const profile = this.profile(),
+      project = structuredClone(this.state.project);
+    if (profile.revision !== profileRevision)
+      throw new AdmissionError("profile_revision_conflict", 409);
+    const provisional = await pinPlan({
+      projectId: project.id,
+      changeId: "pending",
+      baseSha: project.baseSha,
+      candidateSha: project.baseSha,
+      configurationRevision: project.configurationRevision,
+      profile,
+      acceptance,
+      reproduceBaseline: false,
+    });
+    if (
+      JSON.stringify(project) !== JSON.stringify(this.state.project) ||
+      JSON.stringify(profile) !== JSON.stringify(this.profile())
+    )
+      throw new AdmissionError("stale_plan", 409);
+    // The fingerprint is computed before the synchronous aggregate mutation; identity is reserved locally.
+    const changeId = this.id();
+    const { fingerprint: _provisionalFingerprint, ...draftPlan } = provisional;
+    const plan = await pinPlan({ ...draftPlan, changeId });
+    if (
+      JSON.stringify(project) !== JSON.stringify(this.state.project) ||
+      JSON.stringify(profile) !== JSON.stringify(this.profile())
+    )
+      throw new AdmissionError("stale_plan", 409);
+    return this.transaction(
+      `intake_dispatch_${actor}_${key}`,
+      { input, acceptance, profileRevision },
+      () =>
+        dispatchIntake(
+          (this.state.intake ??= initialIntake()),
+          this.intakeContext(actor),
+          key,
+          input,
+          {
+            verifyActive: (scope, link) => {
+              if (
+                this.state.intake!.reports.some(
+                  (r) => r.scope === scope && r.groupId === input.groupId && !r.dispatch,
+                )
+              )
+                throw new AdmissionError("new_reports_require_new_change", 409);
+              const run = this.evidence(link.runId).run,
+                change = this.change(link.changeId);
+              if (
+                scope !== this.state.project.id ||
+                this.thread(link.threadId).projectId !== scope ||
+                run.threadId !== link.threadId ||
+                run.changeId !== change.id ||
+                change.threadId !== link.threadId ||
+                !["queued", "running", "awaiting_review", "waiting_user"].includes(run.status)
+              )
+                throw new AdmissionError("inactive_change", 409);
+              const old = this.state.plans?.[run.id];
+              if (
+                !old ||
+                JSON.stringify(old.acceptance) !== JSON.stringify(acceptance) ||
+                JSON.stringify(old.profile) !== JSON.stringify(profile)
+              )
+                throw new AdmissionError("plan_conflict", 409);
+            },
+            create: (group, reports) => {
+              if (
+                this.state.threads.length >= 50 ||
+                this.state.runs.length >= 500 ||
+                this.state.messages.length + reports.length > 500 ||
+                this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4
+              )
+                throw new AdmissionError("capacity", 429);
+              const thread = { id: this.id(), projectId: project.id, title: group.title };
+              this.state.threads.push(thread);
+              const messages: Message[] = reports.map((report) => ({
+                id: this.id(),
+                threadId: thread.id,
+                role: "user",
+                content: report.content,
+                createdAt: report.occurredAt,
+              }));
+              this.state.messages.push(...messages);
+              const change: Change = {
+                id: changeId,
+                threadId: thread.id,
+                originMessageIds: messages.map((m) => m.id),
+                contextRevision: this.repositoryContext().revision,
+              };
+              this.state.changes!.push(change);
+              const run: Run = {
+                id: this.id(),
+                changeId,
+                messageId: messages[0].id,
+                threadId: thread.id,
+                status: "queued",
+                baseSha: project.baseSha,
+                configurationRevision: project.configurationRevision,
+              };
+              this.state.runs.push(run);
+              (this.state.plans ??= {})[run.id] = plan;
+              this.event("thread.created", thread.id);
+              messages.forEach((m) => this.event("message.created", m.id));
+              this.event("change.created", change.id);
+              this.event("run.queued", run.id);
+              return { threadId: thread.id, changeId, runId: run.id };
+            },
+          },
+        ),
+    );
+  }
+  async requireCurrentVerification(runId: string) {
+    const spec = this.state.plans?.[runId];
+    if (!spec) return;
+    const actual = this.state.verification?.[runId];
+    if (
+      !actual ||
+      JSON.stringify(spec.profile) !== JSON.stringify(this.profile()) ||
+      (await verificationGaps(actual.plan, actual.outcomes)).length
+    )
+      throw new AdmissionError("verification_incomplete_or_stale", 409);
+  }
+  async completeVerified(runId: string, result: ExecutionResult) {
+    const expected = this.state.plans?.[runId];
+    if (expected) {
+      const actual = result.verification;
+      if (!actual) throw Error("verification_missing");
+      await assertPinned(actual.plan);
+      const { fingerprint: _expectedFingerprint, ...spec } = expected;
+      const pinned = await pinPlan({ ...spec, candidateSha: result.candidateSha });
+      if (actual.plan.fingerprint !== pinned.fingerprint) throw Error("stale_plan");
+      if (
+        actual.outcomes.some(
+          (o) =>
+            !["passed", "failed", "not_run", "blocked"].includes(o.status) ||
+            (o.status === "passed" &&
+              (o.result?.status !== "completed" || o.result.exitCode !== 0 || o.result.truncated)),
+        )
+      )
+        throw Error("invalid_verification_outcome");
+      if (
+        result.review?.decision === "approve" &&
+        (await verificationGaps(pinned, actual.outcomes)).length
+      )
+        throw Error("invalid_verification_approval");
+      const slots = pendingOutcomes(pinned);
+      if (
+        slots.length !== actual.outcomes.length ||
+        slots.some(
+          (slot) =>
+            actual.outcomes.filter(
+              (o) =>
+                o.phase === slot.phase &&
+                o.checkId === slot.checkId &&
+                o.checkedSha === slot.checkedSha &&
+                o.planFingerprint === pinned.fingerprint &&
+                o.runId === runId &&
+                o.artifactId === result.artifactId,
+            ).length !== 1,
+        )
+      )
+        throw Error("invalid_verification_binding");
+    }
+    this.complete(runId, result);
   }
   private validateKey(key: unknown): asserts key is string {
     if (typeof key !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(key))
@@ -212,6 +496,16 @@ export class Coordinator {
     this.validateKey(key);
     return this.transaction(`retry_${key}`, { changeId }, () => {
       const change = this.change(changeId);
+      const sourcePlan = this.state.runs
+        .filter((r) => r.changeId === changeId)
+        .map((r) => this.state.plans?.[r.id])
+        .find(Boolean);
+      if (
+        sourcePlan &&
+        (sourcePlan.baseSha !== this.state.project.baseSha ||
+          sourcePlan.configurationRevision !== this.state.project.configurationRevision)
+      )
+        throw new AdmissionError("stale_plan", 409);
       if (!change.originMessageIds.length) throw new AdmissionError("origin_unavailable", 409);
       if (
         this.state.runs.length >= 500 ||
@@ -234,6 +528,7 @@ export class Coordinator {
         configurationRevision: this.state.project.configurationRevision,
       };
       this.state.runs.push(run);
+      if (sourcePlan) (this.state.plans ??= {})[run.id] = structuredClone(sourcePlan);
       this.event("run.queued", run.id);
       return run;
     });
@@ -244,6 +539,7 @@ export class Coordinator {
     return {
       run,
       tests: this.state.evidence[runId],
+      verification: this.state.verification?.[runId],
       reviews: this.state.reviews.filter((r) => r.runId === runId),
     };
   }
@@ -294,6 +590,7 @@ export class Coordinator {
       run.status = "running";
       this.event("run.started", run.id);
       const request: ExecutionInput = {
+        verificationPlan: this.state.plans?.[runId],
         runId,
         changeId: run.changeId,
         projectId: this.state.project.id,
@@ -330,6 +627,8 @@ export class Coordinator {
       run.artifactId = result.artifactId;
       run.candidateSha = result.candidateSha;
       this.state.evidence[run.id] = result.tests;
+      if (result.verification)
+        (this.state.verification ??= {})[run.id] = structuredClone(result.verification);
       run.status = "awaiting_review";
       this.event("run.awaiting_review", run.id);
       if (result.review) {
@@ -372,7 +671,7 @@ export class Coordinator {
     const input = this.begin(runId);
     if (!input) return;
     try {
-      this.complete(runId, await adapter.delegate(input));
+      await this.completeVerified(runId, await adapter.delegate(input));
     } catch {
       this.fail(runId);
     }
@@ -380,7 +679,20 @@ export class Coordinator {
 }
 export const fakeExecution: ExecutionAdapter = {
   async delegate(input) {
+    const verification = input.verificationPlan
+      ? {
+          plan: input.verificationPlan,
+          outcomes: pendingOutcomes(input.verificationPlan).map((o) => ({
+            ...o,
+            status: "blocked" as const,
+            reason: "fixture_execution_unavailable",
+            runId: input.runId,
+            artifactId: `fake-artifact-${input.runId}`,
+          })),
+        }
+      : undefined;
     return {
+      verification,
       workerId: `fake-worker-${input.runId}`,
       artifactId: `fake-artifact-${input.runId}`,
       baseSha: input.baseSha,

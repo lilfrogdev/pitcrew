@@ -1,3 +1,4 @@
+import { pinPlan, executePlan } from "../../../packages/verification/src/index.ts";
 import { Agent } from "agents";
 import { PiHarness } from "agents/harness/pi";
 import { createRegistry, defineTool, Harness } from "@earendil-works/pi-durable";
@@ -288,12 +289,20 @@ export class ChangeAgent extends TaskAgent {
               timeoutMs: 60000,
               maxOutputBytes: 16384,
             }),
+          verify: async (workspace, candidate) => {
+            const initial = this.pipeline.status()!.input.verificationPlan;
+            if (!initial) return;
+            const { fingerprint: _fingerprint, ...spec } = initial;
+            const plan = await pinPlan({ ...spec, candidateSha: candidate });
+            return { plan, outcomes: await executePlan(plan, "candidate", workspace, transport) };
+          },
           review: (workspace, evidence) =>
             this.env.REVIEW.get(this.env.REVIEW.idFromName(`review:${workspace.runId}`)).evaluate(
               workspace,
               evidence,
               500,
               {
+                verification: this.pipeline.status()!.verification,
                 messages: this.pipeline.status()!.input.messages,
                 repositoryContext: this.pipeline.status()!.input.repositoryContext,
                 implementationSummary: this.pipeline.status()!.change!.summary,

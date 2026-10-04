@@ -634,3 +634,39 @@ pre {
     flex-wrap: wrap;
   }
 }
+
+.intake-panel {
+  padding: 16px 24px;
+  border-bottom: 1px solid #2a3545;
+  max-height: 45vh;
+  overflow: auto;
+  flex-shrink: 0;
+}
+.intake-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.intake-panel label {
+  display: block;
+  margin: 10px 0;
+}
+.intake-panel textarea,
+.intake-panel input:not([type="checkbox"]),
+.intake-panel select {
+  width: 100%;
+}
+.intake-panel input[type="checkbox"] {
+  width: auto;
+  margin-right: 8px;
+}
+.intake-panel article {
+  padding: 12px 0;
+  border-top: 1px solid #2a3545;
+}
+.intake-panel small {
+  overflow-wrap: anywhere;
+}
+
+.verification-evidence {
+  overflow-wrap: anywhere;
+}

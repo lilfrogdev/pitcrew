@@ -17,6 +17,7 @@ export function api(
   coordinator: Coordinator,
   dispatch: (id: string) => void | Promise<void>,
   landing?: LandingApi,
+  identity: { actor: string } = { actor: "local-fixture" },
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
@@ -72,6 +73,64 @@ export function api(
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
     return c.json(coordinator.repositoryContext());
+  });
+  app.post("/api/projects/:projectId/verification-profile", async (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    const body = c.get("body");
+    return c.json(
+      await coordinator.updateProfile(
+        body.profile as Parameters<Coordinator["updateProfile"]>[0],
+        body.expectedRevision as string,
+      ),
+    );
+  });
+  app.get("/api/projects/:projectId/verification-metrics", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    return c.json(coordinator.metrics());
+  });
+  app.get("/api/projects/:projectId/intake", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    return c.json({ groups: coordinator.groups(), profile: coordinator.profile() });
+  });
+  app.post("/api/projects/:projectId/reports", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    return c.json(
+      coordinator.receive(
+        identity.actor,
+        c.get("body") as unknown as Parameters<Coordinator["receive"]>[1],
+      ),
+      201,
+    );
+  });
+  app.post("/api/projects/:projectId/intake/move", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    const body = c.get("body");
+    return c.json(
+      coordinator.move(
+        identity.actor,
+        body.idempotencyKey as string,
+        body as unknown as Parameters<Coordinator["move"]>[2],
+      ),
+    );
+  });
+  app.post("/api/projects/:projectId/intake/dispatch", async (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    const body = c.get("body");
+    const result = await coordinator.dispatchGroup(
+      identity.actor,
+      body.idempotencyKey as string,
+      body as unknown as Parameters<Coordinator["dispatchGroup"]>[2],
+      body.acceptance as Parameters<Coordinator["dispatchGroup"]>[3],
+      body.profileRevision as string,
+    );
+    await dispatch(result.runId);
+    return c.json(result, 201);
   });
   app.get("/api/projects", (c) => c.json([coordinator.state.project]));
   app.get("/api/projects/:projectId/threads", (c) => {
@@ -152,6 +211,7 @@ export function api(
     const context = configured(),
       body = c.get("body"),
       runId = c.req.param("runId");
+    await coordinator.requireCurrentVerification(runId);
     const authorization = await context.service.authorize({
       runId,
       actor: context.actor,

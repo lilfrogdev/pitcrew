@@ -262,3 +262,73 @@ describe("independent durable Pi drivers", () => {
     expect(edits).toBe(2);
   });
 });
+it("gives acceptance to the worker and restricts independent verification review to gaps", async () => {
+  const { pinPlan, pendingOutcomes } = await import("../../../packages/verification/src/index.ts");
+  const plan = await pinPlan({
+    projectId: "p",
+    changeId: "c",
+    baseSha: base,
+    candidateSha: candidate,
+    configurationRevision: "1",
+    profile: {
+      projectId: "p",
+      revision: "v1",
+      checks: [
+        {
+          id: "behavior",
+          kind: "command",
+          command: { argv: ["fixture"], timeoutMs: 1000, maxOutputBytes: 1024 },
+        },
+      ],
+    },
+    acceptance: {
+      revision: "a1",
+      criteria: [{ id: "accept", text: "Retain source traceability", checkIds: ["behavior"] }],
+    },
+    reproduceBaseline: false,
+  });
+  let captured = "";
+  const worker = prompt("committed");
+  worker.submit = async (body) => {
+    captured = body;
+  };
+  await applyChange(worker, transport, workspace, { ...input, verificationPlan: plan });
+  expect(JSON.parse(captured).verificationPlan.acceptance.criteria[0].text).toBe(
+    "Retain source traceability",
+  );
+  const outcomes = pendingOutcomes(plan).map((o) => ({
+    ...o,
+    status: "failed" as const,
+    artifactId: workspace.artifactId,
+    runId: workspace.runId,
+    result: {
+      status: "completed" as const,
+      exitCode: 1,
+      stdout: "",
+      stderr: "failed",
+      truncated: false,
+    },
+  }));
+  const reviewer = prompt(JSON.stringify({ gaps: [], summary: "No additional source gaps" }));
+  reviewer.submit = async (body) => {
+    captured = body;
+  };
+  const review = await reviewCandidate(reviewer, workspace, evidence, undefined, {
+    messages: input.messages,
+    implementationSummary: "done",
+    verification: { plan, outcomes },
+  });
+  expect(JSON.parse(captured).task).toContain("gaps:string[]");
+  expect(review.decision).toBe("request_changes");
+  expect(review.verificationGaps).toEqual(["behavior"]);
+  expect(outcomes[0].status).toBe("failed");
+  await expect(
+    reviewCandidate(
+      prompt(JSON.stringify({ decision: "approve", summary: "Override failed checks" })),
+      workspace,
+      evidence,
+      undefined,
+      { messages: input.messages, implementationSummary: "done", verification: { plan, outcomes } },
+    ),
+  ).rejects.toThrow("invalid_review");
+});

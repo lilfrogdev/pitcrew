@@ -79,7 +79,7 @@ export class RepositoryAgent extends Agent<Env> {
           await worker.start({ ...input, repository: this.env.ARTIFACT_REPOSITORY });
           const receipt = await worker.result(runId);
           if (receipt.stage === "done" && receipt.result) {
-            core.complete(runId, receipt.result);
+            await core.completeVerified(runId, receipt.result);
             return;
           }
           if (receipt.stage === "blocked") {
@@ -137,6 +137,7 @@ export class RepositoryAgent extends Agent<Env> {
         if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
       },
       this.landing(coordinator),
+      (await principal(request, this.env))!,
     );
     return app.fetch(request);
   }
