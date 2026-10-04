@@ -25,6 +25,9 @@ export interface PipelineState {
     "baseSha" | "candidateSha" | "configurationRevision" | "decision" | "summary" | "actor"
   >;
   result?: ExecutionResult;
+  resultAcknowledged?: boolean;
+  stopRequested?: boolean;
+  cleanupPending?: boolean;
   error?: "reconciliation_required" | "execution_failed" | "deadline_exceeded";
 }
 export interface PipelineStore {
@@ -64,15 +67,49 @@ export class DurableChangePipeline {
   status() {
     return this.store.read();
   }
+  acknowledge(runId: string) {
+    const state = this.store.read();
+    if (!state || state.input.runId !== runId || state.stage !== "done")
+      throw Error("result_not_ready");
+    if (!state.resultAcknowledged) this.store.write({ ...state, resultAcknowledged: true });
+  }
+  requestStop(runId: string) {
+    const state = this.store.read();
+    if (!state || state.input.runId !== runId) throw Error("not_found");
+    if (state.stage === "done" || state.stopRequested) return;
+    this.store.write({
+      ...state,
+      stopRequested: true,
+      cleanupPending: !!state.workspace,
+      stage: "blocked",
+      error: "execution_failed",
+    });
+  }
+  private async cleanup(state: PipelineState, ports: PipelinePorts) {
+    if (!state.cleanupPending || !state.workspace) return;
+    try {
+      await ports.stop(state.workspace);
+    } catch {
+      return; // Keep the durable cleanup intent for recovery; never replay the failed effect.
+    }
+    const current = this.store.read();
+    if (!current || current.fingerprint !== state.fingerprint) throw Error("context_conflict");
+    this.store.write({ ...current, cleanupPending: false });
+  }
   async advance(ports: PipelinePorts) {
     const saved = this.store.read();
-    if (!saved || ["done", "blocked"].includes(saved.stage)) return;
+    if (!saved || saved.stage === "done") return;
+    if (saved.stage === "blocked") {
+      await this.cleanup(saved, ports);
+      return;
+    }
     const state = structuredClone(saved);
     if (this.now() - state.startedAt > 30 * 60 * 1000) {
       state.stage = "blocked";
       state.error = "deadline_exceeded";
-      if (state.workspace) await ports.stop(state.workspace).catch(() => {});
+      state.cleanupPending = !!state.workspace;
       this.store.write(state);
+      await this.cleanup(state, ports);
       return;
     }
     try {
@@ -106,8 +143,9 @@ export class DurableChangePipeline {
           state.stage = "review";
           break;
         case "review": {
-          const review = await ports.review(state.workspace!, state.evidence!);
-          if (!review) return;
+          const receipt = await ports.review(state.workspace!, state.evidence!);
+          if (!receipt) return;
+          const review = structuredClone(receipt);
           const evidence = state.evidence!;
           if (
             !["approve", "request_changes"].includes(review.decision) ||
@@ -181,10 +219,21 @@ export class DurableChangePipeline {
           (error instanceof Error && error.message === "reconciliation_required"))
           ? "reconciliation_required"
           : "execution_failed";
-      if (state.workspace) await ports.stop(state.workspace).catch(() => {});
+      state.cleanupPending = !!state.workspace;
     }
     // A lost stage acknowledgement must be retried from the prior persisted stage.
     // Native ports use the operation journal; Pi ports reuse their durable receipt.
+    const current = this.store.read();
+    if (current?.stopRequested) {
+      // Stop can arrive while prepare or another effect is awaiting its acknowledgement.
+      // Retain any newly created workspace, but never publish its stale completion.
+      const stopped = { ...current, workspace: current.workspace ?? state.workspace };
+      stopped.cleanupPending = !!stopped.workspace;
+      this.store.write(stopped);
+      await this.cleanup(stopped, ports);
+      return;
+    }
     this.store.write(state);
+    await this.cleanup(state, ports);
   }
 }

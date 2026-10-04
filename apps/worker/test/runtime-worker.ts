@@ -10,6 +10,8 @@ const base = "a".repeat(40),
   candidate = "b".repeat(40);
 interface Env {
   PAUSE_STAGE?: string;
+  FAIL_STOP_ONCE?: string;
+  PAUSE_CLEANUP?: string;
   FIXTURE: DurableObjectNamespace<FixtureAgent>;
 }
 export class FixtureAgent extends Agent<Env> {
@@ -23,6 +25,8 @@ export class FixtureAgent extends Agent<Env> {
       .sql`CREATE TABLE IF NOT EXISTS fixture_state(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
     void this
       .sql`CREATE TABLE IF NOT EXISTS fixture_edit(id INTEGER PRIMARY KEY,content TEXT NOT NULL,calls INTEGER NOT NULL)`;
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS fixture_stop(id INTEGER PRIMARY KEY,calls INTEGER NOT NULL)`;
     const faux = fauxProvider({ provider: "fixture", models: [{ id: "fixture" }] });
     faux.setResponses([
       fauxAssistantMessage(
@@ -68,9 +72,16 @@ export class FixtureAgent extends Agent<Env> {
       "fixture-pipeline",
       async (jobs) => {
         const s = this.pipeline.status();
-        if (s && !["done", "blocked"].includes(s.stage)) await jobs.enqueue("pipeline", {});
+        if (s && (s.cleanupPending || !["done", "blocked"].includes(s.stage)))
+          await jobs.enqueue("pipeline", {});
       },
       async () => {
+        if (
+          this.env.PAUSE_CLEANUP &&
+          this.pipeline.status()?.cleanupPending &&
+          this.sql`SELECT calls FROM fixture_stop WHERE calls > 0`.length
+        )
+          return { rescheduleAt: Date.now() + 1000 };
         if (this.env.PAUSE_STAGE === this.pipeline.status()?.stage)
           return { rescheduleAt: Date.now() + 1000 };
         const transport = {
@@ -132,11 +143,18 @@ export class FixtureAgent extends Agent<Env> {
             actor: "fixture-reviewer",
             summary: "checked fixture",
           }),
-          stop: async () => {},
+          stop: async () => {
+            void this
+              .sql`INSERT INTO fixture_stop VALUES(1,1) ON CONFLICT(id) DO UPDATE SET calls=calls+1`;
+            const [record] = this.sql<{ calls: number }>`SELECT calls FROM fixture_stop WHERE id=1`;
+            if (this.env.FAIL_STOP_ONCE && record.calls === 1) throw Error("fixture_stop_failure");
+            await this.harness.session().abort();
+          },
         });
-        return this.pipeline.status()?.stage === "done"
-          ? undefined
-          : { rescheduleAt: Date.now() + 50 };
+        const state = this.pipeline.status();
+        return state && (state.cleanupPending || !["done", "blocked"].includes(state.stage))
+          ? { rescheduleAt: Date.now() + 50 }
+          : undefined;
       },
     );
     this.lifecycle.use(this.jobs);
@@ -155,19 +173,37 @@ export class FixtureAgent extends Agent<Env> {
     await this.jobs.enqueue("pipeline", {});
     return { accepted: true };
   }
+  async stop() {
+    await this.lifecycle.start();
+    this.pipeline.requestStop("fixture-run");
+    await this.jobs.enqueue("pipeline", {});
+    return { accepted: true };
+  }
+  async acknowledge() {
+    this.pipeline.acknowledge("fixture-run");
+    return { acknowledged: true };
+  }
   async status() {
     await this.lifecycle.start();
     return {
       pipeline: this.pipeline.status(),
       edits: this.sql`SELECT content,calls FROM fixture_edit`,
+      stops: this.sql`SELECT calls FROM fixture_stop`,
     };
   }
 }
 export default {
   async fetch(request: Request, env: Env) {
     const stub = env.FIXTURE.get(env.FIXTURE.idFromName("fixture"));
+    const path = new URL(request.url).pathname;
     return Response.json(
-      new URL(request.url).pathname === "/start" ? await stub.start() : await stub.status(),
+      path === "/start"
+        ? await stub.start()
+        : path === "/stop"
+          ? await stub.stop()
+          : path === "/acknowledge"
+            ? await stub.acknowledge()
+            : await stub.status(),
     );
   },
 };

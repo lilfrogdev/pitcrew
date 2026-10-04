@@ -15,6 +15,118 @@ function fixture() {
   return { core, saved: () => saved };
 }
 describe("durable coordinator", () => {
+  it("keeps a quarantined attempt terminal when its late result arrives after retry", async () => {
+    const f = fixture(),
+      thread = f.core.createThread("change", "thread"),
+      first = f.core.submit(thread.id, "fix", "message"),
+      input = f.core.begin(first.run.id)!;
+    f.core.fail(first.run.id, true);
+    const retry = f.core.retryChange(first.change!.id, "retry"),
+      before = structuredClone(f.saved());
+    f.core.complete(first.run.id, await fakeExecution.delegate(input));
+    expect(f.saved()).toEqual(before);
+    expect(f.core.evidence(first.run.id).run.status).toBe("waiting_user");
+    expect(f.core.evidence(retry.id).run.status).toBe("queued");
+    expect(f.core.evidence(first.run.id).tests).toBeUndefined();
+  });
+  it("ignores results and failures for stopped attempts", async () => {
+    const f = fixture(),
+      thread = f.core.createThread("change", "thread"),
+      { run } = f.core.submit(thread.id, "fix", "message"),
+      input = f.core.begin(run.id)!;
+    run.status = "stopped";
+    const before = structuredClone(f.core.state);
+    f.core.complete(run.id, await fakeExecution.delegate(input));
+    f.core.fail(run.id);
+    expect(f.core.state).toEqual(before);
+  });
+  it("preserves accepted completion when a duplicate in-flight dispatch fails later", async () => {
+    const f = fixture(),
+      thread = f.core.createThread("change", "thread"),
+      { run } = f.core.submit(thread.id, "fix", "message");
+    let reject!: (error: Error) => void;
+    const delayed = f.core.dispatch(run.id, {
+      delegate: () => new Promise((_, rejectResult) => (reject = rejectResult)),
+    });
+    await f.core.dispatch(run.id, fakeExecution);
+    const accepted = structuredClone(f.saved());
+    reject(Error("late provider failure"));
+    await delayed;
+    expect(f.saved()).toEqual(accepted);
+    expect(f.core.evidence(run.id).run.status).toBe("awaiting_review");
+  });
+  it("owns an immutable copy of accepted evidence and review across transport retries", async () => {
+    const f = fixture(),
+      thread = f.core.createThread("change", "thread"),
+      { run } = f.core.submit(thread.id, "fix", "message"),
+      result = {
+        ...(await fakeExecution.delegate(f.core.begin(run.id)!)),
+        review: {
+          decision: "request_changes" as const,
+          summary: "original verdict",
+          actor: "reviewer",
+          baseSha: run.baseSha,
+          candidateSha: run.baseSha,
+          configurationRevision: run.configurationRevision,
+          verificationGaps: ["original gap"],
+        },
+      };
+    f.core.complete(run.id, result);
+    const accepted = structuredClone(f.core.state);
+    result.tests.stdout = "mutated after delivery";
+    result.tests.argv.push("mutated");
+    result.review.summary = "changed verdict";
+    result.review.verificationGaps.push("changed gap");
+    f.core.complete(run.id, result);
+    expect(f.core.state).toEqual(accepted);
+    expect(f.saved()).toEqual(accepted);
+    const recovered = new Coordinator(f.saved(), () => {});
+    recovered.complete(run.id, result);
+    expect(recovered.state).toEqual(accepted);
+  });
+  it("publishes completion and review events only after evidence persistence commits", async () => {
+    let saved = initialState(),
+      fail = false,
+      id = 0;
+    const core = new Coordinator(
+      saved,
+      (state) => {
+        if (fail) throw Error("disk");
+        saved = structuredClone(state);
+      },
+      () => "now",
+      () => String(++id),
+    );
+    const thread = core.createThread("change", "thread"),
+      { run } = core.submit(thread.id, "fix", "message"),
+      input = core.begin(run.id)!,
+      result = {
+        ...(await fakeExecution.delegate(input)),
+        review: {
+          decision: "request_changes" as const,
+          summary: "verdict",
+          actor: "reviewer",
+          baseSha: run.baseSha,
+          candidateSha: run.baseSha,
+          configurationRevision: run.configurationRevision,
+        },
+      },
+      before = structuredClone(saved);
+    fail = true;
+    expect(() => core.complete(run.id, result)).toThrow("disk");
+    expect(core.state).toEqual(before);
+    expect(saved).toEqual(before);
+    fail = false;
+    core.complete(run.id, result);
+    expect(core.state.events.slice(-2).map((event) => event.type)).toEqual([
+      "run.awaiting_review",
+      "review.created",
+    ]);
+    expect(core.state.events.map((event) => event.sequence)).toEqual(
+      core.state.events.map((_, index) => index + 1),
+    );
+    expect(core.state).toEqual(saved);
+  });
   it("atomically creates message/run and replays same body after recovery", () => {
     const f = fixture(),
       t = f.core.createThread("change", "t");

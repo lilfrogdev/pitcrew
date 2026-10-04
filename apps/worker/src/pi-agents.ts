@@ -261,7 +261,7 @@ export class ChangeAgent extends TaskAgent {
       "change-pipeline",
       async (jobs) => {
         const state = this.pipeline.status();
-        if (state && !["done", "blocked"].includes(state.stage))
+        if (state && (state.cleanupPending || !["done", "blocked"].includes(state.stage)))
           await jobs.enqueue("pipeline", { runId: state.input.runId });
       },
       async () => {
@@ -308,20 +308,10 @@ export class ChangeAgent extends TaskAgent {
                 implementationSummary: this.pipeline.status()!.change!.summary,
               },
             ),
-          stop: async (workspace) => {
-            try {
-              await coordinator.stop(workspace);
-            } finally {
-              await this.harness.session().abort();
-              if (this.pipeline.status()?.evidence)
-                await this.env.REVIEW.get(
-                  this.env.REVIEW.idFromName(`review:${workspace.runId}`),
-                ).abortReview(workspace.runId);
-            }
-          },
+          stop: (workspace) => this.stopOwners(workspace),
         });
         const state = this.pipeline.status();
-        return state && !["done", "blocked"].includes(state.stage)
+        return state && (state.cleanupPending || !["done", "blocked"].includes(state.stage))
           ? { rescheduleAt: Date.now() + 1000 }
           : undefined;
       },
@@ -378,10 +368,39 @@ export class ChangeAgent extends TaskAgent {
       await this.jobs.enqueue("pipeline", { runId: input.runId });
     return { runId: input.runId, stage: state.stage };
   }
+  private async stopOwners(workspace: Workspace) {
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => this.coordinator().coordinator.stop(workspace)),
+      Promise.resolve().then(() => this.harness.session().abort()),
+      Promise.resolve().then(() =>
+        this.env.REVIEW.get(this.env.REVIEW.idFromName(`review:${workspace.runId}`)).abortReview(
+          workspace.runId,
+        ),
+      ),
+    ]);
+    if (results.some((result) => result.status === "rejected")) throw Error("cleanup_failed");
+  }
+  async stop(runId: string) {
+    this.pipeline.requestStop(runId);
+    const state = this.pipeline.status()!;
+    // Interrupt owned resources promptly even while the singleflight stage is still awaiting.
+    // The pipeline retains cleanup intent until the queued recovery observes successful cleanup.
+    if (state.cleanupPending && state.workspace)
+      await this.stopOwners(state.workspace).catch(() => {});
+    await this.jobs.enqueue("pipeline", { runId });
+  }
+  async acknowledge(runId: string) {
+    this.pipeline.acknowledge(runId);
+  }
   async result(runId: string) {
     const state = this.pipeline.status();
     if (!state || state.input.runId !== runId) throw Error("not_found");
-    return { stage: state.stage, result: state.result, error: state.error };
+    return {
+      stage: state.stage,
+      result: state.result,
+      error: state.error,
+      acknowledged: !!state.resultAcknowledged,
+    };
   }
 }
 export class ReviewAgent extends TaskAgent {

@@ -62,17 +62,22 @@ export class RepositoryAgent extends Agent<Env> {
         if (this.env.EXECUTION_MODE !== "cloud") return;
         const core = this.getCoordinator();
         for (const run of core.state.runs)
-          if (["queued", "running"].includes(run.status))
+          if (["queued", "running", "awaiting_review"].includes(run.status))
             await jobs.enqueue(run.id, { runId: run.id });
       },
       async (payload) => {
         const runId = (payload as { runId: string }).runId,
           core = this.getCoordinator();
-        const input = core.begin(runId);
+        const run = core.evidence(runId).run;
+        const input =
+          core.begin(runId) ??
+          (run.status === "awaiting_review" ? core.state.requests?.[runId] : undefined);
         if (!input) return;
+        if (!this.env.ARTIFACT_REPOSITORY || !this.env.MODEL_CONFIGURATION) {
+          core.fail(runId, true);
+          return;
+        }
         try {
-          if (!this.env.ARTIFACT_REPOSITORY || !this.env.MODEL_CONFIGURATION)
-            throw Error("execution_not_configured");
           const worker = this.env.CHANGE.get(
             this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
           );
@@ -80,6 +85,7 @@ export class RepositoryAgent extends Agent<Env> {
           const receipt = await worker.result(runId);
           if (receipt.stage === "done" && receipt.result) {
             await core.completeVerified(runId, receipt.result);
+            await worker.acknowledge(runId);
             return;
           }
           if (receipt.stage === "blocked") {
@@ -88,7 +94,9 @@ export class RepositoryAgent extends Agent<Env> {
           }
           return { rescheduleAt: Date.now() + 1000 };
         } catch {
-          core.fail(runId, true);
+          // A transport/storage error is not acknowledgement or supersession.
+          // Unsafe effects are quarantined by the child journal, not replayed here.
+          return { rescheduleAt: Date.now() + 1000 };
         }
       },
     );
