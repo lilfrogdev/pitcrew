@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Project, Run, Snapshot, Thread } from "./api";
 import "./styles.css";
+import { LandingControl, type LandingState } from "./LandingControl";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -14,6 +15,8 @@ const labels: Record<Run["status"], string> = {
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong. Try again.";
 export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
+  const [landingEnabled, setLandingEnabled] = useState(false);
+  const [landingStates, setLandingStates] = useState<Record<string, LandingState>>({});
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -34,6 +37,24 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const mutation = useRef(false);
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
 
+  useEffect(() => {
+    let cancelled = false;
+    setLandingEnabled(false);
+    api
+      .capabilities()
+      .then((capabilities) => {
+        if (!cancelled)
+          setLandingEnabled(
+            capabilities.landing.enabled && capabilities.landing.backend === "fixture",
+          );
+      })
+      .catch(() => {
+        if (!cancelled) setLandingEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, revision]);
   useEffect(() => {
     let cancelled = false;
     api
@@ -494,15 +515,17 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                   <p className="hint">Awaiting a trusted reviewer.</p>
                 )}
               </details>
-              <div className="merge-control">
-                <button disabled aria-describedby={`merge-${run.id}`}>
-                  Approve merge
-                </button>
-                <p id={`merge-${run.id}`}>
-                  Merge approval is unavailable in this PoC. Review evidence above; no repository
-                  merge will occur.
-                </p>
-              </div>
+              <LandingControl
+                api={api}
+                run={run}
+                evidence={evidence}
+                reviews={reviews}
+                enabled={landingEnabled}
+                state={landingStates[run.id]}
+                onStateChange={(state) =>
+                  setLandingStates((states) => ({ ...states, [run.id]: state }))
+                }
+              />
             </section>
           );
         })}

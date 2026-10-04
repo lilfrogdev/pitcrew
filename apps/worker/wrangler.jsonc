@@ -40,6 +40,7 @@
         "ENVIRONMENT": "development",
         "FIXTURE_IDENTITY": "lilfrogdev",
         "EXECUTION_MODE": "fake",
+        "LANDING_MODE": "fixture",
       },
       "durable_objects": {
         "bindings": [

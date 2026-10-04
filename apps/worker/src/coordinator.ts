@@ -13,6 +13,7 @@ import type {
   RepositoryContext,
   ExecutionInput,
   ExecutionResult,
+  LandingResultReceipt,
 } from "@pitcrew/protocol";
 export class AdmissionError extends Error {
   constructor(
@@ -343,6 +344,20 @@ export class Coordinator {
         this.state.reviews.push(review);
         this.event("review.created", review.id);
       }
+    });
+  }
+  confirmFixtureLanding(runId: string, result: LandingResultReceipt) {
+    if (result.backend !== "fixture" || result.status !== "landed") return;
+    const run = this.evidence(runId).run;
+    if (result.landedSha !== run.candidateSha) throw Error("invalid_landing_evidence");
+    if (run.landing?.authorizationId === result.authorizationId) return;
+    this.durableUpdate(() => {
+      // An old receipt cannot move the project backwards after later landings.
+      if (this.state.project.baseSha === run.baseSha)
+        this.state.project.baseSha = result.landedSha!;
+      run.landing = structuredClone(result);
+      run.status = "completed";
+      this.event("run.completed", run.id);
     });
   }
   fail(runId: string, reconcile = false) {

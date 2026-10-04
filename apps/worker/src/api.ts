@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { ExecutionError } from "../../../packages/execution/src/contracts";
+import type { LandingApi } from "./landing-api";
 import { AdmissionError, Coordinator } from "./coordinator";
 export function fixtureAccess(
   request: Request,
@@ -11,7 +13,11 @@ export function fixtureAccess(
     ["localhost", "127.0.0.1", "[::1]"].includes(host)
   );
 }
-export function api(coordinator: Coordinator, dispatch: (id: string) => void | Promise<void>) {
+export function api(
+  coordinator: Coordinator,
+  dispatch: (id: string) => void | Promise<void>,
+  landing?: LandingApi,
+) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
     if (c.req.method === "POST") {
@@ -37,7 +43,10 @@ export function api(coordinator: Coordinator, dispatch: (id: string) => void | P
         offset += chunk.length;
       }
       try {
-        c.set("body", JSON.parse(new TextDecoder().decode(bytes)));
+        const parsed = JSON.parse(new TextDecoder().decode(bytes));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          throw Error("invalid_json");
+        c.set("body", parsed);
       } catch {
         throw new AdmissionError("invalid_json");
       }
@@ -46,8 +55,17 @@ export function api(coordinator: Coordinator, dispatch: (id: string) => void | P
   });
   app.onError((error, c) =>
     c.json(
-      { error: error instanceof AdmissionError ? error.code : "internal_error" },
-      error instanceof AdmissionError ? (error.status as 400) : 500,
+      {
+        error:
+          error instanceof AdmissionError || error instanceof ExecutionError
+            ? error.code
+            : "internal_error",
+      },
+      error instanceof AdmissionError
+        ? (error.status as 400)
+        : error instanceof ExecutionError
+          ? 409
+          : 500,
     ),
   );
   app.get("/api/projects/:projectId/context", (c) => {
@@ -118,6 +136,65 @@ export function api(coordinator: Coordinator, dispatch: (id: string) => void | P
     if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_cursor");
     return c.json(coordinator.state.events.filter((e) => e.sequence > after));
   });
-  app.post("/api/runs/:runId/merge-approval", (c) => c.json({ error: "merge_unavailable" }, 501));
+  app.get("/api/capabilities", (c) =>
+    c.json({ landing: { enabled: !!landing, backend: landing?.backend ?? null } }),
+  );
+  const configured = () => {
+    if (!landing) throw new AdmissionError("landing_unconfigured", 503);
+    return landing;
+  };
+  const string = (value: unknown, name: string) => {
+    if (typeof value !== "string" || !value || value.length > 256)
+      throw new AdmissionError(`invalid_${name}`);
+    return value;
+  };
+  app.post("/api/runs/:runId/merge-approval", async (c) => {
+    const context = configured(),
+      body = c.get("body"),
+      runId = c.req.param("runId");
+    const authorization = await context.service.authorize({
+      runId,
+      actor: context.actor,
+      expectedTargetSha: string(body.expectedTargetSha, "expected_target_sha"),
+      candidateSha: string(body.candidateSha, "candidate_sha"),
+      configurationRevision: string(body.configurationRevision, "configuration_revision"),
+      idempotencyKey: string(body.idempotencyKey, "idempotency_key"),
+    });
+    return c.json(
+      {
+        authorizationId: authorization.authorizationId,
+        runId: authorization.runId,
+        expectedTargetSha: authorization.expectedTargetSha,
+        candidateSha: authorization.candidateSha,
+        configurationRevision: authorization.configurationRevision,
+        expiresAt: authorization.expiresAt,
+        state: context.store.get(authorization.authorizationId, context.actor, runId).state,
+        backend: context.backend,
+      },
+      201,
+    );
+  });
+  app.post("/api/runs/:runId/landing", async (c) => {
+    const context = configured();
+    const result = await context.service.land({
+      runId: c.req.param("runId"),
+      actor: context.actor,
+      authorizationId: string(c.get("body").authorizationId, "authorization_id"),
+    });
+    const receipt = { ...result, backend: context.backend };
+    coordinator.confirmFixtureLanding(c.req.param("runId"), receipt);
+    return c.json(receipt);
+  });
+  app.post("/api/runs/:runId/landing/reconcile", async (c) => {
+    const context = configured();
+    const result = await context.service.reconcile({
+      runId: c.req.param("runId"),
+      actor: context.actor,
+      authorizationId: string(c.get("body").authorizationId, "authorization_id"),
+    });
+    const receipt = { ...result, backend: context.backend };
+    coordinator.confirmFixtureLanding(c.req.param("runId"), receipt);
+    return c.json(receipt);
+  });
   return app;
 }

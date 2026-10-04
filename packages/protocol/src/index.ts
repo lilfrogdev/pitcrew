@@ -32,6 +32,7 @@ export type RunStatus =
   | "failed"
   | "stopped";
 export interface Run {
+  landing?: LandingResultReceipt;
   // Optional only for legacy wire records; coordinator assigns every stored run.
   changeId?: string;
   messageId?: string;
@@ -140,4 +141,22 @@ export interface RepositoryContext {
     status: RunStatus;
     intent: string;
   }[];
+}
+
+export interface LandingAuthorizationReceipt {
+  authorizationId: string;
+  runId: string;
+  expectedTargetSha: string;
+  candidateSha: string;
+  configurationRevision: string;
+  expiresAt: number;
+  state: "authorized" | "pending" | "landed" | "rejected" | "uncertain";
+  backend: "fixture";
+}
+export interface LandingResultReceipt {
+  authorizationId: string;
+  status: "landed" | "rejected" | "uncertain";
+  code?: string;
+  landedSha?: string;
+  backend: "fixture";
 }
