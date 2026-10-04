@@ -14,6 +14,21 @@ export class SqliteLandingStore implements LandingStore {
       repository TEXT PRIMARY KEY, authorization_id TEXT UNIQUE NOT NULL)`);
   }
 
+  recoverIssue(key: string, requestFingerprint: string): LandingAuthorization | undefined {
+    const [row] = this.storage.sql
+      .exec<{ record: string }>("SELECT record FROM landing_permissions WHERE issue_key = ?", key)
+      .toArray();
+    if (!row) return undefined;
+    const authorization = (JSON.parse(row.record) as LandingRecord).authorization;
+    const originalRequest = JSON.stringify([
+      authorization.expectedTargetSha,
+      authorization.candidateSha,
+      authorization.configurationRevision,
+    ]);
+    if (originalRequest !== requestFingerprint) throw new ExecutionError("IDEMPOTENCY_CONFLICT");
+    return authorization;
+  }
+
   issue(
     key: string,
     fingerprint: string,
