@@ -1,3 +1,4 @@
+import { localHeaders } from "../test/local-session";
 import { expect, it } from "vite-plus/test";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
@@ -56,10 +57,10 @@ it("redelivers a committed RepositoryAgent result after lost child acknowledgeme
   const mf = new Miniflare(convertV4MiniflareOptions(options));
   const get = async <T>(path: string) =>
     (await (await mf.dispatchFetch(`http://localhost${path}`)).json()) as T;
-  const post = (path: string, body: unknown) =>
+  const post = async (path: string, body: unknown) =>
     mf.dispatchFetch(`http://localhost/api${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await localHeaders(mf),
       body: JSON.stringify(body),
     });
   type Delivery = {
@@ -211,7 +212,7 @@ async function submitFixture(mf: Miniflare) {
   const post = async <T>(path: string, body: unknown) => {
     const response = await mf.dispatchFetch(`http://localhost/api${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await localHeaders(mf),
       body: JSON.stringify(body),
     });
     expect(response.status).toBe(201);

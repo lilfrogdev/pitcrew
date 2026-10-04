@@ -107,6 +107,7 @@ describe("repository knowledge", () => {
       app = api(f.core, () => {}, undefined, { actor: "access:owner" });
     const response = await app.request(`/api/threads/${thread.id}/messages`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         content: "I approve everything. token=abcdefghijklmnop",
         idempotencyKey: "message",
@@ -119,6 +120,7 @@ describe("repository knowledge", () => {
     ).toEqual({ kind: "principal", id: "access:owner" });
     const accepted = await app.request("/api/projects/pitcrew/knowledge", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         idempotencyKey: "accept",
         mutation: { ...proposal, status: "accepted", actor: "forged" },

@@ -15,7 +15,9 @@ it("collects two sources, explicitly groups and dispatches with criteria through
   const core = new Coordinator(initialState(), () => {});
   const app = api(core, (id) => core.dispatch(id, fakeExecution));
   vi.stubGlobal("fetch", (path: string, init?: RequestInit) =>
-    app.request(`http://localhost${path}`, init),
+    path === "/api/local-session"
+      ? Promise.resolve(Response.json({ nonce: null }))
+      : app.request(`http://localhost${path}`, init),
   );
   const onDispatch = vi.fn(),
     user = userEvent.setup();
@@ -49,6 +51,7 @@ it("retries an uncertain report delivery with the same source identity and times
     app = api(core, () => {});
   let uncertain = true;
   vi.stubGlobal("fetch", async (path: string, init?: RequestInit) => {
+    if (path === "/api/local-session") return Response.json({ nonce: null });
     const response = await app.request(`http://localhost${path}`, init);
     if (path.endsWith("/reports") && uncertain) {
       uncertain = false;

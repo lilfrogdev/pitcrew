@@ -22,6 +22,10 @@ export function api(
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
     if (c.req.method === "POST") {
+      if (
+        c.req.header("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json"
+      )
+        throw new AdmissionError("unsupported_media_type", 415);
       const reader = c.req.raw.body?.getReader();
       let size = 0;
       const chunks: Uint8Array[] = [];

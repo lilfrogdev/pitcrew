@@ -1,3 +1,4 @@
+import { protectedFetch, type AccessEnv } from "../src/access";
 import { RepositoryAgent } from "../src/index";
 import { Coordinator, initialState, type State } from "../src/coordinator";
 import { SqliteLandingStore } from "../../../packages/execution/src/landing-store";
@@ -72,7 +73,10 @@ export class LandingFixtureAgent extends RepositoryAgent {
   }
 }
 export default {
-  async fetch(request: Request, env: { REPOSITORY: DurableObjectNamespace<LandingFixtureAgent> }) {
+  async fetch(
+    request: Request,
+    env: AccessEnv & { REPOSITORY: DurableObjectNamespace<LandingFixtureAgent> },
+  ) {
     const stub = env.REPOSITORY.get(
       env.REPOSITORY.idFromName(new URL(request.url).searchParams.get("object") ?? "fixture"),
     );
@@ -81,6 +85,6 @@ export default {
       const body = (await request.json()) as { authorizationId: string; runId: string };
       return Response.json(await stub.blockAndConfigure(body.authorizationId, body.runId));
     }
-    return stub.fetch(request);
+    return protectedFetch(request, env, (request) => stub.fetch(request));
   },
 };

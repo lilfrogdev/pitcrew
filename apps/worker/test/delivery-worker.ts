@@ -109,6 +109,13 @@ export class DeliveryChangeAgent extends DurableObject<Env> {
     this.ctx.storage.sql.exec("UPDATE delivery SET acknowledged=1 WHERE id=1");
   }
   async status() {
+    // Polling may reach the fixture before the asynchronous first start.
+    if (
+      !this.ctx.storage.sql
+        .exec("SELECT name FROM sqlite_master WHERE type='table' AND name='starts'")
+        .toArray().length
+    )
+      return null;
     return (
       this.ctx.storage.sql
         .exec<{
@@ -136,8 +143,18 @@ export class PreflightChangeAgent extends ChangeAgent {
     return super.start(input);
   }
   async status() {
+    if (
+      !this.ctx.storage.sql
+        .exec("SELECT name FROM sqlite_master WHERE type='table' AND name='starts'")
+        .toArray().length
+    )
+      return null;
     const [row] = this.sql<{ calls: number }>`SELECT calls FROM starts WHERE id=1`;
-    const [state] = this.sql<{ value: string }>`SELECT value FROM change_pipeline WHERE id=1`;
+    const [state] = this.ctx.storage.sql
+      .exec("SELECT name FROM sqlite_master WHERE type='table' AND name='change_pipeline'")
+      .toArray().length
+      ? this.sql<{ value: string }>`SELECT value FROM change_pipeline WHERE id=1`
+      : [];
     return { calls: row?.calls ?? 0, pipeline: state ? JSON.parse(state.value) : null };
   }
 }

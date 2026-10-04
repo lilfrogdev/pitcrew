@@ -52,16 +52,49 @@ export class ApiError extends Error {
     );
   }
 }
+let sessionRequest: Promise<string | null> | undefined;
+async function sessionNonce(): Promise<string | null> {
+  const response = await fetch("/api/local-session", { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new ApiError(response.status);
+  const { nonce } = (await response.json()) as { nonce: string | null };
+  if (nonce !== null && (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)))
+    throw new ApiError(0);
+  return nonce;
+}
+export async function mutationHeaders(): Promise<Record<string, string>> {
+  // Share only in-flight bootstrap, so simultaneous first mutations use one cookie.
+  sessionRequest ??= sessionNonce().finally(() => {
+    sessionRequest = undefined;
+  });
+  const nonce = await sessionRequest;
+  return {
+    "Content-Type": "application/json",
+    ...(nonce ? { "X-Pitcrew-Local-Nonce": nonce } : {}),
+  };
+}
+export async function apiFetch(path: string, body?: unknown): Promise<Response> {
+  const send = async () => {
+    const headers = body ? await mutationHeaders() : undefined;
+    const response = await fetch(`/api${path}`, {
+      method: body ? "POST" : "GET",
+      signal: AbortSignal.timeout(10000),
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, local: !!headers?.["X-Pitcrew-Local-Nonce"] };
+  };
+  const first = await send();
+  // A rejected local admission has no side effects. Another tab may have
+  // established the session cookie while our initial bootstrap was in flight.
+  if (first.local && first.response.status === 403) return (await send()).response;
+  return first.response;
+}
 async function request<T>(path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`/api${path}`, {
-      method: body ? "POST" : "GET",
-      signal: AbortSignal.timeout(10000),
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch {
+    response = await apiFetch(path, body);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw new ApiError(0);
   }
   if (!response.ok) throw new ApiError(response.status);
