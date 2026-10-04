@@ -62,5 +62,9 @@ export interface EventProvenance {
   changeId?: string;
   runId?: string;
   sourceRefs: KnowledgeSource[];
-  outcome?: "candidate_recorded" | "review_approved" | "review_changes_requested" | "fixture_landed";
+  outcome?:
+    | "candidate_recorded"
+    | "review_approved"
+    | "review_changes_requested"
+    | "fixture_landed";
 }

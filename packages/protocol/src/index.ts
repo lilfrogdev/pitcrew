@@ -1,4 +1,9 @@
-import type { CurrentKnowledge, KnowledgeRecord, EventProvenance, WorkerKnowledgeContext } from "./knowledge.ts";
+import type {
+  CurrentKnowledge,
+  KnowledgeRecord,
+  EventProvenance,
+  WorkerKnowledgeContext,
+} from "./knowledge.ts";
 export * from "./knowledge.ts";
 import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
 export interface Project {
@@ -153,6 +158,7 @@ export interface RepositoryContext {
   baseSha: string;
   configurationRevision: string;
   acceptedDecisions: { id: string; text: string; sourceRevision: string }[];
+  activeWorkOmitted?: number;
   activeWork: {
     runId: string;
     threadId: string;
