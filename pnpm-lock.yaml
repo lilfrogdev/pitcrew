@@ -274,6 +274,8 @@ importers:
         specifier: 6.2.12
         version: 6.2.12
 
+  packages/evaluation: {}
+
   packages/execution:
     devDependencies:
       '@cloudflare/workers-types':
