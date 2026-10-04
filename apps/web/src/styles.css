@@ -786,3 +786,28 @@ textarea::placeholder {
     animation: none;
   }
 }
+
+.conversation-actions {
+  position: relative;
+}
+.conversation-actions summary {
+  list-style: none;
+  cursor: pointer;
+}
+.conversation-actions summary::-webkit-details-marker {
+  display: none;
+}
+.conversation-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px #0002;
+}
+.conversation-menu button {
+  white-space: nowrap;
+}
