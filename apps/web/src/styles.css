@@ -789,6 +789,10 @@ textarea::placeholder {
 
 .conversation-actions {
   position: relative;
+  flex-shrink: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
 }
 .conversation-actions summary {
   list-style: none;

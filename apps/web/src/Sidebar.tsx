@@ -398,7 +398,11 @@ export function Sidebar({
             )}
           </div>
         ))}
-        {!matching.length && query.trim() && <p className="search-empty">No repositories found.</p>}
+        {!matching.length &&
+          query.trim() &&
+          !knownConversations.some((item) =>
+            item.title.toLowerCase().includes(query.trim().toLowerCase()),
+          ) && <p className="search-empty">No repositories found.</p>}
       </nav>
     </aside>
   );
