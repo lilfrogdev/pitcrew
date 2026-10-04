@@ -81,7 +81,18 @@ export class RepositoryAgent extends Agent<Env> {
           const worker = this.env.CHANGE.get(
             this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
           );
-          await worker.start({ ...input, repository: this.env.ARTIFACT_REPOSITORY });
+          const admission = await worker.start({
+            ...input,
+            repository: this.env.ARTIFACT_REPOSITORY,
+          });
+          if (
+            admission.stage === "blocked" &&
+            "error" in admission &&
+            admission.error === "reconciliation_required"
+          ) {
+            core.fail(runId, true);
+            return;
+          }
           const receipt = await worker.result(runId);
           if (receipt.stage === "done" && receipt.result) {
             await core.completeVerified(runId, receipt.result);

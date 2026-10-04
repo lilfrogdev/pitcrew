@@ -354,14 +354,30 @@ export class ChangeAgent extends TaskAgent {
     return { coordinator, transport };
   }
   async start(input: ExecutionInput) {
-    if (this.env.EXECUTION_MODE !== "cloud") throw Error("execution_disabled");
+    const rejected = {
+      runId: input.runId,
+      stage: "blocked" as const,
+      error: "reconciliation_required" as const,
+    };
+    if (this.env.EXECUTION_MODE !== "cloud") return rejected;
     if (
       !this.env.MODEL_CONFIGURATION ||
       !this.env.CONFIGURATION_REVISION ||
       this.env.CONFIGURATION_REVISION !== input.configurationRevision
     )
-      throw Error("configuration_mismatch");
-    this.transport();
+      return rejected;
+    try {
+      this.transport();
+    } catch (error) {
+      // Only deterministic local preflight failures are terminal admissions.
+      // Lifecycle/storage errors and unknown RPC failures must still recover.
+      if (
+        error instanceof Error &&
+        ["execution_not_configured", "image_not_configured"].includes(error.message)
+      )
+        return rejected;
+      throw error;
+    }
     await this.lifecycle.start();
     const state = this.pipeline.start(input);
     if (!["done", "blocked"].includes(state.stage))
