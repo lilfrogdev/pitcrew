@@ -171,6 +171,75 @@ test("permission bound to authenticated actor, run and expiry", async () => {
   assert.equal(f.pushCount(), 0);
 });
 
+test("lost issuance response recovers same receipt after target or source changes", async () => {
+  const f = fixture();
+  const issue = f.store.issue.bind(f.store);
+  f.store.issue = (...args) => {
+    issue(...args);
+    throw new Error("issuance response lost");
+  };
+  await assert.rejects(f.service.authorize(f.approval));
+  const original = f.store.get("auth-1", "human", "run-1").authorization;
+  f.setHead("c".repeat(40));
+  f.source.read = async () => {
+    throw new Error("mutable source must not be read for receipt recovery");
+  };
+  f.transport.targetHead = async () => {
+    throw new Error("mutable target must not be read for receipt recovery");
+  };
+  const restarted = new TrustedLandingService(
+    f.source,
+    new SqliteLandingStore(f.storage),
+    f.transport,
+  );
+  assert.deepEqual(await restarted.authorize(f.approval), original);
+  assert.equal(f.pushCount(), 0);
+});
+
+test("issuance retry during pending landing returns receipt without gate or expiry changes", async () => {
+  const f = fixture(),
+    authorization = await f.service.authorize(f.approval);
+  f.store.begin(authorization.authorizationId, "human", "run-1", 1000);
+  f.setTime(authorization.expiresAt + 1);
+  f.evidence.currentConfigurationRevision = "new-revision";
+  f.setHead(candidateSha);
+  assert.deepEqual(await f.service.authorize(f.approval), authorization);
+  assert.equal(f.store.get(authorization.authorizationId, "human", "run-1").state, "pending");
+  assert.throws(() => f.store.assertRepositoryIdle("canonical"), {
+    code: "REPOSITORY_LANDING_BUSY",
+  });
+  assert.equal(f.pushCount(), 0);
+});
+
+test("changed issuance body conflicts before mutable state checks", async () => {
+  const f = fixture();
+  await f.service.authorize(f.approval);
+  f.setHead("c".repeat(40));
+  f.source.read = async () => {
+    throw new Error("receipt lookup must happen first");
+  };
+  for (const change of [
+    { candidateSha: baseSha },
+    { expectedTargetSha: candidateSha },
+    { configurationRevision: "new-revision" },
+  ])
+    await assert.rejects(f.service.authorize({ ...f.approval, ...change }), {
+      code: "IDEMPOTENCY_CONFLICT",
+    });
+  assert.equal(f.storage.db.prepare("SELECT count(*) n FROM landing_permissions").get().n, 1);
+});
+
+test("recovered issuance cannot bypass landing-time stale target and evidence checks", async () => {
+  const f = fixture(),
+    authorization = await f.service.authorize(f.approval);
+  f.setHead("c".repeat(40));
+  assert.deepEqual(await f.service.authorize(f.approval), authorization);
+  const result = await f.service.land(request(authorization));
+  assert.equal(result.status, "rejected");
+  assert.equal(result.code, "STALE_TARGET");
+  assert.equal(f.pushCount(), 0);
+});
+
 test("stale target at authorization is rejected with no permission", async () => {
   const f = fixture();
   f.setHead("c".repeat(40));

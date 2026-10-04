@@ -47,6 +47,7 @@ export interface LandingRecord {
   result?: LandingResult;
 }
 export interface LandingStore {
+  recoverIssue(key: string, requestFingerprint: string): LandingAuthorization | undefined;
   issue(
     key: string,
     fingerprint: string,
@@ -124,6 +125,16 @@ export class TrustedLandingService {
       approval.runId.length > 128
     )
       throw new ExecutionError("INVALID_LANDING_APPROVAL");
+    const key = JSON.stringify([approval.actor, approval.runId, approval.idempotencyKey]);
+    const requestFingerprint = JSON.stringify([
+      approval.expectedTargetSha,
+      approval.candidateSha,
+      approval.configurationRevision,
+    ]);
+    // Recover the original receipt before consulting mutable state. This grants
+    // no new permission and does not extend expiry; land() still rereads evidence.
+    const recovered = this.store.recoverIssue(key, requestFingerprint);
+    if (recovered) return recovered;
     const evidence = await this.source.read(approval.runId);
     const authorization: LandingAuthorization = {
       authorizationId: this.newId(),
@@ -142,7 +153,6 @@ export class TrustedLandingService {
     this.store.assertRepositoryIdle(authorization.repository);
     if ((await this.transport.targetHead(authorization)) !== authorization.expectedTargetSha)
       throw new ExecutionError("STALE_TARGET");
-    const key = JSON.stringify([approval.actor, approval.runId, approval.idempotencyKey]);
     const fingerprint = JSON.stringify([
       approval.expectedTargetSha,
       approval.candidateSha,
