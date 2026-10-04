@@ -1,3 +1,5 @@
+import type { CurrentKnowledge, KnowledgeRecord, EventProvenance, WorkerKnowledgeContext } from "./knowledge.ts";
+export * from "./knowledge.ts";
 import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
 export interface Project {
   id: string;
@@ -73,9 +75,12 @@ export interface Review {
   configurationRevision: string;
 }
 export interface Event {
+  provenance?: EventProvenance;
+  knowledge?: KnowledgeRecord;
   sequence: number;
   projectId: string;
   type:
+    | "knowledge.changed"
     | "thread.created"
     | "message.created"
     | "change.created"
@@ -98,6 +103,7 @@ export interface SubmitResult {
   run: Run;
 }
 export interface ExecutionInput {
+  knowledgeContext?: WorkerKnowledgeContext;
   verificationPlan?: VerificationPlan;
   changeId?: string;
   repositoryContext?: RepositoryContext;
@@ -142,6 +148,7 @@ export type ModelConfiguration =
   | { provider: "byok"; providerId: string; model: string; secretBinding: string };
 
 export interface RepositoryContext {
+  currentKnowledge?: CurrentKnowledge;
   revision: string;
   baseSha: string;
   configurationRevision: string;
