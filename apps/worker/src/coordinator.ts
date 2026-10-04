@@ -611,7 +611,7 @@ export class Coordinator {
   }
   complete(runId: string, result: ExecutionResult) {
     const run = this.evidence(runId).run;
-    if (run.candidateSha) return;
+    if (run.candidateSha || !["queued", "running"].includes(run.status)) return;
     if (result.baseSha !== run.baseSha || !/^[a-f0-9]{40}$/.test(result.candidateSha))
       throw new Error("invalid evidence");
     for (const evidence of [result.tests, result.review].filter(Boolean)) {
@@ -626,7 +626,7 @@ export class Coordinator {
       run.workerId = result.workerId;
       run.artifactId = result.artifactId;
       run.candidateSha = result.candidateSha;
-      this.state.evidence[run.id] = result.tests;
+      this.state.evidence[run.id] = structuredClone(result.tests);
       if (result.verification)
         (this.state.verification ??= {})[run.id] = structuredClone(result.verification);
       run.status = "awaiting_review";
@@ -635,7 +635,7 @@ export class Coordinator {
         const review: Review = {
           id: this.id(),
           runId: run.id,
-          ...result.review,
+          ...structuredClone(result.review),
           baseSha: run.baseSha,
           candidateSha: result.candidateSha,
           configurationRevision: run.configurationRevision,
@@ -661,6 +661,7 @@ export class Coordinator {
   }
   fail(runId: string, reconcile = false) {
     const run = this.evidence(runId).run;
+    if (!["queued", "running"].includes(run.status)) return;
     this.durableUpdate(() => {
       run.status = reconcile ? "waiting_user" : "failed";
       run.error = reconcile ? "reconciliation_required" : "execution_failed";

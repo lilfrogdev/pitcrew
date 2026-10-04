@@ -195,4 +195,121 @@ it("persists verification failures without turning an independent approval into 
   for (let i = 0; i < 6; i++) await runner.advance(f.ports);
   expect(f.store.read()!.result!.verification!.outcomes[0].status).toBe("failed");
   expect(f.store.read()!.result!.review!.decision).toBe("request_changes");
+  expect(
+    (await f.ports.review(f.store.read()!.workspace!, f.store.read()!.evidence!))!.decision,
+  ).toBe("approve");
+});
+
+it("persists cleanup intent before a failed stop and retries only cleanup across restart", async () => {
+  const f = fixture();
+  const runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  await runner.advance(f.ports);
+  let stops = 0;
+  const ports = {
+    ...f.ports,
+    change: async () => {
+      throw Error("failed");
+    },
+    stop: async () => {
+      expect(f.store.read()).toMatchObject({ stage: "blocked", cleanupPending: true });
+      if (++stops === 1) throw Error("stop failed");
+    },
+  };
+  await runner.advance(ports);
+  expect(f.store.read()!.cleanupPending).toBe(true);
+  await new DurableChangePipeline(f.store).advance(ports);
+  await new DurableChangePipeline(f.store).advance(ports);
+  expect(stops).toBe(2);
+  expect(f.store.read()!.cleanupPending).toBe(false);
+  expect(f.calls).toEqual(["prepare"]);
+});
+it("Stop during prepare retains the late workspace for cleanup and never advances it", async () => {
+  const f = fixture();
+  const runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const pending = runner.advance({
+    ...f.ports,
+    prepare: async () => {
+      await gate;
+      return f.ports.prepare(input);
+    },
+  });
+  runner.requestStop(input.runId);
+  expect(f.store.read()!.stopRequested).toBe(true);
+  release();
+  await pending;
+  await new DurableChangePipeline(f.store).advance(f.ports);
+  expect(f.store.read()).toMatchObject({
+    stage: "blocked",
+    stopRequested: true,
+    cleanupPending: false,
+  });
+  expect(f.calls).toEqual(["prepare", "stop"]);
+});
+it("separates persisted result from coordinator acknowledgement and preserves terminal results on Stop", async () => {
+  const f = fixture();
+  const runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  expect(() => runner.acknowledge(input.runId)).toThrow("result_not_ready");
+  for (let i = 0; i < 6; i++) await runner.advance(f.ports);
+  expect(f.store.read()!.resultAcknowledged).toBeUndefined();
+  const result = f.store.read()!.result;
+  new DurableChangePipeline(f.store).requestStop(input.runId);
+  new DurableChangePipeline(f.store).acknowledge(input.runId);
+  new DurableChangePipeline(f.store).acknowledge(input.runId);
+  expect(f.store.read()).toMatchObject({ stage: "done", resultAcknowledged: true, result });
+  expect(() => runner.acknowledge("later-run")).toThrow("result_not_ready");
+});
+
+it("preserves Stop arriving while failed-effect cleanup is in flight", async () => {
+  const f = fixture();
+  const runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  await runner.advance(f.ports);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let cleaning!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    cleaning = resolve;
+  });
+  const pending = runner.advance({
+    ...f.ports,
+    change: async () => {
+      throw Error("failed");
+    },
+    stop: async () => {
+      cleaning();
+      await gate;
+    },
+  });
+  await ready;
+  runner.requestStop(input.runId);
+  release();
+  await pending;
+  expect(f.store.read()).toMatchObject({
+    stage: "blocked",
+    stopRequested: true,
+    cleanupPending: false,
+  });
+});
+
+it("propagates ownership read failures before dispatch instead of treating them as supersession", async () => {
+  const f = fixture();
+  new DurableChangePipeline(f.store).start(input);
+  const runner = new DurableChangePipeline({
+    ...f.store,
+    read: () => {
+      throw Error("storage_read_failed");
+    },
+  });
+  await expect(runner.advance(f.ports)).rejects.toThrow("storage_read_failed");
+  expect(f.calls).toEqual([]);
+  expect(f.store.read()!.stage).toBe("prepare");
 });

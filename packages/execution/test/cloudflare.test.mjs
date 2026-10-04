@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { Readable } from "node:stream";
 import { CloudflareArtifacts, CloudflareSandbox } from "../src/index.ts";
 
 const baseSha = "a".repeat(40);
@@ -257,4 +260,66 @@ test("file tool paths/size bounded before exec; content is passed as an argument
   assert.equal(f.calls.exec.length, 0);
   await f.sandbox.writeFile(workspace, "src/file.ts", "literal $(shell)");
   assert.equal(f.calls.exec[0].argv.at(-1), "literal $(shell)");
+});
+
+test("native abort port stops a real owned process and descendant while unrelated work continues", async () => {
+  const f = fixture();
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { shell: false });
+  const unrelatedExit = once(unrelated, "exit");
+  let owned;
+  let ownedExit;
+  let descendant;
+  let ready;
+  const started = new Promise((resolve) => {
+    ready = resolve;
+  });
+  f.container.exec = async () => {
+    owned = spawn(
+      process.execPath,
+      [
+        "-e",
+        `
+      const { spawn } = require("node:child_process");
+      const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
+      process.stdout.write(String(child.pid));
+      process.on("SIGTERM", () => {
+        child.once("exit", () => process.exit(0));
+        child.kill();
+      });
+    `,
+      ],
+      { shell: false, detached: true },
+    );
+    ownedExit = once(owned, "exit");
+    owned.stdout.once("data", (data) => {
+      descendant = Number(data.toString());
+      ready();
+    });
+    return {
+      stdout: Readable.toWeb(owned.stdout),
+      stderr: Readable.toWeb(owned.stderr),
+      exitCode: ownedExit.then(([code]) => code),
+    };
+  };
+  f.container.destroy = async () => {
+    process.kill(-owned.pid, "SIGTERM");
+    await ownedExit;
+  };
+  const controller = new AbortController();
+  try {
+    const pending = f.sandbox.run(workspace, { ...cmd, timeoutMs: 5000 }, controller.signal);
+    await started;
+    assert.ok(descendant > 0);
+    controller.abort();
+    assert.equal((await pending).status, "stopped");
+    assert.throws(() => process.kill(descendant, 0), { code: "ESRCH" });
+    assert.doesNotThrow(() => process.kill(unrelated.pid, 0));
+  } finally {
+    if (owned && owned.exitCode === null) {
+      process.kill(-owned.pid, "SIGTERM");
+      await ownedExit;
+    }
+    unrelated.kill();
+    await unrelatedExit;
+  }
 });

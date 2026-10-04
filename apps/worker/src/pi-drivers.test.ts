@@ -332,3 +332,45 @@ it("gives acceptance to the worker and restricts independent verification review
     ),
   ).rejects.toThrow("invalid_review");
 });
+
+it("never treats interrupted child/reviewer receipts as terminal success", async () => {
+  const interrupted: DurablePrompt = {
+    submit: async () => ({}),
+    wait: async () => ({ status: "unanswered", text: "partial result" }),
+  };
+  let inspected = false;
+  await expect(
+    applyChange(
+      interrupted,
+      {
+        ...transport,
+        inspect: async () => {
+          inspected = true;
+          return { sha: candidate, clean: true };
+        },
+      },
+      workspace,
+      input,
+    ),
+  ).rejects.toThrow("change_unanswered");
+  expect(inspected).toBe(false);
+  await expect(reviewCandidate(interrupted, workspace, evidence)).rejects.toThrow(
+    "review_unanswered",
+  );
+});
+it("keeps review retry identity stable and rejects changed candidate within a round", async () => {
+  const round = prompt('{"decision":"approve","summary":"checked"}');
+  const original = await reviewCandidate(round, workspace, evidence);
+  expect(await reviewCandidate(round, workspace, evidence)).toEqual(original);
+  await expect(
+    reviewCandidate(round, workspace, { ...evidence, candidateSha: "c".repeat(40) }),
+  ).rejects.toThrow("conflict");
+  const nextWorkspace = { ...workspace, runId: "r2" };
+  const next = await reviewCandidate(round, nextWorkspace, {
+    ...evidence,
+    runId: "r2",
+    candidateSha: "c".repeat(40),
+  });
+  expect(next.candidateSha).toBe("c".repeat(40));
+  expect(original.candidateSha).toBe(candidate);
+});
