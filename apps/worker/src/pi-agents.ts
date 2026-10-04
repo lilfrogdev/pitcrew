@@ -3,7 +3,13 @@ import { Agent } from "agents";
 import { PiHarness } from "agents/harness/pi";
 import { createRegistry, defineTool, Harness } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
-import type { ExecutionInput, ModelConfiguration } from "@pitcrew/protocol";
+import type {
+  ExecutionInput,
+  ModelConfiguration,
+  KnowledgeAck,
+  KnowledgeReport,
+  WorkerKnowledgeContext,
+} from "@pitcrew/protocol";
 import {
   CloudflareArtifacts,
   CloudflareSandbox,
@@ -23,6 +29,16 @@ import {
 } from "./pi-drivers";
 import { DurableChangePipeline, type PipelineState } from "./durable-pipeline";
 import { DurableJobs } from "./durable-jobs";
+import { KnowledgeOutbox, type KnowledgeDelivery } from "./knowledge-outbox";
+import { knowledgeReporting } from "./knowledge-reporting";
+import type { RepositoryAgent } from "./index";
+// The coordinator owner supplies this RPC. Keep the worker seam independent of its implementation.
+interface WorkerKnowledgeReceiver {
+  appendWorkerKnowledge(
+    context: WorkerKnowledgeContext,
+    report: KnowledgeReport,
+  ): Promise<KnowledgeAck>;
+}
 export interface PiEnv {
   ENVIRONMENT: string;
   EXECUTION_MODE: string;
@@ -32,6 +48,7 @@ export interface PiEnv {
   ARTIFACTS?: Artifacts;
   SANDBOX_IMAGE?: string;
   REVIEW: DurableObjectNamespace<ReviewAgent>;
+  REPOSITORY: DurableObjectNamespace<RepositoryAgent>;
 }
 interface Context {
   workspace: Workspace;
@@ -128,6 +145,12 @@ abstract class TaskAgent extends Agent<PiEnv> {
   }
 }
 export class ChangeAgent extends TaskAgent {
+  private readonly knowledgeOutbox: KnowledgeOutbox;
+  private readonly knowledgeJobs: DurableJobs;
+  protected async enqueueKnowledge(delivery: KnowledgeDelivery) {
+    this.knowledgeOutbox.enqueue(delivery);
+    await this.knowledgeJobs.enqueue("delivery", { runId: delivery.context.runId });
+  }
   private mutate<T>(callId: string, body: unknown, action: () => Promise<T>) {
     void this
       .sql`CREATE TABLE IF NOT EXISTS tool_mutations(id TEXT PRIMARY KEY,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT)`;
@@ -167,7 +190,42 @@ export class ChangeAgent extends TaskAgent {
       sandboxImage(this.env.SANDBOX_IMAGE, this.ctx.container.images),
     );
   }
+  private installKnowledgeReporting() {
+    if (this.pipeline.status()?.input.knowledgeContext) {
+      this.registry.install(
+        knowledgeReporting({
+          context: () => {
+            const context = this.context().input?.knowledgeContext;
+            if (!context) throw Error("knowledge_not_configured");
+            return context;
+          },
+          readSource: async (path, revision) => {
+            const { workspace, input } = this.context();
+            if (revision === "base") {
+              if (!this.env.ARTIFACTS || !input) throw Error("knowledge_not_configured");
+              using fork = await this.env.ARTIFACTS.get(workspace.artifactId);
+              const blob = await fork.readFile({ ref: input.baseSha, path });
+              if (!blob || blob.size > 65536) throw Error("knowledge_source_unavailable");
+              return { text: await blob.text(), sha: input.baseSha };
+            }
+            const transport = this.transport();
+            const before = await transport.inspect(workspace);
+            if (!before.clean || before.sha === workspace.baseSha)
+              throw Error("knowledge_candidate_not_pinned");
+            const text = await transport.readFile(workspace, path);
+            const after = await transport.inspect(workspace);
+            if (!after.clean || after.sha !== before.sha) throw Error("knowledge_source_mismatch");
+            return { text, sha: before.sha };
+          },
+          enqueue: (delivery) => this.enqueueKnowledge(delivery),
+          flush: () =>
+            this.knowledgeJobs.enqueue("delivery", { runId: this.context().workspace.runId }),
+        }),
+      );
+    }
+  }
   protected installTools() {
+    this.installKnowledgeReporting();
     const Read = Type.Object({ path: Type.String({ maxLength: 1024 }) });
     const Write = Type.Object({
       path: Type.String({ maxLength: 1024 }),
@@ -245,6 +303,30 @@ export class ChangeAgent extends TaskAgent {
   private readonly jobs: DurableJobs;
   constructor(ctx: DurableObjectState, env: PiEnv) {
     super(ctx, env);
+    this.knowledgeOutbox = new KnowledgeOutbox(ctx.storage.sql);
+    this.knowledgeJobs = new DurableJobs(
+      "worker-knowledge-delivery",
+      async (jobs) => {
+        if (this.knowledgeOutbox.pending().length) await jobs.enqueue("delivery", {});
+      },
+      async () => {
+        try {
+          await this.knowledgeOutbox.deliver(({ context, report }) =>
+            (
+              this.env.REPOSITORY.get(
+                this.env.REPOSITORY.idFromName("pitcrew"),
+              ) as unknown as WorkerKnowledgeReceiver
+            ).appendWorkerKnowledge(context, report),
+          );
+        } catch {
+          return { rescheduleAt: Date.now() + 1000 };
+        }
+        return this.knowledgeOutbox.pending().length
+          ? { rescheduleAt: Date.now() + 1000 }
+          : undefined;
+      },
+    );
+    this.lifecycle.use(this.knowledgeJobs);
     void this
       .sql`CREATE TABLE IF NOT EXISTS change_pipeline(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
     this.pipeline = new DurableChangePipeline({
@@ -273,6 +355,9 @@ export class ChangeAgent extends TaskAgent {
               bootstrapDependencies(transport, workspace),
             );
             this.bind({ workspace, input });
+            // PiHarness opens on lifecycle startup, before a new pipeline is admitted.
+            // Publish reporting tools once the frozen request and task context are bound.
+            this.installKnowledgeReporting();
             const signal = AbortSignal.timeout(500);
             try {
               return await applyChange(await this.prompt(), transport, workspace, input, signal);
