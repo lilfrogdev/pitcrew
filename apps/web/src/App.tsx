@@ -1,3 +1,4 @@
+import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Project, Run, Snapshot, Thread } from "./api";
@@ -31,6 +32,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [error, setError] = useState("");
   const [announcement, setAnnouncement] = useState("");
   const [revision, setRevision] = useState(0);
+  const requestedThread = useRef<string | undefined>(undefined);
   const generation = useRef(0);
   const pending = useRef<{ threadId: string; content: string; key: string } | null>(null);
   const createKey = useRef<{ projectId: string; title: string; key: string } | null>(null);
@@ -86,7 +88,12 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       .then((items) => {
         if (!cancelled) {
           setThreads(items);
-          setThreadId((id) => (items.some((item) => item.id === id) ? id : (items[0]?.id ?? "")));
+          const requested = requestedThread.current;
+          requestedThread.current = undefined;
+          setThreadId((id) => {
+            const desired = requested ?? id;
+            return items.some((item) => item.id === desired) ? desired : (items[0]?.id ?? "");
+          });
           setLoading(false);
           setError("");
         }
@@ -217,54 +224,42 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       <a className="skip" href="#conversation">
         Skip to conversation
       </a>
-      <aside className="sidebar" aria-label="Projects and threads">
-        <div className="brand">
-          <span className="brand-icon" aria-hidden="true">
-            P
-          </span>
-          <strong>Pitcrew</strong>
-        </div>
-        <div className="section-label">Projects</div>
-        <nav aria-label="Projects">
-          {projects.map((item) => (
-            <button
-              key={item.id}
-              className={`project ${item.id === projectId ? "selected" : ""}`}
-              aria-label={`${item.name} · ${item.repository}`}
-              aria-current={item.id === projectId ? "page" : undefined}
-              disabled={busy}
-              onClick={() => {
-                if (item.id === projectId) return;
-                setProjectId(item.id);
-                setThreads([]);
-                setThreadId("");
-                setSnapshot(empty);
-                setCreating(false);
-              }}
-            >
-              <span className="project-icon" aria-hidden="true">
-                {item.name.slice(0, 1)}
-              </span>
-              <span>
-                {item.name}
-                <small>{item.repository}</small>
-              </span>
-            </button>
-          ))}
-        </nav>
-        <div className="thread-heading">
-          <span className="section-label">Threads</span>
-          <button
-            aria-label="Create thread"
-            disabled={!projectId || busy}
-            onClick={() => setCreating((value) => !value)}
-          >
-            +
-          </button>
-        </div>
+      <Sidebar
+        api={api}
+        projects={projects}
+        projectId={projectId}
+        threads={threads}
+        threadId={threadId}
+        revision={revision}
+        busy={busy}
+        activeRun={latest}
+        onSelect={(repository, conversation) => {
+          if (repository === projectId) {
+            if (conversation) setThreadId(conversation);
+            return;
+          }
+          requestedThread.current = conversation;
+          setProjectId(repository);
+          setThreads([]);
+          setThreadId("");
+          setSnapshot(empty);
+          setCreating(false);
+        }}
+        onCreate={(repository) => {
+          if (repository !== projectId) {
+            requestedThread.current = undefined;
+            setProjectId(repository);
+            setThreads([]);
+            setThreadId("");
+            setSnapshot(empty);
+          }
+          setTitle("");
+          setCreating(true);
+        }}
+      >
         {creating && (
           <form className="new-thread" onSubmit={addThread}>
-            <label htmlFor="thread-title">Thread title</label>
+            <label htmlFor="thread-title">Conversation title</label>
             <input
               id="thread-title"
               autoFocus
@@ -282,28 +277,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             </button>
           </form>
         )}
-        <nav aria-label="Threads">
-          {threads.map((item) => (
-            <button
-              key={item.id}
-              className={`thread ${item.id === threadId ? "selected" : ""}`}
-              aria-current={item.id === threadId ? "page" : undefined}
-              onClick={() => setThreadId(item.id)}
-            >
-              <span aria-hidden="true">#</span>
-              {item.title}
-            </button>
-          ))}
-        </nav>
-        {!loading && projectId && !threads.length && (
-          <p className="hint">No threads yet. Create one to start a change.</p>
-        )}
-        <div className="sidebar-footer">
-          <button onClick={refresh} disabled={busy} aria-label="Reconnect and refresh">
-            ↻
-          </button>
-        </div>
-      </aside>
+      </Sidebar>
       <main id="conversation" className="conversation" tabIndex={-1}>
         <header className="conversation-header">
           <div>
