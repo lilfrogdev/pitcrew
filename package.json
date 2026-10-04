@@ -7,7 +7,7 @@
     "check": "vp check",
     "typecheck": "tsc --noEmit && tsc -p apps/web/tsconfig.json && tsc -p packages/execution/tsconfig.json",
     "test": "vp test run && vp -C apps/web test run && node --experimental-transform-types --test packages/execution/test/*.test.mjs",
-    "build:worker": "WRANGLER_SEND_METRICS=false WRANGLER_LOG_PATH=dist/wrangler.log wrangler deploy --dry-run --env=\"\" --outdir dist/worker --config apps/worker/wrangler.jsonc",
+    "build:worker": "vp -C apps/web build && WRANGLER_SEND_METRICS=false WRANGLER_LOG_PATH=dist/wrangler.log wrangler deploy --dry-run --env=\"\" --outdir dist/worker --config apps/worker/wrangler.jsonc",
     "build:web": "vp -C apps/web build"
   },
   "devDependencies": {

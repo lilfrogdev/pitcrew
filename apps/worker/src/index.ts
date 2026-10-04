@@ -1,12 +1,16 @@
 import { SqliteLandingStore } from "../../../packages/execution/src/landing-store";
 import { fixtureLandingApi, assertConfigurationIdle, type LandingApi } from "./landing-api";
+import { cloudInitialState } from "./cloud-configuration";
+import { principal, protectedFetch, type AccessEnv } from "./access";
 import { Agent } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
 export { ChangeAgent, ReviewAgent };
 import { DurableJobs } from "./durable-jobs";
-import { api, fixtureAccess } from "./api";
+import { api } from "./api";
 import { Coordinator, fakeExecution, initialState, type State } from "./coordinator";
-interface Env extends PiEnv {
+interface Env extends PiEnv, AccessEnv {
+  ASSETS?: Fetcher;
+  PROJECT_BASE_SHA?: string;
   CHANGE: DurableObjectNamespace<ChangeAgent>;
   ARTIFACT_REPOSITORY?: string;
   REPOSITORY: DurableObjectNamespace<RepositoryAgent>;
@@ -96,28 +100,31 @@ export class RepositoryAgent extends Agent<Env> {
     void this
       .sql`CREATE TABLE IF NOT EXISTS repository_state (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)`;
     const rows = this.sql<{ value: string }>`SELECT value FROM repository_state WHERE id=1`;
-    this.coordinator = new Coordinator(
-      rows[0] ? (JSON.parse(rows[0].value) as State) : initialState(),
-      (state) =>
-        this.ctx.storage.transactionSync(() => {
-          const [previous] = this.sql<{
-            value: string;
-          }>`SELECT value FROM repository_state WHERE id=1`;
-          if (previous)
-            assertConfigurationIdle(
-              this.getLandingStore(),
-              (JSON.parse(previous.value) as State).project,
-              state.project,
-            );
-          void this
-            .sql`INSERT INTO repository_state(id,value) VALUES(1,${JSON.stringify(state)}) ON CONFLICT(id) DO UPDATE SET value=excluded.value`;
-        }),
+    const state = rows[0]
+      ? (JSON.parse(rows[0].value) as State)
+      : this.env.EXECUTION_MODE === "cloud"
+        ? cloudInitialState(this.env)
+        : initialState();
+    this.coordinator = new Coordinator(state, (state) =>
+      this.ctx.storage.transactionSync(() => {
+        const [previous] = this.sql<{
+          value: string;
+        }>`SELECT value FROM repository_state WHERE id=1`;
+        if (previous)
+          assertConfigurationIdle(
+            this.getLandingStore(),
+            (JSON.parse(previous.value) as State).project,
+            state.project,
+          );
+        void this
+          .sql`INSERT INTO repository_state(id,value) VALUES(1,${JSON.stringify(state)}) ON CONFLICT(id) DO UPDATE SET value=excluded.value`;
+      }),
     );
     this.coordinator.recover(this.env.EXECUTION_MODE === "cloud");
     return this.coordinator;
   }
   async onRequest(request: Request) {
-    if (!fixtureAccess(request, this.env))
+    if (!(await principal(request, this.env)))
       return Response.json({ error: "access_not_configured" }, { status: 403 });
     if (Number(request.headers.get("content-length") ?? 0) > 16384)
       return Response.json({ error: "body_too_large" }, { status: 413 });
@@ -135,10 +142,15 @@ export class RepositoryAgent extends Agent<Env> {
   }
 }
 export default {
-  async fetch(request: Request, env: Env) {
-    if (!fixtureAccess(request, env))
-      return Response.json({ error: "access_not_configured" }, { status: 403 });
-    const stub = env.REPOSITORY.get(env.REPOSITORY.idFromName("pitcrew"));
-    return stub.fetch(request);
+  fetch(request: Request, env: Env) {
+    return protectedFetch(
+      request,
+      env,
+      (request) => {
+        const stub = env.REPOSITORY.get(env.REPOSITORY.idFromName("pitcrew"));
+        return stub.fetch(request);
+      },
+      env.ASSETS,
+    );
   },
 } satisfies ExportedHandler<Env>;

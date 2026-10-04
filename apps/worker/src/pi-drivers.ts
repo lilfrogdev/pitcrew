@@ -11,6 +11,21 @@ export interface DurablePrompt {
     options?: { signal?: AbortSignal },
   ): Promise<{ status: "done" | "unanswered"; text?: string }>;
 }
+export async function bootstrapDependencies(transport: WorkspaceTransport, workspace: Workspace) {
+  const before = await transport.inspect(workspace);
+  if (!before.clean || before.sha !== workspace.baseSha) throw Error("bootstrap_context_mismatch");
+  const result = await transport.run(workspace, {
+    commandId: "dependencies",
+    argv: ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts", "--reporter=silent"],
+    timeoutMs: 180000,
+    maxOutputBytes: 16384,
+  });
+  if (result.status !== "completed" || result.exitCode !== 0 || result.truncated)
+    throw Error("bootstrap_failed");
+  const after = await transport.inspect(workspace);
+  if (!after.clean || after.sha !== workspace.baseSha) throw Error("bootstrap_changed_source");
+  return { prepared: true };
+}
 export async function applyChange(
   harness: DurablePrompt,
   transport: WorkspaceTransport,
