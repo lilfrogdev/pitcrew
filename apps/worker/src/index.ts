@@ -1,3 +1,5 @@
+import { SqliteLandingStore } from "../../../packages/execution/src/landing-store";
+import { fixtureLandingApi, assertConfigurationIdle, type LandingApi } from "./landing-api";
 import { Agent } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
 export { ChangeAgent, ReviewAgent };
@@ -10,10 +12,43 @@ interface Env extends PiEnv {
   REPOSITORY: DurableObjectNamespace<RepositoryAgent>;
   ENVIRONMENT: string;
   FIXTURE_IDENTITY?: string;
+  LANDING_MODE?: string;
   EXECUTION_MODE: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
+  private landingStore?: SqliteLandingStore;
+  private getLandingStore() {
+    return (this.landingStore ??= new SqliteLandingStore(this.ctx.storage));
+  }
+  private landing(core: Coordinator): LandingApi | undefined {
+    if (
+      this.env.ENVIRONMENT !== "development" ||
+      this.env.LANDING_MODE !== "fixture" ||
+      this.env.FIXTURE_IDENTITY !== "lilfrogdev"
+    )
+      return;
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS fixture_target(id INTEGER PRIMARY KEY,sha TEXT NOT NULL)`;
+    void this.sql`INSERT OR IGNORE INTO fixture_target VALUES(1,${core.state.project.baseSha})`;
+    return fixtureLandingApi(
+      core,
+      this.getLandingStore(),
+      {
+        targetHead: async () =>
+          this.sql<{ sha: string }>`SELECT sha FROM fixture_target WHERE id=1`[0].sha,
+        land: async (authorization) =>
+          this.ctx.storage.transactionSync(() => {
+            const [target] = this.sql<{ sha: string }>`SELECT sha FROM fixture_target WHERE id=1`;
+            if (target.sha !== authorization.expectedTargetSha)
+              return { status: "rejected", code: "STALE_TARGET" };
+            void this.sql`UPDATE fixture_target SET sha=${authorization.candidateSha} WHERE id=1`;
+            return { status: "landed" };
+          }),
+      },
+      this.env.FIXTURE_IDENTITY,
+    );
+  }
   private readonly jobs: DurableJobs;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -63,10 +98,20 @@ export class RepositoryAgent extends Agent<Env> {
     const rows = this.sql<{ value: string }>`SELECT value FROM repository_state WHERE id=1`;
     this.coordinator = new Coordinator(
       rows[0] ? (JSON.parse(rows[0].value) as State) : initialState(),
-      (state) => {
-        void this
-          .sql`INSERT INTO repository_state(id,value) VALUES(1,${JSON.stringify(state)}) ON CONFLICT(id) DO UPDATE SET value=excluded.value`;
-      },
+      (state) =>
+        this.ctx.storage.transactionSync(() => {
+          const [previous] = this.sql<{
+            value: string;
+          }>`SELECT value FROM repository_state WHERE id=1`;
+          if (previous)
+            assertConfigurationIdle(
+              this.getLandingStore(),
+              (JSON.parse(previous.value) as State).project,
+              state.project,
+            );
+          void this
+            .sql`INSERT INTO repository_state(id,value) VALUES(1,${JSON.stringify(state)}) ON CONFLICT(id) DO UPDATE SET value=excluded.value`;
+        }),
     );
     this.coordinator.recover(this.env.EXECUTION_MODE === "cloud");
     return this.coordinator;
@@ -77,11 +122,15 @@ export class RepositoryAgent extends Agent<Env> {
     if (Number(request.headers.get("content-length") ?? 0) > 16384)
       return Response.json({ error: "body_too_large" }, { status: 413 });
     const coordinator = this.getCoordinator();
-    const app = api(coordinator, async (id) => {
-      if (this.env.EXECUTION_MODE === "fake")
-        this.ctx.waitUntil(coordinator.dispatch(id, fakeExecution));
-      if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
-    });
+    const app = api(
+      coordinator,
+      async (id) => {
+        if (this.env.EXECUTION_MODE === "fake")
+          this.ctx.waitUntil(coordinator.dispatch(id, fakeExecution));
+        if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
+      },
+      this.landing(coordinator),
+    );
     return app.fetch(request);
   }
 }

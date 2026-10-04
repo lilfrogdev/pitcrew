@@ -150,5 +150,5 @@ it("browser API admits two concurrent isolated edits, tests and reviews exact ev
         body: "{}",
       })
     ).status,
-  ).toBe(501);
+  ).toBe(503);
 });
