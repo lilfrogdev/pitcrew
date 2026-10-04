@@ -1,0 +1,123 @@
+.shell {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  min-height: 100dvh;
+}
+.work {
+  min-width: 0;
+}
+.work[hidden] {
+  display: none;
+}
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 6px;
+  background: var(--canvas);
+  border-right: 1px solid var(--border);
+  height: 100dvh;
+  position: sticky;
+  top: 0;
+}
+.item {
+  width: 38px;
+  height: 38px;
+  padding: 9px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 11px;
+  color: var(--muted);
+  background: transparent;
+}
+.item[aria-current="page"] {
+  color: var(--text);
+  background: var(--selection);
+}
+.item svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.account {
+  margin-top: auto;
+}
+.placeholder {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  min-height: 100dvh;
+}
+.context {
+  padding: 24px 18px;
+  border-right: 1px solid var(--border);
+  background: var(--canvas);
+}
+.context h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.placeholderMain {
+  min-width: 0;
+  background: var(--surface);
+  outline: none;
+}
+.placeholderMain header {
+  padding: 24px 30px;
+  border-bottom: 1px solid var(--border);
+}
+.placeholderText {
+  padding: 30px;
+  color: var(--muted);
+}
+@media (min-width: 1500px) {
+  .placeholder {
+    grid-template-columns: 270px minmax(0, 1fr);
+  }
+}
+@media (max-width: 1100px) {
+  .placeholder {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+@media (max-width: 650px) {
+  .shell {
+    display: flex;
+    flex-direction: column;
+  }
+  .rail {
+    flex-direction: row;
+    height: auto;
+    width: 100%;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    z-index: 2;
+  }
+  .account {
+    margin-top: 0;
+    margin-left: auto;
+  }
+  .placeholder {
+    min-height: calc(100dvh - 55px);
+    display: flex;
+    flex-direction: column;
+  }
+  .context {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 20px 16px;
+  }
+  .placeholderMain {
+    flex: 1;
+  }
+  .placeholderMain header,
+  .placeholderText {
+    padding: 20px;
+  }
+}

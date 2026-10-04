@@ -1,3 +1,5 @@
+import { NavigationRail, WorkspacePlaceholder, type WorkspaceSection } from "./NavigationRail";
+import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -17,6 +19,7 @@ const labels: Record<Run["status"], string> = {
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong. Try again.";
 export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
+  const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
   const [landingStates, setLandingStates] = useState<Record<string, LandingState>>({});
   const [projects, setProjects] = useState<Project[]>([]);
@@ -242,322 +245,328 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const thread = threads.find((item) => item.id === threadId);
   const latest = snapshot.runs.at(-1);
   return (
-    <div className="shell">
-      <a className="skip" href="#conversation">
-        Skip to conversation
+    <div className={shellStyles.shell}>
+      <a className="skip" href={section === "work" ? "#conversation" : "#workspace-content"}>
+        {section === "work" ? "Skip to conversation" : "Skip to content"}
       </a>
-      <Sidebar
-        api={api}
-        projects={projects}
-        projectId={projectId}
-        threads={threads}
-        threadId={threadId}
-        revision={revision + sidebarRevision}
-        onArchive={archiveThread}
-        busy={busy}
-        activeRun={latest}
-        onSelect={(repository, conversation) => {
-          if (repository === projectId) {
-            if (conversation) setThreadId(conversation);
-            return;
-          }
-          requestedThread.current = conversation;
-          setProjectId(repository);
-          setThreads([]);
-          setThreadId("");
-          setSnapshot(empty);
-          setCreating(false);
-        }}
-        onCreate={(repository) => {
-          if (repository !== projectId) {
-            requestedThread.current = undefined;
+      <NavigationRail section={section} onSelect={setSection} />
+      <div className={`shell ${shellStyles.work}`} hidden={section !== "work"}>
+        <Sidebar
+          api={api}
+          projects={projects}
+          projectId={projectId}
+          threads={threads}
+          threadId={threadId}
+          revision={revision + sidebarRevision}
+          onArchive={archiveThread}
+          busy={busy}
+          activeRun={latest}
+          onSelect={(repository, conversation) => {
+            if (repository === projectId) {
+              if (conversation) setThreadId(conversation);
+              return;
+            }
+            requestedThread.current = conversation;
             setProjectId(repository);
             setThreads([]);
             setThreadId("");
             setSnapshot(empty);
-          }
-          setTitle("");
-          setCreating(true);
-        }}
-      >
-        {creating && (
-          <form className="new-thread" onSubmit={addThread}>
-            <label htmlFor="thread-title">Conversation title</label>
-            <input
-              id="thread-title"
-              autoFocus
-              maxLength={160}
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              required
-              disabled={busy}
-            />
-            <button type="submit" disabled={busy || !title.trim()}>
-              Create
-            </button>
-            <button type="button" disabled={busy} onClick={() => setCreating(false)}>
-              Cancel
-            </button>
-          </form>
-        )}
-      </Sidebar>
-      <main id="conversation" className="conversation" tabIndex={-1}>
-        <header className="conversation-header">
-          <div>
-            <p className="eyebrow">{project?.name ?? "Workspace"} / Change thread</p>
-            <h1>{thread?.title ?? "Your project conversations"}</h1>
-          </div>
-          {latest && <span className={`status ${latest.status}`}>{labels[latest.status]}</span>}
-        </header>
-        {!demo && projectId && (
-          <details className="intake-panel" open={!threadId}>
-            <summary>Collect and group reports</summary>
-            <Intake key={projectId} projectId={projectId} onDispatch={refresh} />
-          </details>
-        )}
-        {error && (
-          <div role="alert" className="error">
-            <span>{error}</span>
-            <button onClick={refresh} disabled={busy}>
-              Retry connection
-            </button>
-          </div>
-        )}
-        <div
-          className="transcript"
-          role="log"
-          aria-label="Conversation transcript"
-          aria-busy={loading}
+            setCreating(false);
+          }}
+          onCreate={(repository) => {
+            if (repository !== projectId) {
+              requestedThread.current = undefined;
+              setProjectId(repository);
+              setThreads([]);
+              setThreadId("");
+              setSnapshot(empty);
+            }
+            setTitle("");
+            setCreating(true);
+          }}
         >
-          {loading ? (
-            <p className="empty">Loading conversation…</p>
-          ) : !thread ? (
-            <div className="empty">
-              <h2>A place for every change</h2>
-              <p>Select a project and create a thread to work with your crew.</p>
-            </div>
-          ) : !snapshot.messages.length ? (
-            <div className="empty">
-              <h2>Start with the outcome</h2>
-              <p>
-                Describe what you want changed. Your repository agent will coordinate a separate
-                worker and reviewer.
-              </p>
-            </div>
-          ) : (
-            snapshot.messages.map((message) => (
-              <article className={`message ${message.role}`} key={message.id}>
-                <div className="avatar" aria-hidden="true">
-                  {message.role === "user" ? "Y" : message.role.slice(0, 1).toUpperCase()}
-                </div>
-                <div className="message-body">
-                  <div className="message-meta">
-                    <strong>
-                      {message.role === "user"
-                        ? "You"
-                        : message.role === "coordinator"
-                          ? "Repository agent"
-                          : message.role === "worker"
-                            ? "Change worker"
-                            : "Reviewer"}
-                    </strong>
-                    <time dateTime={message.createdAt}>
-                      {new Date(message.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </time>
-                  </div>
-                  <p>{message.content}</p>
-                </div>
-              </article>
-            ))
+          {creating && (
+            <form className="new-thread" onSubmit={addThread}>
+              <label htmlFor="thread-title">Conversation title</label>
+              <input
+                id="thread-title"
+                autoFocus
+                maxLength={160}
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                required
+                disabled={busy}
+              />
+              <button type="submit" disabled={busy || !title.trim()}>
+                Create
+              </button>
+              <button type="button" disabled={busy} onClick={() => setCreating(false)}>
+                Cancel
+              </button>
+            </form>
           )}
-        </div>
-        <form className="composer" onSubmit={send}>
-          <label htmlFor="message">Message your crew</label>
-          <textarea
-            id="message"
-            placeholder="Describe a change or ask about the work…"
-            maxLength={8000}
-            rows={3}
-            value={drafts[threadId] ?? ""}
-            disabled={!threadId || busy}
-            onChange={(event) => setDrafts((all) => ({ ...all, [threadId]: event.target.value }))}
-          />
-          <div className="composer-footer">
-            <button
-              type="submit"
-              disabled={!threadId || busy || loading || !(drafts[threadId] ?? "").trim()}
-            >
-              {busy ? "Sending…" : "Send message"}
-              <span aria-hidden="true"> ↑</span>
-            </button>
-          </div>
-        </form>
-        <p className="sr-only" role="status">
-          {announcement}
-        </p>
-      </main>
-      <aside className="evidence" aria-label="Change evidence">
-        <div className="evidence-heading">
-          <h2>Change evidence</h2>
-          <span>{snapshot.runs.length} runs</span>
-        </div>
-        {!snapshot.runs.length && (
-          <p className="hint">
-            Worker activity, tests, and trusted reviews will appear here when a change runs.
-          </p>
-        )}
-        {[...snapshot.runs].reverse().map((run) => {
-          const evidence = snapshot.evidence.find((item) => item.run.id === run.id);
-          const reviews = snapshot.reviews.filter((item) => item.runId === run.id);
-          return (
-            <section className="run-card" key={run.id}>
-              <div className="run-title">
-                <strong>Change run</strong>
-                <span className={`status ${run.status}`}>{labels[run.status]}</span>
+        </Sidebar>
+        <main id="conversation" className="conversation" tabIndex={-1}>
+          <header className="conversation-header">
+            <div>
+              <p className="eyebrow">{project?.name ?? "Workspace"} / Change thread</p>
+              <h1>{thread?.title ?? "Your project conversations"}</h1>
+            </div>
+            {latest && <span className={`status ${latest.status}`}>{labels[latest.status]}</span>}
+          </header>
+          {!demo && projectId && (
+            <details className="intake-panel" open={!threadId}>
+              <summary>Collect and group reports</summary>
+              <Intake key={projectId} projectId={projectId} onDispatch={refresh} />
+            </details>
+          )}
+          {error && (
+            <div role="alert" className="error">
+              <span>{error}</span>
+              <button onClick={refresh} disabled={busy}>
+                Retry connection
+              </button>
+            </div>
+          )}
+          <div
+            className="transcript"
+            role="log"
+            aria-label="Conversation transcript"
+            aria-busy={loading}
+          >
+            {loading ? (
+              <p className="empty">Loading conversation…</p>
+            ) : !thread ? (
+              <div className="empty">
+                <h2>A place for every change</h2>
+                <p>Select a project and create a thread to work with your crew.</p>
               </div>
-              {run.error && (
-                <p className="run-error">
-                  {run.error === "reconciliation_required"
-                    ? "Execution needs reconciliation before another attempt. No work has been replayed."
-                    : run.error === "execution_unavailable"
-                      ? "Cloud execution is unavailable."
-                      : "Execution failed. Inspect the evidence before trying a new change."}
+            ) : !snapshot.messages.length ? (
+              <div className="empty">
+                <h2>Start with the outcome</h2>
+                <p>
+                  Describe what you want changed. Your repository agent will coordinate a separate
+                  worker and reviewer.
                 </p>
-              )}
-              <details>
-                <summary>Tests and tool output</summary>
-                <p className="run-id">{run.id}</p>
-                <dl>
-                  <dt>Base</dt>
-                  <dd>
-                    <code>{run.baseSha}</code>
-                  </dd>
-                  <dt>Candidate</dt>
-                  <dd>
-                    <code>{run.candidateSha ?? "Not available yet"}</code>
-                  </dd>
-                  {run.workerId && (
-                    <>
-                      <dt>Worker</dt>
-                      <dd>{run.workerId}</dd>
-                    </>
+              </div>
+            ) : (
+              snapshot.messages.map((message) => (
+                <article className={`message ${message.role}`} key={message.id}>
+                  <div className="avatar" aria-hidden="true">
+                    {message.role === "user" ? "Y" : message.role.slice(0, 1).toUpperCase()}
+                  </div>
+                  <div className="message-body">
+                    <div className="message-meta">
+                      <strong>
+                        {message.role === "user"
+                          ? "You"
+                          : message.role === "coordinator"
+                            ? "Repository agent"
+                            : message.role === "worker"
+                              ? "Change worker"
+                              : "Reviewer"}
+                      </strong>
+                      <time dateTime={message.createdAt}>
+                        {new Date(message.createdAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </div>
+                    <p>{message.content}</p>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+          <form className="composer" onSubmit={send}>
+            <label htmlFor="message">Message your crew</label>
+            <textarea
+              id="message"
+              placeholder="Describe a change or ask about the work…"
+              maxLength={8000}
+              rows={3}
+              value={drafts[threadId] ?? ""}
+              disabled={!threadId || busy}
+              onChange={(event) => setDrafts((all) => ({ ...all, [threadId]: event.target.value }))}
+            />
+            <div className="composer-footer">
+              <button
+                type="submit"
+                disabled={!threadId || busy || loading || !(drafts[threadId] ?? "").trim()}
+              >
+                {busy ? "Sending…" : "Send message"}
+                <span aria-hidden="true"> ↑</span>
+              </button>
+            </div>
+          </form>
+          <p className="sr-only" role="status">
+            {announcement}
+          </p>
+        </main>
+        <aside className="evidence" aria-label="Change evidence">
+          <div className="evidence-heading">
+            <h2>Change evidence</h2>
+            <span>{snapshot.runs.length} runs</span>
+          </div>
+          {!snapshot.runs.length && (
+            <p className="hint">
+              Worker activity, tests, and trusted reviews will appear here when a change runs.
+            </p>
+          )}
+          {[...snapshot.runs].reverse().map((run) => {
+            const evidence = snapshot.evidence.find((item) => item.run.id === run.id);
+            const reviews = snapshot.reviews.filter((item) => item.runId === run.id);
+            return (
+              <section className="run-card" key={run.id}>
+                <div className="run-title">
+                  <strong>Change run</strong>
+                  <span className={`status ${run.status}`}>{labels[run.status]}</span>
+                </div>
+                {run.error && (
+                  <p className="run-error">
+                    {run.error === "reconciliation_required"
+                      ? "Execution needs reconciliation before another attempt. No work has been replayed."
+                      : run.error === "execution_unavailable"
+                        ? "Cloud execution is unavailable."
+                        : "Execution failed. Inspect the evidence before trying a new change."}
+                  </p>
+                )}
+                <details>
+                  <summary>Tests and tool output</summary>
+                  <p className="run-id">{run.id}</p>
+                  <dl>
+                    <dt>Base</dt>
+                    <dd>
+                      <code>{run.baseSha}</code>
+                    </dd>
+                    <dt>Candidate</dt>
+                    <dd>
+                      <code>{run.candidateSha ?? "Not available yet"}</code>
+                    </dd>
+                    {run.workerId && (
+                      <>
+                        <dt>Worker</dt>
+                        <dd>{run.workerId}</dd>
+                      </>
+                    )}
+                    <dt>Configuration</dt>
+                    <dd>{run.configurationRevision}</dd>
+                    {run.artifactId && (
+                      <>
+                        <dt>Artifacts fork</dt>
+                        <dd>{run.artifactId}</dd>
+                      </>
+                    )}
+                  </dl>
+                  {evidence?.verification && (
+                    <div className="verification-evidence">
+                      <p>Plan {evidence.verification.plan.fingerprint}</p>
+                      <p>
+                        Profile {evidence.verification.plan.profile.revision} · Acceptance{" "}
+                        {evidence.verification.plan.acceptance.revision}
+                      </p>
+                      {evidence.verification.plan.acceptance.criteria.map((c) => (
+                        <p key={c.id}>{c.text}</p>
+                      ))}
+                    </div>
                   )}
-                  <dt>Configuration</dt>
-                  <dd>{run.configurationRevision}</dd>
-                  {run.artifactId && (
+                  {evidence?.tests ? (
                     <>
-                      <dt>Artifacts fork</dt>
-                      <dd>{run.artifactId}</dd>
+                      <p className={`test-result ${evidence.tests.status}`}>
+                        Tests {evidence.tests.status.replace("_", " ")} · exit{" "}
+                        {evidence.tests.exitCode ?? "unavailable"}
+                      </p>
+                      <p>
+                        {evidence.tests.baseSha === run.baseSha &&
+                        evidence.tests.candidateSha === run.candidateSha &&
+                        evidence.tests.configurationRevision === run.configurationRevision
+                          ? "Tests match current candidate"
+                          : "Stale test evidence — inspect exact hashes"}
+                      </p>
+                      <code>{evidence.tests.candidateSha}</code>
+                      <br />
+                      <code>{evidence.tests.argv.join(" ")}</code>
+                      <pre>
+                        {evidence.tests.stdout || "No stdout recorded."}
+                        {evidence.tests.stderr && `\n${evidence.tests.stderr}`}
+                      </pre>
+                      {evidence.tests.truncated && <p>Output was truncated.</p>}
                     </>
+                  ) : (
+                    <p className="hint">No structured test evidence recorded.</p>
                   )}
-                </dl>
+                </details>
+                <details open={reviews.length > 0}>
+                  <summary>Review evidence ({reviews.length})</summary>
+                  {reviews.length ? (
+                    reviews.map((review) => (
+                      <div className="review" key={review.id}>
+                        <strong>
+                          {review.decision === "approve"
+                            ? "Approved candidate"
+                            : "Changes requested"}
+                        </strong>
+                        <p>{review.summary}</p>
+                        <small>
+                          {review.actor} ·{" "}
+                          {review.candidateSha === run.candidateSha &&
+                          review.baseSha === run.baseSha &&
+                          review.configurationRevision === run.configurationRevision
+                            ? "Matches current candidate"
+                            : "Stale evidence — inspect exact hashes"}
+                        </small>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="hint">Awaiting a trusted reviewer.</p>
+                  )}
+                </details>
                 {evidence?.verification && (
-                  <div className="verification-evidence">
-                    <p>Plan {evidence.verification.plan.fingerprint}</p>
-                    <p>
-                      Profile {evidence.verification.plan.profile.revision} · Acceptance{" "}
-                      {evidence.verification.plan.acceptance.revision}
-                    </p>
-                    {evidence.verification.plan.acceptance.criteria.map((c) => (
-                      <p key={c.id}>{c.text}</p>
+                  <div className="verification-evidence" aria-label="Verification evidence">
+                    <h3>Verification checks</h3>
+                    {evidence.verification.outcomes.map((o) => (
+                      <details key={`${o.phase}:${o.checkId}`}>
+                        <summary>
+                          {o.checkId}: {o.status} ({o.phase})
+                        </summary>
+                        <p>
+                          SHA {o.checkedSha} · Artifact {o.artifactId} · Duration{" "}
+                          {o.durationMs === undefined ? "unmeasured" : `${o.durationMs} ms`}
+                        </p>
+                        <p>{o.reason}</p>
+                        <pre>
+                          {JSON.stringify(
+                            evidence.verification!.plan.profile.checks.find(
+                              (c) => c.id === o.checkId,
+                            ),
+                          )}
+                        </pre>
+                        <pre>
+                          {o.result?.stdout}
+                          {o.result?.stderr}
+                        </pre>
+                      </details>
                     ))}
                   </div>
                 )}
-                {evidence?.tests ? (
-                  <>
-                    <p className={`test-result ${evidence.tests.status}`}>
-                      Tests {evidence.tests.status.replace("_", " ")} · exit{" "}
-                      {evidence.tests.exitCode ?? "unavailable"}
-                    </p>
-                    <p>
-                      {evidence.tests.baseSha === run.baseSha &&
-                      evidence.tests.candidateSha === run.candidateSha &&
-                      evidence.tests.configurationRevision === run.configurationRevision
-                        ? "Tests match current candidate"
-                        : "Stale test evidence — inspect exact hashes"}
-                    </p>
-                    <code>{evidence.tests.candidateSha}</code>
-                    <br />
-                    <code>{evidence.tests.argv.join(" ")}</code>
-                    <pre>
-                      {evidence.tests.stdout || "No stdout recorded."}
-                      {evidence.tests.stderr && `\n${evidence.tests.stderr}`}
-                    </pre>
-                    {evidence.tests.truncated && <p>Output was truncated.</p>}
-                  </>
-                ) : (
-                  <p className="hint">No structured test evidence recorded.</p>
-                )}
-              </details>
-              <details open={reviews.length > 0}>
-                <summary>Review evidence ({reviews.length})</summary>
-                {reviews.length ? (
-                  reviews.map((review) => (
-                    <div className="review" key={review.id}>
-                      <strong>
-                        {review.decision === "approve" ? "Approved candidate" : "Changes requested"}
-                      </strong>
-                      <p>{review.summary}</p>
-                      <small>
-                        {review.actor} ·{" "}
-                        {review.candidateSha === run.candidateSha &&
-                        review.baseSha === run.baseSha &&
-                        review.configurationRevision === run.configurationRevision
-                          ? "Matches current candidate"
-                          : "Stale evidence — inspect exact hashes"}
-                      </small>
-                    </div>
-                  ))
-                ) : (
-                  <p className="hint">Awaiting a trusted reviewer.</p>
-                )}
-              </details>
-              {evidence?.verification && (
-                <div className="verification-evidence" aria-label="Verification evidence">
-                  <h3>Verification checks</h3>
-                  {evidence.verification.outcomes.map((o) => (
-                    <details key={`${o.phase}:${o.checkId}`}>
-                      <summary>
-                        {o.checkId}: {o.status} ({o.phase})
-                      </summary>
-                      <p>
-                        SHA {o.checkedSha} · Artifact {o.artifactId} · Duration{" "}
-                        {o.durationMs === undefined ? "unmeasured" : `${o.durationMs} ms`}
-                      </p>
-                      <p>{o.reason}</p>
-                      <pre>
-                        {JSON.stringify(
-                          evidence.verification!.plan.profile.checks.find(
-                            (c) => c.id === o.checkId,
-                          ),
-                        )}
-                      </pre>
-                      <pre>
-                        {o.result?.stdout}
-                        {o.result?.stderr}
-                      </pre>
-                    </details>
-                  ))}
-                </div>
-              )}
-              <LandingControl
-                api={api}
-                run={run}
-                evidence={evidence}
-                reviews={reviews}
-                enabled={landingEnabled}
-                state={landingStates[run.id]}
-                onStateChange={(state) =>
-                  setLandingStates((states) => ({ ...states, [run.id]: state }))
-                }
-              />
-            </section>
-          );
-        })}
-      </aside>
+                <LandingControl
+                  api={api}
+                  run={run}
+                  evidence={evidence}
+                  reviews={reviews}
+                  enabled={landingEnabled}
+                  state={landingStates[run.id]}
+                  onStateChange={(state) =>
+                    setLandingStates((states) => ({ ...states, [run.id]: state }))
+                  }
+                />
+              </section>
+            );
+          })}
+        </aside>
+      </div>
+      {section !== "work" && <WorkspacePlaceholder section={section} />}
     </div>
   );
 }
