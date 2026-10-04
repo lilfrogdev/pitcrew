@@ -30,7 +30,7 @@ import {
 import { DurableChangePipeline, type PipelineState } from "./durable-pipeline";
 import { DurableJobs } from "./durable-jobs";
 import { KnowledgeOutbox, type KnowledgeDelivery } from "./knowledge-outbox";
-import { knowledgeReporting } from "./knowledge-reporting";
+import { knowledgeReporting, candidateKnowledgeSource } from "./knowledge-reporting";
 import type { RepositoryAgent } from "./index";
 // The coordinator owner supplies this RPC. Keep the worker seam independent of its implementation.
 interface WorkerKnowledgeReceiver {
@@ -211,14 +211,7 @@ export class ChangeAgent extends TaskAgent {
               if (!blob || blob.size > 65536) throw Error("knowledge_source_unavailable");
               return { text: await blob.text(), sha: input.baseSha };
             }
-            const transport = this.transport();
-            const before = await transport.inspect(workspace);
-            if (!before.clean || before.sha === workspace.baseSha)
-              throw Error("knowledge_candidate_not_pinned");
-            const text = await transport.readFile(workspace, path);
-            const after = await transport.inspect(workspace);
-            if (!after.clean || after.sha !== before.sha) throw Error("knowledge_source_mismatch");
-            return { text, sha: before.sha };
+            return candidateKnowledgeSource(this.transport(), workspace, path);
           },
           refresh: () => {
             const context = this.context().input?.knowledgeContext;

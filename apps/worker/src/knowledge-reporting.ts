@@ -1,3 +1,4 @@
+import type { Workspace, WorkspaceTransport } from "../../../packages/execution/src/contracts.ts";
 import { CompactionTask, defineTool, hook } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 import type {
@@ -130,4 +131,32 @@ export function knowledgeReporting(ports: KnowledgeReportingPorts) {
       }),
     ],
   };
+}
+
+// Read the immutable commit blob, never a working-tree file that may be ignored,
+// untracked, or reached through a symlink despite a clean git status.
+export async function candidateKnowledgeSource(
+  transport: WorkspaceTransport,
+  workspace: Workspace,
+  path: string,
+) {
+  const before = await transport.inspect(workspace);
+  if (!before.clean || !/^[a-f0-9]{40}$/.test(before.sha) || before.sha === workspace.baseSha)
+    throw Error("knowledge_candidate_not_pinned");
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${before.sha}:${path}`)),
+  );
+  const commandId =
+    "knowledge-source-" + [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const result = await transport.run(workspace, {
+    commandId,
+    argv: ["git", "show", `${before.sha}:${path}`],
+    timeoutMs: 10000,
+    maxOutputBytes: 65536,
+  });
+  if (result.status !== "completed" || result.exitCode !== 0 || result.truncated)
+    throw Error("knowledge_source_unavailable");
+  const after = await transport.inspect(workspace);
+  if (!after.clean || after.sha !== before.sha) throw Error("knowledge_source_mismatch");
+  return { text: result.stdout, sha: before.sha };
 }

@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import type { Workspace, WorkspaceTransport } from "../../../packages/execution/src/contracts";
 import { Coordinator, initialState } from "./coordinator";
 import { expect, it } from "vite-plus/test";
 import { Harness, createRegistry } from "@earendil-works/pi-durable";
@@ -5,11 +7,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configureModels } from "./pi-models";
-import { knowledgeReporting } from "./knowledge-reporting";
+import { knowledgeReporting, candidateKnowledgeSource } from "./knowledge-reporting";
 import { KnowledgeOutbox, type KnowledgeSql } from "./knowledge-outbox";
 import type { WorkerKnowledgeContext } from "@pitcrew/protocol";
 
@@ -332,5 +334,82 @@ it("delivers the complete near-64KiB checkpoint through actual Pi tool output li
     }
   } finally {
     await harness.close(context);
+  }
+});
+
+it("reads candidate sources from actual immutable Git blobs and rejects clean ignored files", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pitcrew-source-"));
+  const git = (args: string[]) =>
+    execFileSync("git", args, {
+      cwd: directory,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  try {
+    git(["init", "--quiet"]);
+    git(["config", "user.name", "Fixture"]);
+    git(["config", "user.email", "fixture@example.invalid"]);
+    writeFileSync(join(directory, ".gitignore"), "dist/\n");
+    writeFileSync(join(directory, "source.ts"), "committed baseline\n");
+    git(["add", ".gitignore", "source.ts"]);
+    git(["commit", "--quiet", "-m", "base"]);
+    const baseSha = git(["rev-parse", "HEAD"]);
+    writeFileSync(join(directory, "source.ts"), "committed candidate\n");
+    git(["add", "source.ts"]);
+    git(["commit", "--quiet", "-m", "candidate"]);
+    const candidate = git(["rev-parse", "HEAD"]);
+    mkdirSync(join(directory, "dist"));
+    writeFileSync(join(directory, "dist/ignored.ts"), "ignored uncommitted excerpt\n");
+    const workspace: Workspace = {
+      runId: "run",
+      projectId: "project",
+      repository: "fixture",
+      baseSha,
+      configurationRevision: "1",
+      workerId: "worker",
+      artifactId: "artifact",
+    };
+    const transport: WorkspaceTransport = {
+      prepare: async () => {},
+      publish: async () => {},
+      stop: async () => {},
+      writeFile: async () => {},
+      readFile: async () => {
+        throw Error("working-tree read forbidden");
+      },
+      inspect: async () => ({
+        sha: git(["rev-parse", "HEAD"]),
+        clean: !git(["status", "--porcelain"]),
+      }),
+      run: async (_workspace, command) => {
+        expect(command.argv[0]).toBe("git");
+        expect(command.maxOutputBytes).toBe(65536);
+        try {
+          return {
+            status: "completed",
+            exitCode: 0,
+            stdout: execFileSync("git", command.argv.slice(1), {
+              cwd: directory,
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "pipe"],
+            }),
+            stderr: "",
+            truncated: false,
+          };
+        } catch {
+          return { status: "completed", exitCode: 128, stdout: "", stderr: "", truncated: false };
+        }
+      },
+    };
+    expect(git(["status", "--porcelain"])).toBe("");
+    expect(await candidateKnowledgeSource(transport, workspace, "source.ts")).toEqual({
+      text: "committed candidate\n",
+      sha: candidate,
+    });
+    await expect(candidateKnowledgeSource(transport, workspace, "dist/ignored.ts")).rejects.toThrow(
+      "knowledge_source_unavailable",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
