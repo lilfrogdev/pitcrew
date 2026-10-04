@@ -117,6 +117,9 @@ export class RepositoryAgent extends Agent<Env> {
 
   // Internal DO RPC only. The coordinator verifies this against its own frozen
   // request; worker-supplied principals/statuses cannot grant acceptance.
+  async refreshWorkerKnowledge(context: WorkerKnowledgeContext) {
+    return this.getCoordinator().refreshWorkerKnowledge(context);
+  }
   async appendWorkerKnowledge(context: WorkerKnowledgeContext, report: KnowledgeReport) {
     return this.getCoordinator().appendWorkerKnowledge(context, report);
   }

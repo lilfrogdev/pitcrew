@@ -34,6 +34,9 @@ import { knowledgeReporting } from "./knowledge-reporting";
 import type { RepositoryAgent } from "./index";
 // The coordinator owner supplies this RPC. Keep the worker seam independent of its implementation.
 interface WorkerKnowledgeReceiver {
+  refreshWorkerKnowledge(
+    context: WorkerKnowledgeContext,
+  ): Promise<import("@pitcrew/protocol").KnowledgeCheckpoint>;
   appendWorkerKnowledge(
     context: WorkerKnowledgeContext,
     report: KnowledgeReport,
@@ -217,6 +220,15 @@ export class ChangeAgent extends TaskAgent {
             if (!after.clean || after.sha !== before.sha) throw Error("knowledge_source_mismatch");
             return { text, sha: before.sha };
           },
+          refresh: () => {
+            const context = this.context().input?.knowledgeContext;
+            if (!context) throw Error("knowledge_not_configured");
+            return (
+              this.env.REPOSITORY.get(
+                this.env.REPOSITORY.idFromName("pitcrew"),
+              ) as unknown as WorkerKnowledgeReceiver
+            ).refreshWorkerKnowledge(context);
+          },
           enqueue: (delivery) => this.enqueueKnowledge(delivery),
           flush: () =>
             this.knowledgeJobs.enqueue("delivery", { runId: this.context().workspace.runId }),
@@ -319,10 +331,10 @@ export class ChangeAgent extends TaskAgent {
             ).appendWorkerKnowledge(context, report),
           );
         } catch {
-          return { rescheduleAt: Date.now() + 1000 };
+          return { rescheduleAt: this.knowledgeOutbox.nextRetryAt() };
         }
         return this.knowledgeOutbox.pending().length
-          ? { rescheduleAt: Date.now() + 1000 }
+          ? { rescheduleAt: this.knowledgeOutbox.nextRetryAt() }
           : undefined;
       },
     );

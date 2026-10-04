@@ -8,6 +8,8 @@ interface Row {
   id: string;
   body: string;
   ack: string | null;
+  last_error: string | null;
+  retry_after: number | null;
 }
 export interface KnowledgeSql {
   exec<T extends Record<string, string | number | null>>(
@@ -20,12 +22,17 @@ export interface KnowledgeSql {
 export class KnowledgeOutbox {
   constructor(private sql: KnowledgeSql) {
     sql.exec(`CREATE TABLE IF NOT EXISTS knowledge_outbox (
-      id TEXT PRIMARY KEY, body TEXT NOT NULL, ack TEXT)`);
+      id TEXT PRIMARY KEY, body TEXT NOT NULL, ack TEXT, last_error TEXT, retry_after INTEGER)`);
+    const columns = sql.exec<{ name: string }>("PRAGMA table_info(knowledge_outbox)").toArray();
+    if (!columns.some((column) => column.name === "last_error"))
+      sql.exec("ALTER TABLE knowledge_outbox ADD COLUMN last_error TEXT");
+    if (!columns.some((column) => column.name === "retry_after"))
+      sql.exec("ALTER TABLE knowledge_outbox ADD COLUMN retry_after INTEGER");
   }
   get(id: string) {
     const [row] = this.sql
       .exec<Row & Record<string, string | number | null>>(
-        "SELECT id,body,ack FROM knowledge_outbox WHERE id=?",
+        "SELECT id,body,ack,last_error,retry_after FROM knowledge_outbox WHERE id=?",
         id,
       )
       .toArray();
@@ -46,30 +53,58 @@ export class KnowledgeOutbox {
       .exec<{ n: number }>("SELECT count(*) AS n FROM knowledge_outbox")
       .toArray();
     if (count.n >= 16) throw Error("knowledge_budget");
-    this.sql.exec("INSERT INTO knowledge_outbox VALUES(?,?,NULL)", id, body);
+    this.sql.exec("INSERT INTO knowledge_outbox(id,body,ack) VALUES(?,?,NULL)", id, body);
     return id;
   }
   pending() {
     return this.sql
       .exec<Row & Record<string, string | number | null>>(
-        "SELECT id,body,ack FROM knowledge_outbox WHERE ack IS NULL ORDER BY rowid LIMIT 16",
+        "SELECT id,body,ack,last_error,retry_after FROM knowledge_outbox WHERE ack IS NULL ORDER BY rowid LIMIT 16",
       )
       .toArray();
   }
+  nextRetryAt() {
+    return Math.min(
+      ...this.pending().map((row) => Math.max(Date.now() + 1000, row.retry_after ?? 0)),
+    );
+  }
   async deliver(send: (delivery: KnowledgeDelivery) => Promise<KnowledgeAck>) {
     for (const row of this.pending()) {
-      const ack = await send(JSON.parse(row.body) as KnowledgeDelivery);
+      if ((row.retry_after ?? 0) > Date.now()) continue;
+      let ack: KnowledgeAck;
+      try {
+        ack = await send(JSON.parse(row.body) as KnowledgeDelivery);
+      } catch (error) {
+        const persistent =
+          error instanceof Error &&
+          /(?:knowledge_projection_capacity|^capacity$|idempotency_conflict)/.test(error.message);
+        const code = persistent ? "capacity_or_conflict" : "delivery_unavailable";
+        this.sql.exec(
+          "UPDATE knowledge_outbox SET last_error=?,retry_after=? WHERE id=? AND ack IS NULL",
+          code,
+          Date.now() + (persistent ? 60000 : 0),
+          row.id,
+        );
+        throw error;
+      }
       if (
         ack.eventId !== row.id ||
         !["recorded", "duplicate", "stale", "rejected"].includes(ack.status)
-      )
+      ) {
+        this.sql.exec(
+          "UPDATE knowledge_outbox SET last_error=?,retry_after=? WHERE id=? AND ack IS NULL",
+          "invalid_ack",
+          Date.now() + 60000,
+          row.id,
+        );
         throw Error("invalid_knowledge_ack");
+      }
       const existing = this.get(row.id);
       if (!existing || existing.body !== row.body) throw Error("idempotency_conflict");
       if (existing.ack && JSON.parse(existing.ack).eventId !== ack.eventId)
         throw Error("invalid_knowledge_ack");
       this.sql.exec(
-        "UPDATE knowledge_outbox SET ack=? WHERE id=? AND ack IS NULL",
+        "UPDATE knowledge_outbox SET ack=?,last_error=NULL,retry_after=NULL WHERE id=? AND ack IS NULL",
         JSON.stringify(ack),
         row.id,
       );

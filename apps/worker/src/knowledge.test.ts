@@ -254,3 +254,20 @@ describe("repository knowledge", () => {
     expect(new Coordinator(before, () => {}).state).toEqual(core.state);
   });
 });
+
+it("refreshes concurrent accepted corrections at an explicit checkpoint without mutating frozen input", () => {
+  const f = fixture(),
+    thread = f.core.createThread("concurrent", "thread"),
+    { run } = f.core.submit(thread.id, "work", "message"),
+    input = f.core.begin(run.id)!;
+  const frozen = structuredClone(f.core.state.requests![run.id]);
+  const added = f.core.appendKnowledge("owner", "decision", { ...proposal, status: "accepted" });
+  const checkpoint = f.core.refreshWorkerKnowledge(input.knowledgeContext!);
+  expect(checkpoint.status).toBe("current");
+  if (checkpoint.status !== "current") throw Error("checkpoint");
+  expect(checkpoint.currentKnowledge.entries.find((entry) => entry.id === added.id)).toEqual(added);
+  expect(f.core.state.knowledgeObservations![run.id]).toBe(checkpoint.observedKnowledgeRevision);
+  expect(f.core.state.requests![run.id]).toEqual(frozen);
+  f.core.state.project.baseSha = "c".repeat(40);
+  expect(f.core.refreshWorkerKnowledge(input.knowledgeContext!).status).toBe("stale");
+});

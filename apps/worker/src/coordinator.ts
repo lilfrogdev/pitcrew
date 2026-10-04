@@ -6,6 +6,7 @@ import type {
   KnowledgeReport,
   WorkerKnowledgeContext,
   KnowledgeAck,
+  KnowledgeCheckpoint,
 } from "@pitcrew/protocol";
 import {
   initialIntake,
@@ -55,6 +56,7 @@ export class AdmissionError extends Error {
   }
 }
 export interface State {
+  knowledgeObservations?: Record<string, number>;
   knowledgeProjection?: { projectId: string; repository: string; current: CurrentKnowledge };
   intake?: IntakeState;
   profile?: VerificationProfile;
@@ -282,8 +284,33 @@ export class Coordinator {
         visibility: "repository",
         baseSha: this.state.project.baseSha,
         configurationRevision: this.state.project.configurationRevision,
+        threadId: previous?.threadId,
+        changeId: previous?.changeId,
+        runId: previous?.runId,
       });
     });
+  }
+  refreshWorkerKnowledge(context: WorkerKnowledgeContext): KnowledgeCheckpoint {
+    const request = context && this.state.requests?.[context.runId];
+    const run = context && this.state.runs.find((run) => run.id === context.runId);
+    if (
+      !request?.knowledgeContext ||
+      JSON.stringify(context) !== JSON.stringify(request.knowledgeContext) ||
+      !run ||
+      ["failed", "stopped", "waiting_user"].includes(run.status) ||
+      context.baseSha !== this.state.project.baseSha ||
+      context.configurationRevision !== this.state.project.configurationRevision
+    )
+      return { status: "stale" };
+    const currentKnowledge = this.currentKnowledge();
+    this.durableUpdate(() => {
+      (this.state.knowledgeObservations ??= {})[context.runId] = currentKnowledge.revision;
+    });
+    return {
+      status: "current",
+      observedKnowledgeRevision: currentKnowledge.revision,
+      currentKnowledge,
+    };
   }
   appendWorkerKnowledge(context: WorkerKnowledgeContext, report: KnowledgeReport): KnowledgeAck {
     const eventId = `worker:${context?.runId}:${report?.key}`;
@@ -346,6 +373,7 @@ export class Coordinator {
         threadId: context.threadId,
         changeId: context.changeId,
         runId: context.runId,
+        observedKnowledgeRevision: this.state.knowledgeObservations?.[context.runId],
       });
       return { eventId, status: "recorded" as const };
     });
@@ -844,14 +872,25 @@ export class Coordinator {
       reviews: this.state.reviews.filter((r) => r.runId === runId),
     };
   }
+  eventsAfter(sequence: number): Event[] {
+    let low = 0,
+      high = this.state.events.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.state.events[middle].sequence <= sequence) low = middle + 1;
+      else high = middle;
+    }
+    return structuredClone(this.state.events.slice(low, low + 256));
+  }
   repositoryContext(): RepositoryContext {
+    const currentKnowledge = this.currentKnowledge();
     return {
-      revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}:${this.currentKnowledge().revision}`,
+      revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}:${currentKnowledge.revision}`,
       baseSha: this.state.project.baseSha,
       configurationRevision: this.state.project.configurationRevision,
-      currentKnowledge: this.currentKnowledge(),
-      acceptedDecisions: this.currentKnowledge()
-        .entries.filter((entry) => entry.status === "accepted")
+      currentKnowledge,
+      acceptedDecisions: currentKnowledge.entries
+        .filter((entry) => entry.status === "accepted")
         .map((entry) => ({
           id: entry.id,
           text: entry.text,

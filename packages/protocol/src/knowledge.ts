@@ -46,6 +46,7 @@ export interface KnowledgeRecord extends Omit<KnowledgeMutation, "expectedVersio
   threadId?: string;
   changeId?: string;
   runId?: string;
+  observedKnowledgeRevision?: number;
 }
 export interface CurrentKnowledge {
   revision: number;
@@ -68,3 +69,7 @@ export interface EventProvenance {
     | "review_changes_requested"
     | "fixture_landed";
 }
+
+export type KnowledgeCheckpoint =
+  | { status: "stale" }
+  | { status: "current"; observedKnowledgeRevision: number; currentKnowledge: CurrentKnowledge };

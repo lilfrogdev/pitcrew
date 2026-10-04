@@ -90,6 +90,8 @@ it("rejects conflicting replay/wrong ack and bounds selected notes, settling sta
       outbox.deliver(async () => ({ eventId: "wrong", status: "recorded" })),
     ).rejects.toThrow("invalid_knowledge_ack");
     expect(outbox.pending()).toHaveLength(1);
+    expect(outbox.pending()[0].last_error).toBe("invalid_ack");
+    db.prepare("UPDATE knowledge_outbox SET retry_after=0").run(); // explicit fixture recovery after receiver repair
     await outbox.deliver(async () => ({ eventId: "worker:run:call-1", status: "stale" }));
     expect(outbox.pending()).toHaveLength(0);
     for (let i = 2; i <= 16; i++)
@@ -102,5 +104,39 @@ it("rejects conflicting replay/wrong ack and bounds selected notes, settling sta
     ).toThrow("invalid_report_key");
   } finally {
     db.close();
+  }
+});
+
+it("persists capacity backoff across SQLite reopen without losing pending reports or retrying hot", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pitcrew-capacity-")),
+    path = join(directory, "outbox.sqlite");
+  let db = new DatabaseSync(path),
+    outbox = new KnowledgeOutbox(sqlitePort(db));
+  try {
+    outbox.enqueue(delivery);
+    await expect(
+      outbox.deliver(async () => {
+        throw Error("knowledge_projection_capacity");
+      }),
+    ).rejects.toThrow("knowledge_projection_capacity");
+    expect(outbox.pending()[0].last_error).toBe("capacity_or_conflict");
+    expect(outbox.nextRetryAt()).toBeGreaterThan(Date.now() + 59000);
+    const body = outbox.pending()[0].body;
+    db.close();
+    db = new DatabaseSync(path);
+    outbox = new KnowledgeOutbox(sqlitePort(db));
+    let calls = 0;
+    await outbox.deliver(async () => {
+      calls++;
+      return { eventId: "worker:run:call-1", status: "recorded" };
+    });
+    expect(calls).toBe(0);
+    expect(outbox.pending()[0].body).toBe(body);
+    db.prepare("UPDATE knowledge_outbox SET retry_after=0").run();
+    await outbox.deliver(async () => ({ eventId: "worker:run:call-1", status: "recorded" }));
+    expect(outbox.pending()).toHaveLength(0);
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });

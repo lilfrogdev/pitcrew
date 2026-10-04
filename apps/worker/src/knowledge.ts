@@ -2,7 +2,6 @@ import type {
   CurrentKnowledge,
   Event,
   KnowledgeMutation,
-  KnowledgeRecord,
 } from "../../../packages/protocol/src/index.ts";
 
 export const KNOWLEDGE_LIMITS = {

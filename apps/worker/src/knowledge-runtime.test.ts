@@ -48,6 +48,8 @@ interface Row {
   body: string;
   ack?: string | null;
   attempts?: number;
+  recorded?: { knowledge: { status: string; actor: { kind: string } } }[];
+  current?: { status: string }[];
 }
 it("recovers actual ChangeAgent delivery jobs after remote commit/lost ack and repeated DO SQLite restart", async () => {
   const options = await fixtureOptions({
@@ -68,9 +70,27 @@ it("recovers actual ChangeAgent delivery jobs after remote commit/lost ack and r
     throw Error("fixture_timeout");
   };
   try {
-    expect((await mf.dispatchFetch("http://fixture/queue")).status).toBe(200);
+    const queued = await mf.dispatchFetch("http://fixture/queue");
+    expect(queued.status).toBe(200);
+    expect(await queued.json()).toMatchObject({
+      queued: true,
+      checkpoint: {
+        status: "current",
+        currentKnowledge: {
+          entries: expect.arrayContaining([
+            expect.objectContaining({ id: "concurrent-constraint", status: "accepted" }),
+          ]),
+        },
+      },
+    });
     const committed = await waitFor("receiver", (rows) => (rows[0]?.attempts ?? 0) > 0);
-    expect(await rows("worker")).toMatchObject([{ id: "worker:run:note-1", ack: null }]);
+    expect(await rows("worker")).toMatchObject([{ id: committed[0].id, ack: null }]);
+    expect(committed[0].recorded).toHaveLength(1);
+    expect(committed[0].recorded![0].knowledge).toMatchObject({
+      status: "proposed",
+      actor: { kind: "worker" },
+    });
+    expect(committed[0].current).toMatchObject([{ status: "proposed" }]);
     for (let restart = 1; restart <= 2; restart++) {
       const previous = (await rows("receiver"))[0].attempts!;
       await mf.setOptions(
@@ -94,7 +114,7 @@ it("recovers actual ChangeAgent delivery jobs after remote commit/lost ack and r
     );
     const acknowledged = await waitFor("worker", (rows) => !!rows[0]?.ack);
     expect(JSON.parse(acknowledged[0].ack!)).toEqual({
-      eventId: "worker:run:note-1",
+      eventId: committed[0].id,
       status: "duplicate",
     });
     const count = (await rows("receiver"))[0].attempts!;

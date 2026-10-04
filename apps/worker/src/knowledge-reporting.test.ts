@@ -181,7 +181,7 @@ it("persists an immediate source-backed proposal in real Pi/SQLite, survives res
     expect(persisted.context).toEqual(trusted);
     expect(persisted.report.sourceRefs[0]).toEqual({
       kind: "code",
-      id: `${trusted.baseSha}:fixture.ts`,
+      id: "fixture.ts",
       revision: trusted.baseSha,
       path: "fixture.ts",
     });

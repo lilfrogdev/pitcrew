@@ -213,7 +213,7 @@ export function api(
     const after = Number(c.req.query("after") ?? 0);
     if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_cursor");
     if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_event_cursor");
-    const page = coordinator.state.events.filter((e) => e.sequence > after).slice(0, 256);
+    const page = coordinator.eventsAfter(after);
     c.header("X-Next-Sequence", String(page.at(-1)?.sequence ?? after));
     return c.json(page);
   });
