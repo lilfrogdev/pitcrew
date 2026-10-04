@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { App } from "./App";
 import { createFixtureApi } from "./fixtures";
 import type { Api, Snapshot } from "./api";
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 async function mount(api: Api = createFixtureApi()) {
   render(<App api={api} demo />);
   await screen.findByRole("heading", { name: "Make agent work visible" });
@@ -36,8 +39,8 @@ describe("project conversations", () => {
     );
     await user.click(screen.getByRole("button", { name: "Playground · synthetic/example" }));
     await screen.findByRole("heading", { name: "Explore an isolated change" });
-    await user.click(screen.getByRole("button", { name: "Create thread" }));
-    await user.type(screen.getByLabelText("Thread title"), "New change");
+    await user.click(screen.getByRole("button", { name: "New conversation in Playground" }));
+    await user.type(screen.getByLabelText("Conversation title"), "New change");
     await user.click(screen.getByRole("button", { name: /^Create$/ }));
     await screen.findByRole("heading", { name: "New change" });
     await screen.findByText("Start with the outcome");

@@ -126,69 +126,144 @@ small {
   font-weight: 700;
   margin-bottom: 10px;
 }
-.project {
-  display: flex;
-  gap: 10px;
-  text-align: left;
-  width: 100%;
-  margin-bottom: 6px;
-  padding: 8px 9px;
-  border-color: transparent;
-  background: transparent;
+.sidebar {
+  padding: 20px 10px;
 }
-.project small {
-  overflow-wrap: anywhere;
-  display: block;
-  font-size: 12px;
+.sidebar .brand {
+  margin: 0 8px 20px;
+  justify-content: space-between;
+  gap: 8px;
 }
-.project-icon {
-  width: 29px;
-  height: 29px;
-  border-radius: 7px;
-  display: grid;
-  place-items: center;
-  background: var(--hover);
-  color: var(--muted);
+.sidebar .brand strong {
+  font-size: 16px;
   font-weight: 600;
 }
-.thread-heading {
+.sidebar-tools {
   display: flex;
-  justify-content: space-between;
+  gap: 8px;
+}
+.sidebar-notifications {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sidebar-section {
+  margin-top: 20px;
+}
+.sidebar .section-label {
+  margin: 0 8px 6px;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.sidebar-row {
+  display: flex;
   align-items: center;
-  margin-top: 30px;
-  margin-bottom: 10px;
+  min-width: 0;
+  min-height: 28px;
+  border-radius: 4px;
 }
-.thread-heading .section-label {
-  margin: 0;
+.sidebar-row:hover {
+  background: var(--hover);
 }
-.thread-heading button {
-  background: transparent;
-  padding: 0 8px;
-  font-size: 20px;
-  border-color: transparent;
-}
-.thread {
-  border-color: transparent;
-  background: transparent;
-  text-align: left;
-  width: 100%;
+.sidebar-item {
   display: flex;
-  gap: 10px;
-  margin-bottom: 5px;
-  font-size: 14px;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 12px;
 }
-.thread span {
+.row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.row-action {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  padding: 3px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+.pin-action {
+  opacity: 0;
+}
+.sidebar-row:hover .pin-action,
+.sidebar-row:focus-within .pin-action,
+.pin-action[aria-pressed="true"] {
+  opacity: 1;
+}
+.pin-action[aria-pressed="true"] {
+  color: var(--accent);
+}
+.repository-conversations {
+  margin-left: 16px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
+.repository-conversations .sidebar-item {
+  padding-left: 8px;
+}
+.repository-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+}
+.repository-search input {
+  min-width: 0;
+  width: 100%;
+  font-size: 12px;
+  padding: 6px;
+}
+.repository-search button {
+  border: 0;
+  background: transparent;
+  padding: 3px;
+}
+.search-empty {
+  padding: 6px 8px;
+  font-size: 12px;
   color: var(--muted);
 }
 .new-thread {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 6px;
+  padding: 8px 0;
+  font-size: 12px;
 }
 .new-thread label,
 .new-thread input {
   width: 100%;
+}
+.new-thread input {
+  min-width: 0;
+  padding: 6px;
+}
+.new-thread button {
+  padding: 4px 8px;
 }
 input,
 textarea,
@@ -204,18 +279,6 @@ textarea {
   width: 100%;
   min-height: 64px;
   max-height: 250px;
-}
-.sidebar-footer {
-  margin-top: auto;
-  padding-top: 28px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.sidebar-footer button {
-  margin-left: auto;
 }
 .conversation {
   background: var(--surface);
@@ -587,23 +650,10 @@ pre {
     margin-bottom: 18px;
   }
   .sidebar nav {
-    display: flex;
-    gap: 5px;
-    overflow: auto;
+    display: block;
   }
-  .project {
-    width: auto;
-    min-width: 160px;
-  }
-  .thread {
-    width: auto;
-    min-width: 170px;
-  }
-  .thread-heading {
-    margin-top: 15px;
-  }
-  .sidebar-footer {
-    padding-top: 12px;
+  .pin-action {
+    opacity: 1;
   }
   .conversation-header {
     padding: 20px;
@@ -690,4 +740,27 @@ textarea::placeholder {
   margin-top: 0;
   border-top: 0;
   padding: 12px 30px;
+}
+
+.conversation-name {
+  flex: 1;
+  text-overflow: clip;
+  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+}
+.conversation-state {
+  font-size: 12px;
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--muted);
+}
+.state-running,
+.state-waiting_user {
+  color: var(--accent);
+}
+.state-failed {
+  color: var(--error);
+}
+.state-completed {
+  color: var(--success);
 }
