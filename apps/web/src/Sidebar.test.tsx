@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { StrictMode } from "react";
@@ -54,6 +54,7 @@ describe("repository sidebar", () => {
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual({
       repositories: ["pitcrew"],
       conversations: ["recovery"],
+      conversationRepositories: { recovery: "pitcrew" },
     });
     cleanup();
     await mount();
@@ -72,7 +73,75 @@ describe("repository sidebar", () => {
     );
     await user.click(within(pinned).getByRole("button", { name: "Unpin repository Pitcrew" }));
     expect(within(pinned).queryAllByRole("button")).toHaveLength(0);
-    expect(JSON.parse(localStorage.getItem(key)!)).toEqual({ repositories: [], conversations: [] });
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual({
+      repositories: [],
+      conversations: [],
+      conversationRepositories: {},
+    });
+  });
+  it("groups child pins, preserves their parent through repeated unpins and reload, and retains manual pins", async () => {
+    const user = userEvent.setup();
+    await mount();
+    const nav = screen.getByRole("navigation", { name: "Repositories" });
+    await user.click(
+      within(nav).getByRole("button", { name: "Pin conversation Make agent work visible" }),
+    );
+    await user.click(
+      within(nav).getByRole("button", { name: "Pin conversation Recover interrupted work" }),
+    );
+    let pinned = screen.getByRole("region", { name: "Pinned" });
+    const group = within(pinned).getByLabelText("Pinned conversations in Pitcrew");
+    expect(within(group).getByRole("button", { name: "Make agent work visible" })).toBeTruthy();
+    expect(within(group).getByRole("button", { name: "Recover interrupted work" })).toBeTruthy();
+    expect(
+      within(pinned).getAllByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" }),
+    ).toHaveLength(1);
+    await user.click(within(pinned).getByRole("button", { name: "Unpin repository Pitcrew" }));
+    await user.click(within(pinned).getByRole("button", { name: "Unpin repository Pitcrew" }));
+    cleanup();
+    await mount();
+    pinned = screen.getByRole("region", { name: "Pinned" });
+    await user.click(
+      within(pinned).getByRole("button", { name: "Unpin conversation Make agent work visible" }),
+    );
+    expect(within(pinned).getByRole("button", { name: "Recover interrupted work" })).toBeTruthy();
+    await user.click(
+      within(pinned).getByRole("button", { name: "Unpin conversation Recover interrupted work" }),
+    );
+    expect(within(pinned).queryAllByRole("button")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Pin repository Pitcrew" }));
+    await user.click(
+      screen.getByRole("button", { name: "Pin conversation Recover interrupted work" }),
+    );
+    await user.click(
+      within(pinned).getByRole("button", { name: "Unpin conversation Recover interrupted work" }),
+    );
+    expect(
+      within(pinned).getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" }),
+    ).toBeTruthy();
+  });
+  it("migrates legacy child pins when metadata arrives and preserves unresolved intent", async () => {
+    localStorage.setItem(
+      key,
+      JSON.stringify({ repositories: [], conversations: ["recovery", "deleted"] }),
+    );
+    await mount();
+    const group = screen.getByLabelText("Pinned conversations in Pitcrew");
+    expect(within(group).getByRole("button", { name: "Recover interrupted work" })).toBeTruthy();
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem(key)!)).toEqual({
+        repositories: [],
+        conversations: ["recovery", "deleted"],
+        conversationRepositories: { recovery: "pitcrew" },
+      }),
+    );
+    cleanup();
+    await mount();
+    expect(
+      within(screen.getByLabelText("Pinned conversations in Pitcrew")).getByRole("button", {
+        name: "Recover interrupted work",
+      }),
+    ).toBeTruthy();
   });
   it("ignores stale IDs and deduplicates stored pins without resurrecting data", async () => {
     localStorage.setItem(
@@ -140,7 +209,10 @@ describe("repository sidebar", () => {
         onCreate={() => {}}
       />,
     );
-    expect(screen.getByRole("img", { name: label })).toBeTruthy();
+    const indicator = screen.getByRole("img", { name: label });
+    expect(indicator.querySelector("svg")).toBeTruthy();
+    expect(indicator.textContent).toBe("");
+    expect(indicator.querySelector(".working-spinner") !== null).toBe(status === "running");
     expect(screen.queryByRole("img", { name: "Merged" })).toBeNull();
     if (status === "awaiting_review")
       expect(screen.queryByRole("img", { name: "Needs your attention" })).toBeNull();

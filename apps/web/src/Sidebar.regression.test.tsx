@@ -85,10 +85,18 @@ describe("sidebar background request regressions", () => {
     mount(api);
     await advance();
     expect(api.latestRun).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Selected · owner/selected" }));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Repositories" })).getByRole("button", {
+        name: "Selected · owner/selected",
+      }),
+    );
     await advance(10000);
     expect(api.latestRun).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Selected · owner/selected" }));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Repositories" })).getByRole("button", {
+        name: "Selected · owner/selected",
+      }),
+    );
     await advance();
     expect(api.latestRun).toHaveBeenCalledTimes(2);
     expect(
@@ -114,10 +122,18 @@ describe("sidebar background request regressions", () => {
         name: "Unpin conversation Idle conversation",
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Selected · owner/selected" }));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Repositories" })).getByRole("button", {
+        name: "Selected · owner/selected",
+      }),
+    );
     await advance(10000);
     expect(api.latestRun).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Selected · owner/selected" }));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Repositories" })).getByRole("button", {
+        name: "Selected · owner/selected",
+      }),
+    );
     await advance();
     expect(api.latestRun).toHaveBeenCalledTimes(2);
   });
