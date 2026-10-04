@@ -1,4 +1,5 @@
 import type {
+  Change,
   Event,
   ExecutionAdapter,
   Message,
@@ -30,6 +31,7 @@ export interface State {
   events: Event[];
   keys: Record<string, { body: string; result: unknown }>;
   evidence: Record<string, TestEvidence>;
+  changes?: Change[];
   requests?: Record<string, ExecutionInput>;
 }
 export const initialState = (): State => ({
@@ -43,6 +45,7 @@ export const initialState = (): State => ({
   threads: [],
   messages: [],
   runs: [],
+  changes: [],
   reviews: [],
   events: [],
   keys: {},
@@ -54,7 +57,48 @@ export class Coordinator {
     private persist: (state: State) => void,
     private now = () => new Date().toISOString(),
     private id: () => string = () => crypto.randomUUID(),
-  ) {}
+  ) {
+    const needsMigration =
+      !state.changes ||
+      state.runs.some(
+        (run) => !run.changeId || !state.changes?.some((change) => change.id === run.changeId),
+      );
+    if (needsMigration)
+      this.durableUpdate(() => {
+        this.state.changes ??= [];
+        for (const run of this.state.runs) {
+          if (run.changeId && this.state.changes.some((change) => change.id === run.changeId))
+            continue;
+          const change: Change = {
+            id: run.changeId ?? `legacy:${run.id}`,
+            threadId: run.threadId,
+            originMessageIds:
+              run.messageId &&
+              this.state.messages.some(
+                (message) => message.id === run.messageId && message.threadId === run.threadId,
+              )
+                ? [run.messageId]
+                : [],
+            contextRevision: `${run.baseSha}:${run.configurationRevision}`,
+          };
+          this.state.changes.push(change);
+          run.changeId = change.id;
+        }
+        for (const [key, entry] of Object.entries(this.state.keys)) {
+          if (!key.startsWith("message_")) continue;
+          const result = entry.result as SubmitResult;
+          const run = result?.run && this.state.runs.find((run) => run.id === result.run.id);
+          if (run)
+            entry.result = {
+              ...result,
+              run: structuredClone(run),
+              change: structuredClone(
+                this.state.changes.find((change) => change.id === run.changeId),
+              ),
+            };
+        }
+      });
+  }
   private validateKey(key: unknown): asserts key is string {
     if (typeof key !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(key))
       throw new AdmissionError("invalid_idempotency_key");
@@ -123,6 +167,7 @@ export class Coordinator {
         throw new AdmissionError("invalid_content");
       if (
         this.state.messages.length >= 500 ||
+        this.state.runs.length >= 500 ||
         this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4
       )
         throw new AdmissionError("capacity", 429);
@@ -133,7 +178,15 @@ export class Coordinator {
         content: content.trim(),
         createdAt: this.now(),
       };
+      const change: Change = {
+        id: this.id(),
+        threadId,
+        originMessageIds: [message.id],
+        contextRevision: this.repositoryContext().revision,
+      };
+      this.state.changes!.push(change);
       const run: Run = {
+        changeId: change.id,
         messageId: message.id,
         id: this.id(),
         threadId,
@@ -144,8 +197,44 @@ export class Coordinator {
       this.state.messages.push(message);
       this.state.runs.push(run);
       this.event("message.created", message.id);
+      this.event("change.created", change.id);
       this.event("run.queued", run.id);
-      return { message, run };
+      return { message, run, change };
+    });
+  }
+  change(changeId: string): Change {
+    const change = this.state.changes!.find((change) => change.id === changeId);
+    if (!change) throw new AdmissionError("not_found", 404);
+    return change;
+  }
+  retryChange(changeId: string, key: string): Run {
+    this.validateKey(key);
+    return this.transaction(`retry_${key}`, { changeId }, () => {
+      const change = this.change(changeId);
+      if (!change.originMessageIds.length) throw new AdmissionError("origin_unavailable", 409);
+      if (
+        this.state.runs.length >= 500 ||
+        this.state.runs.filter((run) => ["queued", "running"].includes(run.status)).length >= 4
+      )
+        throw new AdmissionError("capacity", 429);
+      if (
+        this.state.runs.some(
+          (run) => run.changeId === changeId && ["queued", "running"].includes(run.status),
+        )
+      )
+        throw new AdmissionError("change_busy", 409);
+      const run: Run = {
+        id: this.id(),
+        changeId,
+        messageId: change.originMessageIds[0],
+        threadId: change.threadId,
+        status: "queued",
+        baseSha: this.state.project.baseSha,
+        configurationRevision: this.state.project.configurationRevision,
+      };
+      this.state.runs.push(run);
+      this.event("run.queued", run.id);
+      return run;
     });
   }
   evidence(runId: string): RunEvidence {
@@ -205,13 +294,18 @@ export class Coordinator {
       this.event("run.started", run.id);
       const request: ExecutionInput = {
         runId,
+        changeId: run.changeId,
         projectId: this.state.project.id,
         threadId: run.threadId,
         repository: this.state.project.repository,
         baseSha: run.baseSha,
         configurationRevision: run.configurationRevision,
         repositoryContext: this.repositoryContext(),
-        messages: structuredClone(this.state.messages.filter((m) => m.threadId === run.threadId)),
+        messages: structuredClone(
+          this.state.messages.filter((m) =>
+            this.change(run.changeId!).originMessageIds.includes(m.id),
+          ),
+        ),
       };
       this.state.requests![runId] = request;
       return structuredClone(request);

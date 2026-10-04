@@ -84,6 +84,25 @@ export function api(coordinator: Coordinator, dispatch: (id: string) => void | P
     await dispatch(result.run.id);
     return c.json(result, 201);
   });
+  app.get("/api/threads/:threadId/changes", (c) => {
+    coordinator.thread(c.req.param("threadId"));
+    return c.json(
+      coordinator.state.changes!.filter((change) => change.threadId === c.req.param("threadId")),
+    );
+  });
+  app.get("/api/changes/:changeId", (c) => c.json(coordinator.change(c.req.param("changeId"))));
+  app.get("/api/changes/:changeId/runs", (c) => {
+    coordinator.change(c.req.param("changeId"));
+    return c.json(coordinator.state.runs.filter((run) => run.changeId === c.req.param("changeId")));
+  });
+  app.post("/api/changes/:changeId/runs", async (c) => {
+    const run = coordinator.retryChange(
+      c.req.param("changeId"),
+      c.get("body").idempotencyKey as string,
+    );
+    await dispatch(run.id);
+    return c.json(run, 201);
+  });
   app.get("/api/threads/:threadId/runs", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(coordinator.state.runs.filter((r) => r.threadId === c.req.param("threadId")));
