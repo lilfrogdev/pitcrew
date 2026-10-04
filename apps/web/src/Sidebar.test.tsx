@@ -44,6 +44,28 @@ describe("repository sidebar", () => {
     fireEvent.keyDown(search, { key: "Escape" });
     expect(screen.queryByRole("textbox", { name: "Search repositories" })).toBeNull();
   });
+  it("returns keyboard focus when search and conversation actions close", async () => {
+    const user = userEvent.setup();
+    await mount();
+    const trigger = screen.getByRole("button", { name: "Search repositories" });
+    await user.click(trigger);
+    const input = screen.getByRole("textbox", { name: "Search repositories" });
+    expect(document.activeElement).toBe(input);
+    await user.type(input, "Make agent");
+    await user.click(screen.getByRole("button", { name: "Clear repository search" }));
+    expect(document.activeElement).toBe(input);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(trigger);
+    const summary = screen.getByLabelText("Conversation actions Make agent work visible");
+    await user.click(summary);
+    await user.tab();
+    expect(document.activeElement).toBe(
+      within(summary.closest("details")!).getByRole("button", { name: "Archive conversation" }),
+    );
+    await user.keyboard("{Escape}");
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(document.activeElement).toBe(summary);
+  });
   it("persists repository and conversation pins, navigates across repositories, and unpins", async () => {
     const user = userEvent.setup();
     await mount();

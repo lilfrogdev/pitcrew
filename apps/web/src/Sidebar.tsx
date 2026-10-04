@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Project, Thread, Run } from "./api";
 import { useSidebarData } from "./useSidebarData";
 
@@ -117,6 +117,8 @@ export function Sidebar({
   activeRun?: Run;
   children?: ReactNode;
 }) {
+  const searchButton = useRef<HTMLButtonElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [archiveUpdates, setArchiveUpdates] = useState<Record<string, Thread>>({});
   const [searching, setSearching] = useState(false);
@@ -239,7 +241,11 @@ export function Sidebar({
         <details
           className="conversation-actions"
           onKeyDown={(event) => {
-            if (event.key === "Escape") event.currentTarget.open = false;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }
           }}
         >
           <summary className="row-action" aria-label={`Conversation actions ${item.title}`}>
@@ -325,6 +331,7 @@ export function Sidebar({
           </button>
           <button
             className="row-action"
+            ref={searchButton}
             aria-label="Search repositories"
             aria-expanded={searching}
             aria-controls="repository-search"
@@ -351,6 +358,7 @@ export function Sidebar({
       {searching && (
         <div id="repository-search" className="repository-search">
           <input
+            ref={searchInput}
             autoFocus
             aria-label="Search repositories"
             placeholder="Search repositories or conversations"
@@ -360,11 +368,18 @@ export function Sidebar({
               if (event.key === "Escape") {
                 setSearching(false);
                 setQuery("");
+                searchButton.current?.focus();
               }
             }}
           />
           {query && (
-            <button aria-label="Clear repository search" onClick={() => setQuery("")}>
+            <button
+              aria-label="Clear repository search"
+              onClick={() => {
+                setQuery("");
+                searchInput.current?.focus();
+              }}
+            >
               ×
             </button>
           )}
