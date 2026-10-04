@@ -47,12 +47,18 @@ export function LandingControl({
   const eligible = Boolean(
     run.candidateSha &&
     !run.error &&
-    ["waiting_user", "completed"].includes(run.status) &&
+    ["awaiting_review", "waiting_user", "completed"].includes(run.status) &&
     tests?.status === "passed" &&
     tests.exitCode === 0 &&
+    !tests.truncated &&
+    tests.argv.length > 0 &&
     bound(tests) &&
     reviews.some(
-      (review) => review.runId === run.id && review.decision === "approve" && bound(review),
+      (review) =>
+        review.runId === run.id &&
+        review.decision === "approve" &&
+        Boolean(review.actor.trim()) &&
+        bound(review),
     ) &&
     !reviews.some((review) => review.decision === "request_changes" && bound(review)),
   );

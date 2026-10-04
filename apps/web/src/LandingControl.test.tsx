@@ -150,18 +150,42 @@ describe("exact candidate landing simulation", () => {
     const f = await fixture();
     f.run.landing = { authorizationId: "persisted", status: "uncertain", backend: "fixture" };
     f.api.land = vi.fn();
-    f.api.reconcile = vi
-      .fn()
-      .mockResolvedValue({
-        authorizationId: "persisted",
-        status: "landed",
-        landedSha: f.run.candidateSha,
-        backend: "fixture",
-      });
+    f.api.reconcile = vi.fn().mockResolvedValue({
+      authorizationId: "persisted",
+      status: "landed",
+      landedSha: f.run.candidateSha,
+      backend: "fixture",
+    });
     render(<Harness {...f} />);
     fireEvent.click(screen.getByRole("button", { name: "Check landing receipt" }));
     await screen.findByText(/Fixture simulation landed/);
     expect(f.api.land).not.toHaveBeenCalled();
     expect(f.api.reconcile).toHaveBeenCalledWith(f.run.id, "persisted");
   });
+  it("allows canonical awaiting_review status with an exact trusted approval", async () => {
+    const f = await fixture();
+    f.run.status = "awaiting_review";
+    f.evidence.run.status = "awaiting_review";
+    f.api.approve = vi.fn(f.api.approve);
+    render(<Harness {...f} />);
+    const button = screen.getByRole("button", { name: "Approve exact candidate" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button);
+    await screen.findByRole("button", { name: "Land fixture simulation" });
+    expect(f.api.approve).toHaveBeenCalledTimes(1);
+  });
+  it.each(["truncated", "empty argv", "empty actor"] as const)(
+    "rejects %s evidence despite a passed test label",
+    async (kind) => {
+      const f = await fixture();
+      f.run.status = "awaiting_review";
+      if (kind === "truncated") f.evidence.tests!.truncated = true;
+      if (kind === "empty argv") f.evidence.tests!.argv = [];
+      if (kind === "empty actor") f.reviews[0].actor = " ";
+      render(<Harness {...f} />);
+      expect(
+        screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
+      ).toBe(true);
+    },
+  );
 });
