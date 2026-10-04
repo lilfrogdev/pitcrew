@@ -3,7 +3,11 @@ import type { Api, Project, Thread, Run } from "./api";
 import { useSidebarData } from "./useSidebarData";
 
 const preferenceKey = "pitcrew.sidebar.pins.v1";
-type Pins = { repositories: string[]; conversations: string[] };
+type Pins = {
+  repositories: string[];
+  conversations: string[];
+  conversationRepositories: Record<string, string>;
+};
 function readPins(): Pins {
   try {
     const value = JSON.parse(localStorage.getItem(preferenceKey) ?? "{}");
@@ -11,22 +15,58 @@ function readPins(): Pins {
       Array.isArray(items)
         ? [...new Set(items.filter((id): id is string => typeof id === "string"))]
         : [];
-    return { repositories: ids(value.repositories), conversations: ids(value.conversations) };
+    const conversations = ids(value.conversations);
+    const associations = value.conversationRepositories;
+    return {
+      repositories: ids(value.repositories),
+      conversations,
+      conversationRepositories:
+        associations && typeof associations === "object"
+          ? Object.fromEntries(
+              Object.entries(associations).filter(
+                (entry): entry is [string, string] =>
+                  conversations.includes(entry[0]) && typeof entry[1] === "string",
+              ),
+            )
+          : {},
+    };
   } catch {
-    return { repositories: [], conversations: [] };
+    return { repositories: [], conversations: [], conversationRepositories: {} };
   }
 }
-function Icon({ kind }: { kind: "folder" | "conversation" | "pin" | "search" | "bell" }) {
-  const paths = {
-    bell: "M5 8a5 5 0 0 1 10 0v4l2 2H3l2-2Z M8 17h4",
-    folder: "M2 5h5l2 2h9v10H2Z",
-    conversation: "M3 3h14v11H8l-5 3Z",
-    pin: "m7 2 6 0-1 5 3 3v2H5v-2l3-3Z M10 12v6",
-    search: "M14 14l4 4 M16 9a7 7 0 1 1-14 0 7 7 0 0 1 14 0",
-  };
+const iconPaths = {
+  bell: "M5 8a5 5 0 0 1 10 0v4l2 2H3l2-2Z M8 17h4",
+  repository:
+    "M5 2.5h10a1 1 0 0 1 1 1v14H5a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Z M3 15.5a2 2 0 0 1 2-2h11 M7 2.5v6l2-1.5 2 1.5v-6",
+  pin: "m7 2 6 0-1 5 3 3v2H5v-2l3-3Z M10 12v6",
+  search: "M14 14l4 4 M16 9a7 7 0 1 1-14 0 7 7 0 0 1 14 0",
+  queued: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M10 6v4l3 2",
+  working: "M17 10a7 7 0 1 1-7-7",
+  input:
+    "M5 3h10a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H8l-4 3v-3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M8 7a2 2 0 0 1 4 0c0 1.5-2 1.5-2 3 M10 11.5v.1",
+  review: "M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5Z M12.5 10a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0Z",
+  completed: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M6.5 10l2.5 2.5 4.5-5",
+  failed: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M10 6.5v4 M10 13v.1",
+  stopped: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M7 7h6v6H7Z",
+};
+type IconKind = keyof typeof iconPaths;
+const runIcons: Record<Run["status"], { kind: IconKind; label: string }> = {
+  queued: { kind: "queued", label: "Queued" },
+  running: { kind: "working", label: "In progress" },
+  waiting_user: { kind: "input", label: "Needs your attention" },
+  awaiting_review: { kind: "review", label: "Awaiting review" },
+  completed: { kind: "completed", label: "Completed" },
+  failed: { kind: "failed", label: "Failed" },
+  stopped: { kind: "stopped", label: "Stopped" },
+};
+function Icon({ kind }: { kind: IconKind }) {
   return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d={paths[kind]} />
+    <svg
+      viewBox="0 0 20 20"
+      aria-hidden="true"
+      className={kind === "working" ? "working-spinner" : undefined}
+    >
+      <path d={iconPaths[kind]} />
     </svg>
   );
 }
@@ -99,16 +139,7 @@ export function Sidebar({
   const stateIndicator = (item: Thread) => {
     const run = item.id === threadId ? activeRun : runStates[item.id];
     if (!run) return null;
-    const states: Record<Run["status"], [string, string]> = {
-      queued: ["◷", "Queued"],
-      running: ["◌", "In progress"],
-      waiting_user: ["?", "Needs your attention"],
-      awaiting_review: ["◇", "Awaiting review"],
-      completed: ["✓", "Completed"],
-      failed: ["!", "Failed"],
-      stopped: ["□", "Stopped"],
-    };
-    const [symbol, label] = states[run.status];
+    const { kind, label } = runIcons[run.status];
     return (
       <span
         className={`conversation-state state-${run.status}`}
@@ -116,7 +147,7 @@ export function Sidebar({
         aria-label={label}
         title={label}
       >
-        {symbol}
+        <Icon kind={kind} />
       </span>
     );
   };
@@ -127,12 +158,45 @@ export function Sidebar({
       /* Navigation works without storage. */
     }
   }, [pins]);
-  const togglePin = (kind: keyof Pins, id: string) =>
+  const conversations = (id: string) => (id === projectId ? threads : (others[id] ?? []));
+  const knownConversations = projects.flatMap((item) => conversations(item.id));
+  const associations = { ...pins.conversationRepositories };
+  for (const item of knownConversations) {
+    if (pins.conversations.includes(item.id)) associations[item.id] = item.projectId;
+  }
+  const associationKey = JSON.stringify(associations);
+  useEffect(() => {
+    setPins((all) =>
+      JSON.stringify(all.conversationRepositories) === associationKey
+        ? all
+        : { ...all, conversationRepositories: JSON.parse(associationKey) },
+    );
+  }, [associationKey]);
+  const pinnedRepositories = new Set([
+    ...pins.repositories,
+    ...pins.conversations.flatMap((id) => (associations[id] ? [associations[id]] : [])),
+  ]);
+  const toggleConversationPin = (item: Thread) =>
+    setPins((all) => {
+      const pinned = all.conversations.includes(item.id);
+      const conversationRepositories = { ...all.conversationRepositories };
+      if (pinned) delete conversationRepositories[item.id];
+      else conversationRepositories[item.id] = item.projectId;
+      return {
+        ...all,
+        conversationRepositories,
+        conversations: pinned
+          ? all.conversations.filter((id) => id !== item.id)
+          : [...all.conversations, item.id],
+      };
+    });
+  const toggleRepositoryPin = (id: string) =>
     setPins((all) => ({
       ...all,
-      [kind]: all[kind].includes(id) ? all[kind].filter((item) => item !== id) : [...all[kind], id],
+      repositories: pinnedRepositories.has(id)
+        ? all.repositories.filter((item) => item !== id)
+        : [...all.repositories, id],
     }));
-  const conversations = (id: string) => (id === projectId ? threads : (others[id] ?? []));
   const conversationRow = (item: Thread) => (
     <div className="sidebar-row" key={item.id}>
       <button
@@ -152,7 +216,7 @@ export function Sidebar({
       <PinButton
         name={`conversation ${item.title}`}
         pinned={pins.conversations.includes(item.id)}
-        onClick={() => togglePin("conversations", item.id)}
+        onClick={() => toggleConversationPin(item)}
       />
     </div>
   );
@@ -173,7 +237,7 @@ export function Sidebar({
           }
         }}
       >
-        <Icon kind="folder" />
+        <Icon kind="repository" />
         <span className="row-name">{item.name}</span>
       </button>
       <button
@@ -189,8 +253,8 @@ export function Sidebar({
       </button>
       <PinButton
         name={`repository ${item.name}`}
-        pinned={pins.repositories.includes(item.id)}
-        onClick={() => togglePin("repositories", item.id)}
+        pinned={pinnedRepositories.has(item.id)}
+        onClick={() => toggleRepositoryPin(item.id)}
       />
     </div>
   );
@@ -262,12 +326,20 @@ export function Sidebar({
       <section className="sidebar-section" aria-label="Pinned">
         <h2 className="section-label">Pinned</h2>
         {projects
-          .filter((item) => pins.repositories.includes(item.id))
-          .map((item) => repositoryRow(item, true))}
-        {projects
-          .flatMap((item) => conversations(item.id))
-          .filter((item) => pins.conversations.includes(item.id))
-          .map((item) => conversationRow(item))}
+          .filter((item) => pinnedRepositories.has(item.id))
+          .map((item) => (
+            <div key={item.id}>
+              {repositoryRow(item, true)}
+              <div
+                className="repository-conversations"
+                aria-label={`Pinned conversations in ${item.name}`}
+              >
+                {conversations(item.id)
+                  .filter((conversation) => pins.conversations.includes(conversation.id))
+                  .map(conversationRow)}
+              </div>
+            </div>
+          ))}
       </section>
       <nav className="sidebar-section" aria-label="Repositories">
         <h2 className="section-label">Repositories</h2>
