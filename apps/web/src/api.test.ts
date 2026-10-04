@@ -35,7 +35,7 @@ describe("canonical HTTP adapter", () => {
     expect(result.runs[0].status).toBe("waiting_user");
   });
   it("submits the explicit idempotency key without development identity or access headers", async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response("{}"));
+    const fetch = vi.fn().mockImplementation(async () => new Response("{}"));
     vi.stubGlobal("fetch", fetch);
     await httpApi.send("thread", "change", "retry-key");
     expect(fetch.mock.calls[0]).toEqual([
@@ -63,5 +63,30 @@ describe("canonical HTTP adapter", () => {
       vi.fn().mockResolvedValue(new Response("<html>upstream details</html>")),
     );
     await expect(httpApi.projects()).rejects.toEqual(new ApiError(0));
+  });
+  it("sends exact approval then separate landing and read-only reconciliation bodies", async () => {
+    const fetch = vi.fn().mockImplementation(async () => new Response("{}"));
+    vi.stubGlobal("fetch", fetch);
+    const approval = {
+      expectedTargetSha: "base",
+      candidateSha: "candidate",
+      configurationRevision: "v1",
+      idempotencyKey: "key",
+    };
+    await httpApi.capabilities();
+    await httpApi.approve("run/1", approval);
+    await httpApi.land("run/1", "receipt");
+    await httpApi.reconcile("run/1", "receipt");
+    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+      "/api/capabilities",
+      "/api/runs/run%2F1/merge-approval",
+      "/api/runs/run%2F1/landing",
+      "/api/runs/run%2F1/landing/reconcile",
+    ]);
+    expect(fetch.mock.calls.slice(1).map((call) => call[1].body)).toEqual([
+      JSON.stringify(approval),
+      JSON.stringify({ authorizationId: "receipt" }),
+      JSON.stringify({ authorizationId: "receipt" }),
+    ]);
   });
 });

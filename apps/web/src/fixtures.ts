@@ -1,4 +1,4 @@
-import type { Api, Message, Run, Snapshot, Thread } from "./api";
+import type { Api, Message, Run, Snapshot, Thread, Authorization } from "./api";
 const baseSha = "851b619d31a4f1b769b8046a3d306122097ac036";
 const candidateSha = "2a456c88e1d6489d17c1684bfb7f9e0e2a915a04";
 export function createFixtureApi(): Api {
@@ -117,7 +117,47 @@ export function createFixtureApi(): Api {
     sandbox: { messages: [], runs: [], reviews: [], evidence: [] },
   };
   const sent = new Set<string>();
+  const authorizations = new Map<string, Authorization>();
   return {
+    capabilities: async () => ({ landing: { enabled: true, backend: "fixture" } }),
+    approve: async (runId, input) => {
+      const existing = authorizations.get(input.idempotencyKey);
+      if (existing) return existing;
+      const authorization: Authorization = {
+        ...input,
+        authorizationId: `fixture-${input.idempotencyKey}`,
+        runId,
+        expiresAt: Date.now() + 300000,
+        state: "authorized",
+        backend: "fixture",
+      };
+      authorizations.set(input.idempotencyKey, authorization);
+      return authorization;
+    },
+    land: async (_runId, authorizationId) => {
+      const authorization = [...authorizations.values()].find(
+        (item) => item.authorizationId === authorizationId,
+      );
+      if (!authorization) throw new Error("Unknown fixture receipt");
+      authorization.state = "landed";
+      return {
+        authorizationId,
+        status: "landed",
+        landedSha: authorization.candidateSha,
+        backend: "fixture",
+      };
+    },
+    reconcile: async (_runId, authorizationId) => {
+      const authorization = [...authorizations.values()].find(
+        (item) => item.authorizationId === authorizationId,
+      );
+      return {
+        authorizationId,
+        status: authorization?.state === "landed" ? "landed" : "uncertain",
+        landedSha: authorization?.state === "landed" ? authorization.candidateSha : undefined,
+        backend: "fixture",
+      };
+    },
     projects: async () => [
       {
         id: "pitcrew",

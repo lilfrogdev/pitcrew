@@ -12,16 +12,16 @@ async function mount(api: Api = createFixtureApi()) {
   return api;
 }
 describe("project conversations", () => {
-  it("shows visible roles, exact hashes, tests, review, and unavailable merge", async () => {
+  it("shows visible roles, exact hashes, tests, review, and gated fixture approval", async () => {
     await mount();
     expect(screen.getByText("Repository agent")).toBeTruthy();
     expect(screen.getByText("Change worker")).toBeTruthy();
     fireEvent.click(screen.getByText("Tests and tool output"));
     expect(screen.getByText(/8 synthetic checks passed/)).toBeTruthy();
     expect(screen.getByText(/Matches current candidate/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Approve merge" }).hasAttribute("disabled")).toBe(
-      true,
-    );
+    expect(
+      screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
+    ).toBe(false);
   });
   it("switches projects and threads, preserves drafts, and creates an empty thread", async () => {
     const user = userEvent.setup();

@@ -1,4 +1,13 @@
-import type { Project, Thread, Message, Run, Review, RunEvidence } from "@pitcrew/protocol";
+import type {
+  Project,
+  Thread,
+  Message,
+  Run,
+  Review,
+  RunEvidence,
+  LandingAuthorizationReceipt,
+  LandingResultReceipt,
+} from "@pitcrew/protocol";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
 export type Snapshot = {
   messages: Message[];
@@ -6,7 +15,20 @@ export type Snapshot = {
   reviews: Review[];
   evidence: RunEvidence[];
 };
+export type LandingCapabilities = { landing: { enabled: boolean; backend: "fixture" | null } };
+export type ApprovalInput = {
+  expectedTargetSha: string;
+  candidateSha: string;
+  configurationRevision: string;
+  idempotencyKey: string;
+};
+export type Authorization = LandingAuthorizationReceipt;
+export type LandingResult = LandingResultReceipt;
 export interface Api {
+  capabilities(): Promise<LandingCapabilities>;
+  approve(runId: string, input: ApprovalInput): Promise<Authorization>;
+  land(runId: string, authorizationId: string): Promise<LandingResult>;
+  reconcile(runId: string, authorizationId: string): Promise<LandingResult>;
   projects(): Promise<Project[]>;
   threads(projectId: string): Promise<Thread[]>;
   snapshot(threadId: string): Promise<Snapshot>;
@@ -48,6 +70,12 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 export const httpApi: Api = {
+  capabilities: () => request("/capabilities"),
+  approve: (id, input) => request(`/runs/${encodeURIComponent(id)}/merge-approval`, input),
+  land: (id, authorizationId) =>
+    request(`/runs/${encodeURIComponent(id)}/landing`, { authorizationId }),
+  reconcile: (id, authorizationId) =>
+    request(`/runs/${encodeURIComponent(id)}/landing/reconcile`, { authorizationId }),
   projects: () => request("/projects"),
   threads: (id) => request(`/projects/${encodeURIComponent(id)}/threads`),
   snapshot: async (id) => {
