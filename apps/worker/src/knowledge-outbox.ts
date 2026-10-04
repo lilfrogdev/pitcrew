@@ -88,6 +88,8 @@ export class KnowledgeOutbox {
         throw error;
       }
       if (
+        !ack ||
+        typeof ack !== "object" ||
         ack.eventId !== row.id ||
         !["recorded", "duplicate", "stale", "rejected"].includes(ack.status)
       ) {

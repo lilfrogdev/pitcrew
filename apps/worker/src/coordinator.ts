@@ -56,6 +56,7 @@ export class AdmissionError extends Error {
   }
 }
 export interface State {
+  // Latest explicit checkpoint per run; never a per-note causal watermark.
   knowledgeObservations?: Record<string, number>;
   knowledgeProjection?: { projectId: string; repository: string; current: CurrentKnowledge };
   intake?: IntakeState;
@@ -373,7 +374,7 @@ export class Coordinator {
         threadId: context.threadId,
         changeId: context.changeId,
         runId: context.runId,
-        observedKnowledgeRevision: this.state.knowledgeObservations?.[context.runId],
+        contextRevision: context.contextRevision,
       });
       return { eventId, status: "recorded" as const };
     });

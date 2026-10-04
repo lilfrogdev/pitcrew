@@ -33,6 +33,7 @@ export function knowledgeReporting(ports: KnowledgeReportingPorts) {
                 "Read bounded current repository knowledge at an explicit checkpoint. Observe concurrent corrections without rebinding execution configuration or granting authority.",
               replay: "safe",
               executionMode: "sequential",
+              outputLimits: { maxBytes: 70 * 1024, maxLines: 2000 },
               parameters: Type.Object({}),
               execute: async () => ({
                 content: [{ type: "text" as const, text: JSON.stringify(await ports.refresh!()) }],
@@ -46,6 +47,7 @@ export function knowledgeReporting(ports: KnowledgeReportingPorts) {
           "Persist a bounded candidate note immediately, backed by verified pinned source excerpts; delivery retries until acknowledged. This does not accept a design or grant authority.",
         replay: "safe",
         executionMode: "sequential",
+        outputLimits: { maxBytes: 70 * 1024, maxLines: 2000 },
         parameters: Type.Object({
           text: Type.String({ minLength: 1, maxLength: 512 }),
           kind: Type.Union([

@@ -271,3 +271,28 @@ it("refreshes concurrent accepted corrections at an explicit checkpoint without 
   f.core.state.project.baseSha = "c".repeat(40);
   expect(f.core.refreshWorkerKnowledge(input.knowledgeContext!).status).toBe("stale");
 });
+
+it("keeps a delayed note bound to its frozen context without falsely sampling later observations", () => {
+  const f = fixture(),
+    thread = f.core.createThread("causal", "thread"),
+    { run } = f.core.submit(thread.id, "work", "message"),
+    input = f.core.begin(run.id)!;
+  const report: KnowledgeReport = {
+    key: "old_note",
+    text: "Earlier discovery",
+    kind: "discovery",
+    sourceRefs: [{ kind: "code", id: "fixture", revision: input.baseSha }],
+  };
+  f.core.refreshWorkerKnowledge(input.knowledgeContext!);
+  f.core.appendKnowledge("owner", "later", { ...proposal, status: "accepted" });
+  const latest = f.core.refreshWorkerKnowledge(input.knowledgeContext!);
+  f.core.appendWorkerKnowledge(input.knowledgeContext!, report);
+  const note = f.core
+    .repositoryContext()
+    .currentKnowledge!.entries.find((entry) => entry.eventId === `worker:${run.id}:old_note`)!;
+  expect(note.contextRevision).toBe(input.knowledgeContext!.contextRevision);
+  expect(note).not.toHaveProperty("observedKnowledgeRevision");
+  expect(latest.status).toBe("current");
+  if (latest.status === "current")
+    expect(f.core.state.knowledgeObservations![run.id]).toBe(latest.observedKnowledgeRevision);
+});

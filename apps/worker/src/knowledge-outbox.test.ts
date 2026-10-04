@@ -140,3 +140,21 @@ it("persists capacity backoff across SQLite reopen without losing pending report
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+it("backs off null and undefined acknowledgements with durable diagnostics", async () => {
+  const db = new DatabaseSync(":memory:"),
+    outbox = new KnowledgeOutbox(sqlitePort(db));
+  try {
+    outbox.enqueue(delivery);
+    for (const invalid of [null, undefined]) {
+      db.prepare("UPDATE knowledge_outbox SET retry_after=0").run();
+      await expect(outbox.deliver(async () => invalid as never)).rejects.toThrow(
+        "invalid_knowledge_ack",
+      );
+      expect(outbox.pending()[0].last_error).toBe("invalid_ack");
+      expect(outbox.nextRetryAt()).toBeGreaterThan(Date.now() + 59000);
+    }
+  } finally {
+    db.close();
+  }
+});

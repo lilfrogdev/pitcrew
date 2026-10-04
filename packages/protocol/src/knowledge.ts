@@ -46,7 +46,7 @@ export interface KnowledgeRecord extends Omit<KnowledgeMutation, "expectedVersio
   threadId?: string;
   changeId?: string;
   runId?: string;
-  observedKnowledgeRevision?: number;
+  contextRevision?: string;
 }
 export interface CurrentKnowledge {
   revision: number;

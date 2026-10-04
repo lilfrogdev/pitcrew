@@ -1,3 +1,4 @@
+import { Coordinator, initialState } from "./coordinator";
 import { expect, it } from "vite-plus/test";
 import { Harness, createRegistry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -239,5 +240,97 @@ it("persists an immediate source-backed proposal in real Pi/SQLite, survives res
     await harness.close(context);
     db.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it("delivers the complete near-64KiB checkpoint through actual Pi tool output limits", async () => {
+  const core = new Coordinator(initialState(), () => {});
+  for (let i = 0; i < 99; i++) {
+    try {
+      core.appendKnowledge("owner", `near_${i}`, {
+        id: `constraint_${i}`,
+        expectedVersion: 0,
+        status: "accepted",
+        kind: "constraint",
+        text: "x".repeat(450) + ` accepted correction ${i}`,
+        reason: "Explicit fixture decision",
+        sourceRefs: [{ kind: "code", id: `source_${i}`, revision: core.state.project.baseSha }],
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "knowledge_projection_capacity")
+        throw error;
+      break;
+    }
+  }
+  const current = core.repositoryContext().currentKnowledge!;
+  expect(Buffer.byteLength(JSON.stringify(current))).toBeGreaterThan(50 * 1024);
+  expect(Buffer.byteLength(JSON.stringify(current))).toBeLessThanOrEqual(64 * 1024);
+  const thread = core.createThread("checkpoint", "thread"),
+    { run } = core.submit(thread.id, "work", "message"),
+    input = core.begin(run.id)!;
+  const context = {
+    abortSignal: AbortSignal.timeout(5000),
+    value: () => undefined,
+    toString: () => "[Checkpoint fixture]",
+  };
+  const faux = fauxProvider({
+    provider: "fixture",
+    models: [{ id: "fixture", contextWindow: 128000 }],
+  });
+  const { models, model } = configureModels({ provider: "fake" }, {}, faux.provider),
+    registry = createRegistry();
+  registry.install(
+    knowledgeReporting({
+      context: () => input.knowledgeContext!,
+      readSource: async () => ({ text: "verified", sha: input.baseSha }),
+      enqueue: async () => {},
+      flush: async () => {},
+      refresh: async () => core.refreshWorkerKnowledge(input.knowledgeContext!),
+    }),
+  );
+  faux.setResponses([
+    fauxAssistantMessage(
+      [
+        fauxToolCall("refresh_knowledge", {}, { id: "refresh" }),
+        fauxToolCall(
+          "report_knowledge",
+          {
+            text: "Bounded proposal",
+            kind: "discovery",
+            sources: [{ path: "p".repeat(200), revision: "base", excerpt: "verified" }],
+          },
+          { id: "report" },
+        ),
+      ],
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("fixture complete"),
+  ]);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+  try {
+    const conversation = await harness.root(context, {
+      agent: { model: { provider: model.provider, modelId: model.id } },
+    });
+    await (
+      await conversation.submit(
+        { type: "input", requestId: "checkpoint", content: "Read both checkpoints" },
+        context,
+      )
+    ).wait(context);
+    const view = await conversation.context(context);
+    const results = view.messages.filter((message) => message.role === "toolResult");
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      const text = result.content
+        .filter((item) => item.type === "text")
+        .map((item) => item.text)
+        .join("");
+      const parsed = JSON.parse(text),
+        checkpoint = parsed.checkpoint ?? parsed;
+      expect(checkpoint.currentKnowledge).toEqual(current);
+      expect(checkpoint.observedKnowledgeRevision).toBe(current.revision);
+    }
+  } finally {
+    await harness.close(context);
   }
 });
