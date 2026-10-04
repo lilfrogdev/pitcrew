@@ -8,7 +8,10 @@
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM"],
     "types": ["@cloudflare/workers-types"],
-    "paths": { "@pitcrew/protocol": ["./packages/protocol/src/index.ts"] }
+    "paths": {
+      "@pitcrew/protocol": ["./packages/protocol/src/index.ts"]
+    },
+    "allowImportingTsExtensions": true
   },
   "include": ["apps/worker/src/**/*.ts", "packages/protocol/src/**/*.ts"]
 }

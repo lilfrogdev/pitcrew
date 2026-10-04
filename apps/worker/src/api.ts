@@ -50,6 +50,11 @@ export function api(coordinator: Coordinator, dispatch: (id: string) => void) {
       error instanceof AdmissionError ? (error.status as 400) : 500,
     ),
   );
+  app.get("/api/projects/:projectId/context", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    return c.json(coordinator.repositoryContext());
+  });
   app.get("/api/projects", (c) => c.json([coordinator.state.project]));
   app.get("/api/projects/:projectId/threads", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)

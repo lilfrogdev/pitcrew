@@ -4,9 +4,36 @@
   "compatibility_date": "2026-10-03",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
-  "durable_objects": { "bindings": [{ "name": "REPOSITORY", "class_name": "RepositoryAgent" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RepositoryAgent"] }],
-  "vars": { "ENVIRONMENT": "production", "EXECUTION_MODE": "disabled" },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REPOSITORY",
+        "class_name": "RepositoryAgent",
+      },
+      {
+        "name": "CHANGE",
+        "class_name": "ChangeAgent",
+      },
+      {
+        "name": "REVIEW",
+        "class_name": "ReviewAgent",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RepositoryAgent"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ChangeAgent", "ReviewAgent"],
+    },
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "EXECUTION_MODE": "disabled",
+  },
   "env": {
     "development": {
       "vars": {
@@ -15,8 +42,27 @@
         "EXECUTION_MODE": "fake",
       },
       "durable_objects": {
-        "bindings": [{ "name": "REPOSITORY", "class_name": "RepositoryAgent" }],
+        "bindings": [
+          {
+            "name": "REPOSITORY",
+            "class_name": "RepositoryAgent",
+          },
+          {
+            "name": "CHANGE",
+            "class_name": "ChangeAgent",
+          },
+          {
+            "name": "REVIEW",
+            "class_name": "ReviewAgent",
+          },
+        ],
       },
     },
   },
+  "containers": [
+    {
+      "class_name": "ChangeAgent",
+      "scheduling_policy": "durable_object",
+    },
+  ],
 }
