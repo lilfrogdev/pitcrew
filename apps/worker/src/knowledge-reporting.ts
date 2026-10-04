@@ -150,7 +150,7 @@ export async function candidateKnowledgeSource(
     "knowledge-source-" + [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   const result = await transport.run(workspace, {
     commandId,
-    argv: ["git", "show", `${before.sha}:${path}`],
+    argv: ["git", "--no-replace-objects", "show", `${before.sha}:${path}`],
     timeoutMs: 10000,
     maxOutputBytes: 65536,
   });

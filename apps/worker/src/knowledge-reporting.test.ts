@@ -349,6 +349,8 @@ it("reads candidate sources from actual immutable Git blobs and rejects clean ig
     git(["init", "--quiet"]);
     git(["config", "user.name", "Fixture"]);
     git(["config", "user.email", "fixture@example.invalid"]);
+    git(["config", "commit.gpgsign", "false"]);
+    git(["config", "core.hooksPath", "/dev/null"]);
     writeFileSync(join(directory, ".gitignore"), "dist/\n");
     writeFileSync(join(directory, "source.ts"), "committed baseline\n");
     git(["add", ".gitignore", "source.ts"]);
@@ -409,6 +411,18 @@ it("reads candidate sources from actual immutable Git blobs and rejects clean ig
     await expect(candidateKnowledgeSource(transport, workspace, "dist/ignored.ts")).rejects.toThrow(
       "knowledge_source_unavailable",
     );
+    writeFileSync(join(directory, "source.ts"), "replacement content\n");
+    git(["add", "source.ts"]);
+    git(["commit", "--quiet", "-m", "replacement"]);
+    const replacement = git(["rev-parse", "HEAD"]);
+    git(["replace", candidate, replacement]);
+    git(["reset", "--hard", candidate]);
+    expect(git(["status", "--porcelain"])).toBe("");
+    expect(git(["show", `${candidate}:source.ts`])).toBe("replacement content");
+    expect(await candidateKnowledgeSource(transport, workspace, "source.ts")).toEqual({
+      text: "committed candidate\n",
+      sha: candidate,
+    });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
