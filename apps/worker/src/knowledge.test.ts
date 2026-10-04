@@ -296,3 +296,29 @@ it("keeps a delayed note bound to its frozen context without falsely sampling la
   if (latest.status === "current")
     expect(f.core.state.knowledgeObservations![run.id]).toBe(latest.observedKnowledgeRevision);
 });
+
+it("matches frozen knowledge context by fields after JSON keys are reordered", () => {
+  const f = fixture(),
+    thread = f.core.createThread("serialization", "thread"),
+    { run } = f.core.submit(thread.id, "work", "message"),
+    context = f.core.begin(run.id)!.knowledgeContext!;
+  const reordered = Object.fromEntries(Object.entries(context).reverse()) as typeof context;
+  const report: KnowledgeReport = {
+    key: "reordered",
+    text: "Discovery delivered after serializing context in a different key order.",
+    kind: "discovery",
+    sourceRefs: [{ kind: "code", id: "fixture", revision: context.baseSha }],
+  };
+  expect(f.core.refreshWorkerKnowledge(reordered).status).toBe("current");
+  expect(f.core.appendWorkerKnowledge(reordered, report).status).toBe("recorded");
+  const recovered = new Coordinator(f.saved(), () => {});
+  expect(recovered.appendWorkerKnowledge(context, report).status).toBe("duplicate");
+  for (const key of Object.keys(context) as (keyof typeof context)[]) {
+    const stale = { ...reordered, [key]: `${context[key]}-changed` };
+    expect(recovered.refreshWorkerKnowledge(stale).status).toBe("stale");
+    expect(recovered.appendWorkerKnowledge(stale, report).status).toBe("stale");
+  }
+  expect(
+    recovered.refreshWorkerKnowledge({ ...context, extra: "forged" } as typeof context).status,
+  ).toBe("stale");
+});

@@ -1,4 +1,9 @@
-import { applyKnowledgePage, projectKnowledge, validKnowledge } from "./knowledge";
+import {
+  applyKnowledgePage,
+  projectKnowledge,
+  sameKnowledgeContext,
+  validKnowledge,
+} from "./knowledge";
 import type {
   CurrentKnowledge,
   KnowledgeMutation,
@@ -296,7 +301,7 @@ export class Coordinator {
     const run = context && this.state.runs.find((run) => run.id === context.runId);
     if (
       !request?.knowledgeContext ||
-      JSON.stringify(context) !== JSON.stringify(request.knowledgeContext) ||
+      !sameKnowledgeContext(context, request.knowledgeContext) ||
       !run ||
       ["failed", "stopped", "waiting_user"].includes(run.status) ||
       context.baseSha !== this.state.project.baseSha ||
@@ -340,10 +345,7 @@ export class Coordinator {
     };
     if (!validKnowledge(input)) return { eventId, status: "rejected" };
     const request = this.state.requests?.[context.runId];
-    if (
-      !request?.knowledgeContext ||
-      JSON.stringify(context) !== JSON.stringify(request.knowledgeContext)
-    )
+    if (!request?.knowledgeContext || !sameKnowledgeContext(context, request.knowledgeContext))
       return { eventId, status: "stale" };
     const run = this.evidence(context.runId).run;
     const previous = this.state.keys[`worker_knowledge_${context.runId}_${report.key}`];
