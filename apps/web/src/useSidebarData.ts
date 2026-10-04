@@ -140,6 +140,20 @@ function createScheduler(publish: (data: Data) => void) {
       } else if (context.revision !== next.revision) {
         for (const entry of [...lists.values(), ...runs.values()]) entry.next = 0;
       }
+      const newlyVisible = new Set(
+        next.visibleRepositories.filter((id) => !context?.visibleRepositories.includes(id)),
+      );
+      const newlyPinned = new Set(
+        next.pinnedConversations.filter((id) => !context?.pinnedConversations.includes(id)),
+      );
+      for (const project of next.projects) {
+        const items =
+          project.id === next.projectId ? next.threads : (lists.get(project.id)?.value ?? []);
+        for (const item of items) {
+          const entry = runs.get(item.id);
+          if (entry && (newlyVisible.has(project.id) || newlyPinned.has(item.id))) entry.next = 0;
+        }
+      }
       const selectedListChanged =
         context?.projectId === next.projectId && context.threads !== next.threads;
       context = next;

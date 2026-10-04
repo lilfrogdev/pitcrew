@@ -54,6 +54,49 @@ async function advance(ms = 0) {
   });
 }
 describe("sidebar background request regressions", () => {
+  it("revalidates a cached no-run result when the conversation is pinned", async () => {
+    vi.useFakeTimers();
+    const api = createFixtureApi();
+    api.threads = vi.fn(async () => []);
+    api.latestRun = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue(run("idle", "running"));
+    mount(api);
+    await advance();
+    expect(api.latestRun).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Pin conversation Idle conversation" }));
+    await advance();
+    expect(api.latestRun).toHaveBeenCalledTimes(2);
+    expect(
+      within(screen.getByRole("region", { name: "Pinned" })).getByRole("img", {
+        name: "In progress",
+      }),
+    ).toBeTruthy();
+  });
+  it("revalidates cached terminal states when their repository is reopened without polling while collapsed", async () => {
+    vi.useFakeTimers();
+    const api = createFixtureApi();
+    api.threads = vi.fn(async () => []);
+    api.latestRun = vi
+      .fn()
+      .mockResolvedValueOnce(run("idle"))
+      .mockResolvedValue(run("idle", "queued"));
+    mount(api);
+    await advance();
+    expect(api.latestRun).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Selected · owner/selected" }));
+    await advance(10000);
+    expect(api.latestRun).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Selected · owner/selected" }));
+    await advance();
+    expect(api.latestRun).toHaveBeenCalledTimes(2);
+    expect(
+      within(screen.getByLabelText("Conversations in Selected")).getByRole("img", {
+        name: "Queued",
+      }),
+    ).toBeTruthy();
+  });
   it("deduplicates a visible pin and suspends its status reads when unpinned and collapsed", async () => {
     vi.useFakeTimers();
     localStorage.setItem(
