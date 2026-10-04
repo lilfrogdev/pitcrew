@@ -10,6 +10,8 @@ import type {
   TestEvidence,
   Thread,
   RepositoryContext,
+  ExecutionInput,
+  ExecutionResult,
 } from "@pitcrew/protocol";
 export class AdmissionError extends Error {
   constructor(
@@ -28,6 +30,7 @@ export interface State {
   events: Event[];
   keys: Record<string, { body: string; result: unknown }>;
   evidence: Record<string, TestEvidence>;
+  requests?: Record<string, ExecutionInput>;
 }
 export const initialState = (): State => ({
   project: {
@@ -68,6 +71,17 @@ export class Coordinator {
     try {
       const result = operation();
       this.state.keys[key] = { body: serialized, result: structuredClone(result) };
+      this.persist(this.state);
+      return result;
+    } catch (error) {
+      this.state = before;
+      throw error;
+    }
+  }
+  private durableUpdate<T>(operation: () => T): T {
+    const before = structuredClone(this.state);
+    try {
+      const result = operation();
       this.persist(this.state);
       return result;
     } catch (error) {
@@ -171,7 +185,8 @@ export class Coordinator {
         })),
     };
   }
-  recover() {
+  recover(durable = false) {
+    if (durable) return;
     for (const run of this.state.runs)
       if (run.status === "running" || run.status === "queued") {
         run.status = "waiting_user";
@@ -179,14 +194,16 @@ export class Coordinator {
       }
     this.persist(this.state);
   }
-  async dispatch(runId: string, adapter: ExecutionAdapter) {
+  begin(runId: string): ExecutionInput | undefined {
     const run = this.evidence(runId).run;
-    if (run.status !== "queued") return;
-    run.status = "running";
-    this.event("run.started", run.id);
-    this.persist(this.state);
-    try {
-      const result = await adapter.delegate({
+    if (!["queued", "running"].includes(run.status)) return undefined;
+    this.state.requests ??= {};
+    const existing = this.state.requests[runId];
+    if (existing) return structuredClone(existing);
+    return this.durableUpdate(() => {
+      run.status = "running";
+      this.event("run.started", run.id);
+      const request: ExecutionInput = {
         runId,
         projectId: this.state.project.id,
         threadId: run.threadId,
@@ -195,27 +212,35 @@ export class Coordinator {
         configurationRevision: run.configurationRevision,
         repositoryContext: this.repositoryContext(),
         messages: structuredClone(this.state.messages.filter((m) => m.threadId === run.threadId)),
-      });
-      if (result.baseSha !== run.baseSha || !/^[a-f0-9]{40}$/.test(result.candidateSha))
-        throw new Error("invalid evidence");
-      for (const evidence of [result.tests, result.review].filter(Boolean)) {
-        if (
-          evidence!.baseSha !== run.baseSha ||
-          evidence!.candidateSha !== result.candidateSha ||
-          evidence!.configurationRevision !== run.configurationRevision
-        )
-          throw new Error("invalid evidence binding");
-      }
+      };
+      this.state.requests![runId] = request;
+      return structuredClone(request);
+    });
+  }
+  complete(runId: string, result: ExecutionResult) {
+    const run = this.evidence(runId).run;
+    if (run.candidateSha) return;
+    if (result.baseSha !== run.baseSha || !/^[a-f0-9]{40}$/.test(result.candidateSha))
+      throw new Error("invalid evidence");
+    for (const evidence of [result.tests, result.review].filter(Boolean)) {
+      if (
+        evidence!.baseSha !== run.baseSha ||
+        evidence!.candidateSha !== result.candidateSha ||
+        evidence!.configurationRevision !== run.configurationRevision
+      )
+        throw new Error("invalid evidence binding");
+    }
+    this.durableUpdate(() => {
       run.workerId = result.workerId;
       run.artifactId = result.artifactId;
       run.candidateSha = result.candidateSha;
-      this.state.evidence[runId] = result.tests;
+      this.state.evidence[run.id] = result.tests;
       run.status = "awaiting_review";
       this.event("run.awaiting_review", run.id);
       if (result.review) {
         const review: Review = {
           id: this.id(),
-          runId,
+          runId: run.id,
           ...result.review,
           baseSha: run.baseSha,
           candidateSha: result.candidateSha,
@@ -224,12 +249,24 @@ export class Coordinator {
         this.state.reviews.push(review);
         this.event("review.created", review.id);
       }
-    } catch {
-      run.status = "failed";
-      run.error = "execution_failed";
+    });
+  }
+  fail(runId: string, reconcile = false) {
+    const run = this.evidence(runId).run;
+    this.durableUpdate(() => {
+      run.status = reconcile ? "waiting_user" : "failed";
+      run.error = reconcile ? "reconciliation_required" : "execution_failed";
       this.event("run.failed", run.id);
+    });
+  }
+  async dispatch(runId: string, adapter: ExecutionAdapter) {
+    const input = this.begin(runId);
+    if (!input) return;
+    try {
+      this.complete(runId, await adapter.delegate(input));
+    } catch {
+      this.fail(runId);
     }
-    this.persist(this.state);
   }
 }
 export const fakeExecution: ExecutionAdapter = {

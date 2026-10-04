@@ -1,6 +1,7 @@
 import { Agent } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
 export { ChangeAgent, ReviewAgent };
+import { DurableJobs } from "./durable-jobs";
 import { api, fixtureAccess } from "./api";
 import { Coordinator, fakeExecution, initialState, type State } from "./coordinator";
 interface Env extends PiEnv {
@@ -13,6 +14,48 @@ interface Env extends PiEnv {
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
+  private readonly jobs: DurableJobs;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.jobs = new DurableJobs(
+      "repository-results",
+      async (jobs) => {
+        if (this.env.EXECUTION_MODE !== "cloud") return;
+        const core = this.getCoordinator();
+        for (const run of core.state.runs)
+          if (["queued", "running"].includes(run.status))
+            await jobs.enqueue(run.id, { runId: run.id });
+      },
+      async (payload) => {
+        const runId = (payload as { runId: string }).runId,
+          core = this.getCoordinator();
+        const input = core.begin(runId);
+        if (!input) return;
+        try {
+          if (!this.env.ARTIFACT_REPOSITORY || !this.env.MODEL_CONFIGURATION)
+            throw Error("execution_not_configured");
+          const worker = this.env.CHANGE.get(
+            this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
+          );
+          await worker.start({ ...input, repository: this.env.ARTIFACT_REPOSITORY });
+          const receipt = await worker.result(runId);
+          if (receipt.stage === "done" && receipt.result) {
+            core.complete(runId, receipt.result);
+            return;
+          }
+          if (receipt.stage === "blocked") {
+            core.fail(runId, receipt.error === "reconciliation_required");
+            return;
+          }
+          return { rescheduleAt: Date.now() + 1000 };
+        } catch {
+          core.fail(runId, true);
+        }
+      },
+    );
+    this.lifecycle.use(this.jobs);
+  }
+
   private getCoordinator() {
     if (this.coordinator) return this.coordinator;
     void this
@@ -25,7 +68,7 @@ export class RepositoryAgent extends Agent<Env> {
           .sql`INSERT INTO repository_state(id,value) VALUES(1,${JSON.stringify(state)}) ON CONFLICT(id) DO UPDATE SET value=excluded.value`;
       },
     );
-    this.coordinator.recover();
+    this.coordinator.recover(this.env.EXECUTION_MODE === "cloud");
     return this.coordinator;
   }
   async onRequest(request: Request) {
@@ -34,23 +77,10 @@ export class RepositoryAgent extends Agent<Env> {
     if (Number(request.headers.get("content-length") ?? 0) > 16384)
       return Response.json({ error: "body_too_large" }, { status: 413 });
     const coordinator = this.getCoordinator();
-    const app = api(coordinator, (id) => {
+    const app = api(coordinator, async (id) => {
       if (this.env.EXECUTION_MODE === "fake")
         this.ctx.waitUntil(coordinator.dispatch(id, fakeExecution));
-      if (this.env.EXECUTION_MODE === "cloud")
-        this.ctx.waitUntil(
-          coordinator.dispatch(id, {
-            delegate: async (input) => {
-              if (!this.env.ARTIFACT_REPOSITORY || !this.env.MODEL_CONFIGURATION)
-                throw Error("execution_not_configured");
-              // The canonical Artifacts name is configured by the server, never by a browser.
-              const worker = this.env.CHANGE.get(
-                this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
-              );
-              return worker.execute({ ...input, repository: this.env.ARTIFACT_REPOSITORY });
-            },
-          }),
-        );
+      if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
     });
     return app.fetch(request);
   }

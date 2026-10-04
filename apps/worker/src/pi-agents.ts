@@ -7,20 +7,20 @@ import {
   CloudflareArtifacts,
   CloudflareSandbox,
   ExecutionCoordinator,
-  CloudflareExecutionAdapter,
   type Workspace,
   type OperationRecord,
   type TestEvidence,
 } from "../../../packages/execution/src/index";
 import { configureModels } from "./pi-models";
-import { applyChange, reviewCandidate, guardedMutation } from "./pi-drivers";
+import { applyChange, reviewCandidate, guardedMutation, type ReviewBrief } from "./pi-drivers";
+import { DurableChangePipeline, type PipelineState } from "./durable-pipeline";
+import { DurableJobs } from "./durable-jobs";
 export interface PiEnv {
   ENVIRONMENT: string;
   EXECUTION_MODE: string;
   MODEL_CONFIGURATION?: string;
   CONFIGURATION_REVISION?: string;
   AI?: Ai;
-  MODEL_SECRETS?: Record<string, string>;
   ARTIFACTS?: Artifacts;
   SANDBOX_IMAGE?: string;
   REVIEW: DurableObjectNamespace<ReviewAgent>;
@@ -29,6 +29,7 @@ interface Context {
   workspace: Workspace;
   input?: ExecutionInput;
   evidence?: TestEvidence;
+  brief?: ReviewBrief;
 }
 abstract class TaskAgent extends Agent<PiEnv> {
   protected harness: PiHarness;
@@ -44,8 +45,30 @@ abstract class TaskAgent extends Agent<PiEnv> {
           throw Error("model_not_enabled");
         const { models, model } = configureModels(configuration, {
           AI: env.AI,
-          secrets: env.MODEL_SECRETS,
+          secrets:
+            configuration.provider === "byok"
+              ? {
+                  [configuration.secretBinding]:
+                    typeof (env as unknown as Record<string, unknown>)[
+                      configuration.secretBinding
+                    ] === "string"
+                      ? (env as unknown as Record<string, string>)[configuration.secretBinding]
+                      : "",
+                }
+              : undefined,
         });
+        const fingerprint = JSON.stringify({
+          model: env.MODEL_CONFIGURATION,
+          revision: env.CONFIGURATION_REVISION,
+          image: env.SANDBOX_IMAGE,
+        });
+        void this
+          .sql`CREATE TABLE IF NOT EXISTS runtime_configuration(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
+        const [stored] = this.sql<{
+          value: string;
+        }>`SELECT value FROM runtime_configuration WHERE id=1`;
+        if (stored && stored.value !== fingerprint) throw Error("configuration_mismatch");
+        void this.sql`INSERT OR IGNORE INTO runtime_configuration VALUES(1,${fingerprint})`;
         this.installTools();
         const harness = await Harness.open(
           storage,
@@ -207,14 +230,83 @@ export class ChangeAgent extends TaskAgent {
       ],
     });
   }
-  async execute(input: ExecutionInput) {
-    if (this.env.EXECUTION_MODE !== "cloud") throw Error("execution_disabled");
-    if (
-      !this.env.MODEL_CONFIGURATION ||
-      !this.env.CONFIGURATION_REVISION ||
-      this.env.CONFIGURATION_REVISION !== input.configurationRevision
-    )
-      throw Error("configuration_mismatch");
+  private readonly pipeline: DurableChangePipeline;
+  private readonly jobs: DurableJobs;
+  constructor(ctx: DurableObjectState, env: PiEnv) {
+    super(ctx, env);
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS change_pipeline(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
+    this.pipeline = new DurableChangePipeline({
+      read: () => {
+        const [row] = this.sql<{ value: string }>`SELECT value FROM change_pipeline WHERE id=1`;
+        return row ? (JSON.parse(row.value) as PipelineState) : undefined;
+      },
+      write: (state) => {
+        void this
+          .sql`INSERT INTO change_pipeline VALUES(1,${JSON.stringify(state)}) ON CONFLICT(id) DO UPDATE SET value=excluded.value`;
+      },
+    });
+    this.jobs = new DurableJobs(
+      "change-pipeline",
+      async (jobs) => {
+        const state = this.pipeline.status();
+        if (state && !["done", "blocked"].includes(state.stage))
+          await jobs.enqueue("pipeline", { runId: state.input.runId });
+      },
+      async () => {
+        const { coordinator, transport } = this.coordinator();
+        await this.pipeline.advance({
+          prepare: (input) => coordinator.prepare(input),
+          change: async (workspace, input) => {
+            this.bind({ workspace, input });
+            const signal = AbortSignal.timeout(500);
+            try {
+              return await applyChange(await this.prompt(), transport, workspace, input, signal);
+            } catch (error) {
+              if (signal.aborted) return undefined;
+              throw error;
+            }
+          },
+          publish: (workspace, candidate) => coordinator.publish(workspace, candidate),
+          test: (workspace, candidate) =>
+            coordinator.test(workspace, candidate, {
+              commandId: "candidate-tests",
+              argv: ["pnpm", "test"],
+              timeoutMs: 60000,
+              maxOutputBytes: 16384,
+            }),
+          review: (workspace, evidence) =>
+            this.env.REVIEW.get(this.env.REVIEW.idFromName(`review:${workspace.runId}`)).evaluate(
+              workspace,
+              evidence,
+              500,
+              {
+                messages: this.pipeline.status()!.input.messages,
+                repositoryContext: this.pipeline.status()!.input.repositoryContext,
+                implementationSummary: this.pipeline.status()!.change!.summary,
+              },
+            ),
+          stop: async (workspace) => {
+            try {
+              await coordinator.stop(workspace);
+            } finally {
+              await this.harness.session().abort();
+              if (this.pipeline.status()?.evidence)
+                await this.env.REVIEW.get(
+                  this.env.REVIEW.idFromName(`review:${workspace.runId}`),
+                ).abortReview(workspace.runId);
+            }
+          },
+        });
+        const state = this.pipeline.status();
+        return state && !["done", "blocked"].includes(state.stage)
+          ? { rescheduleAt: Date.now() + 1000 }
+          : undefined;
+      },
+    );
+    this.lifecycle.use(this.jobs);
+  }
+  private coordinator() {
     const transport = this.transport();
     void this
       .sql`CREATE TABLE IF NOT EXISTS operation_journal(key TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,result TEXT)`;
@@ -247,24 +339,27 @@ export class ChangeAgent extends TaskAgent {
       transport,
       journal,
     );
-    const worker = {
-      apply: async (workspace: Workspace, request: ExecutionInput, signal?: AbortSignal) => {
-        this.bind({ workspace, input: request });
-        return applyChange(await this.prompt(), transport, workspace, request, signal);
-      },
-    };
-    const reviewer = {
-      review: async (workspace: Workspace, evidence: TestEvidence) =>
-        this.env.REVIEW.get(this.env.REVIEW.idFromName(`review:${workspace.runId}`)).evaluate(
-          workspace,
-          evidence,
-        ),
-    };
-    return new CloudflareExecutionAdapter(coordinator, journal, worker, reviewer, {
-      argv: ["pnpm", "test"],
-      timeoutMs: 60000,
-      maxOutputBytes: 16384,
-    }).delegate(input);
+    return { coordinator, transport };
+  }
+  async start(input: ExecutionInput) {
+    if (this.env.EXECUTION_MODE !== "cloud") throw Error("execution_disabled");
+    if (
+      !this.env.MODEL_CONFIGURATION ||
+      !this.env.CONFIGURATION_REVISION ||
+      this.env.CONFIGURATION_REVISION !== input.configurationRevision
+    )
+      throw Error("configuration_mismatch");
+    this.transport();
+    await this.lifecycle.start();
+    const state = this.pipeline.start(input);
+    if (!["done", "blocked"].includes(state.stage))
+      await this.jobs.enqueue("pipeline", { runId: input.runId });
+    return { runId: input.runId, stage: state.stage };
+  }
+  async result(runId: string) {
+    const state = this.pipeline.status();
+    if (!state || state.input.runId !== runId) throw Error("not_found");
+    return { stage: state.stage, result: state.result, error: state.error };
   }
 }
 export class ReviewAgent extends TaskAgent {
@@ -303,6 +398,39 @@ export class ReviewAgent extends TaskAgent {
           },
         }),
         defineTool({
+          name: "list_candidate",
+          description: "List a bounded directory at the pinned candidate SHA",
+          parameters: Type.Object({ path: Type.String({ maxLength: 1024 }) }),
+          replay: "safe",
+          outputLimits: { maxBytes: 16384 },
+          execute: async ({ path }) => {
+            this.countTool();
+            const parts = path ? path.split("/") : [];
+            if (
+              path.startsWith("/") ||
+              parts.length > 10 ||
+              parts.some((p) => !p || p === ".." || p === "." || p === ".git")
+            )
+              throw Error("invalid_path");
+            const { workspace, evidence } = this.context();
+            if (!this.env.ARTIFACTS || !evidence) throw Error("review_not_configured");
+            using fork = await this.env.ARTIFACTS.get(workspace.artifactId);
+            const commit = await fork.readCommit(evidence.candidateSha);
+            if (!commit) throw Error("candidate_not_available");
+            let treeHash = commit.treeHash;
+            for (const part of parts) {
+              const entries = await fork.readTree(treeHash);
+              if (!entries || entries.length > 200) throw Error("review_tree_limit");
+              const entry = entries.find((entry) => entry.name === part && entry.type === "tree");
+              if (!entry) throw Error("directory_not_available");
+              treeHash = entry.hash;
+            }
+            const entries = await fork.readTree(treeHash);
+            if (!entries || entries.length > 200) throw Error("review_tree_limit");
+            return { content: [{ type: "text", text: JSON.stringify(entries) }] };
+          },
+        }),
+        defineTool({
           name: "read_candidate",
           description: "Read a file at the pinned base or candidate SHA",
           parameters: Read,
@@ -329,9 +457,24 @@ export class ReviewAgent extends TaskAgent {
       ],
     });
   }
-  async evaluate(workspace: Workspace, evidence: TestEvidence) {
+  async abortReview(runId: string) {
+    const [table] = this.sql`SELECT name FROM sqlite_master WHERE name='task_context'`;
+    if (!table) return;
+    const context = this.context();
+    if (context.workspace.runId !== runId) throw Error("context_mismatch");
+    await this.harness.session().abort();
+  }
+  async evaluate(workspace: Workspace, evidence: TestEvidence, waitMs = 500, brief?: ReviewBrief) {
     if (this.env.EXECUTION_MODE !== "cloud") throw Error("execution_disabled");
-    this.bind({ workspace, evidence });
-    return reviewCandidate(await this.prompt(), workspace, evidence);
+    if (this.env.CONFIGURATION_REVISION !== workspace.configurationRevision)
+      throw Error("configuration_mismatch");
+    this.bind({ workspace, evidence, brief });
+    const signal = AbortSignal.timeout(Math.min(1000, Math.max(1, waitMs)));
+    try {
+      return await reviewCandidate(await this.prompt(), workspace, evidence, signal, brief);
+    } catch (error) {
+      if (signal.aborted) return undefined;
+      throw error;
+    }
   }
 }

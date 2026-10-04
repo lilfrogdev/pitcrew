@@ -13,5 +13,9 @@
     },
     "allowImportingTsExtensions": true
   },
-  "include": ["apps/worker/src/**/*.ts", "packages/protocol/src/**/*.ts"]
+  "include": [
+    "apps/worker/src/**/*.ts",
+    "apps/worker/test/**/*.ts",
+    "packages/protocol/src/**/*.ts"
+  ]
 }

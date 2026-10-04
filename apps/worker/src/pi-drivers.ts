@@ -43,11 +43,17 @@ export async function applyChange(
     throw Error("invalid_candidate");
   return { candidateSha: candidate.sha, summary: (result.text ?? "").slice(0, 4096) };
 }
+export interface ReviewBrief {
+  messages: ExecutionInput["messages"];
+  repositoryContext?: ExecutionInput["repositoryContext"];
+  implementationSummary: string;
+}
 export async function reviewCandidate(
   harness: DurablePrompt,
   workspace: Workspace,
   evidence: TestEvidence,
   signal?: AbortSignal,
+  brief?: ReviewBrief,
 ) {
   if (
     evidence.runId !== workspace.runId ||
@@ -62,6 +68,7 @@ export async function reviewCandidate(
       candidateSha: evidence.candidateSha,
       configurationRevision: evidence.configurationRevision,
       tests: evidence,
+      requestedChange: brief,
     }),
     { operationId: `review:${workspace.runId}` },
   );
