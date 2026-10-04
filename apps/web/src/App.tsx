@@ -230,6 +230,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       // Revalidate other repository lists without clearing the selected transcript/draft.
       setSidebarRevision((value) => value + 1);
       setAnnouncement(archived ? "Conversation archived." : "Conversation restored.");
+      return updated;
     } catch (cause) {
       setError(errorText(cause));
     } finally {

@@ -108,6 +108,45 @@ describe("archive conversations", () => {
     );
     expect((await api.threads("playground"))[0].archived).toBe(false);
   });
+  it("applies committed inactive archives even when its list refresh fails", async () => {
+    const user = userEvent.setup(),
+      api = createFixtureApi();
+    const read = api.threads,
+      write = api.setThreadArchived!;
+    let failLists = false;
+    api.threads = async (id) => {
+      if (id === "playground" && failLists) throw Error("List unavailable");
+      return structuredClone(await read(id));
+    };
+    api.setThreadArchived = async (...input) => {
+      const updated = await write(...input);
+      failLists = true;
+      return updated;
+    };
+    await mount(api);
+    const title = "Explore an isolated change",
+      results = await search(user, "Explore");
+    await user.click(within(results).getByRole("button", { name: `Pin conversation ${title}` }));
+    await act(user, title, "Archive", results);
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Pinned" })).queryByRole("button", {
+          name: title,
+        }),
+      ).toBeNull(),
+    );
+    await act(
+      user,
+      title,
+      "Restore",
+      screen.getByRole("region", { name: "Conversation search results" }),
+    );
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", { name: title }),
+      ).toBeTruthy(),
+    );
+  });
   it("keeps rows and content on failure and permits an explicit repeated retry", async () => {
     const user = userEvent.setup(),
       api = createFixtureApi(),

@@ -113,11 +113,12 @@ export function Sidebar({
   busy: boolean;
   onSelect: (repository: string, conversation?: string) => void;
   onCreate: (repository: string) => void;
-  onArchive?: (thread: Thread, archived: boolean) => void;
+  onArchive?: (thread: Thread, archived: boolean) => Promise<Thread | undefined>;
   activeRun?: Run;
   children?: ReactNode;
 }) {
   const [query, setQuery] = useState("");
+  const [archiveUpdates, setArchiveUpdates] = useState<Record<string, Thread>>({});
   const [searching, setSearching] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [pins, setPins] = useState(readPins);
@@ -160,7 +161,22 @@ export function Sidebar({
       /* Navigation works without storage. */
     }
   }, [pins]);
-  const conversations = (id: string) => (id === projectId ? threads : (others[id] ?? []));
+  useEffect(() => {
+    const savedConversations = projects.flatMap((item) =>
+      item.id === projectId ? threads : (others[item.id] ?? []),
+    );
+    setArchiveUpdates((all) => {
+      const next = { ...all };
+      for (const item of savedConversations) {
+        if (next[item.id]?.archived === item.archived) delete next[item.id];
+      }
+      return Object.keys(next).length === Object.keys(all).length ? all : next;
+    });
+  }, [threads, others, projectId, projects]);
+  const conversations = (id: string) =>
+    (id === projectId ? threads : (others[id] ?? [])).map(
+      (item) => archiveUpdates[item.id] ?? item,
+    );
   const knownConversations = projects.flatMap((item) => conversations(item.id));
   const associations = { ...pins.conversationRepositories };
   for (const item of knownConversations) {
@@ -232,9 +248,11 @@ export function Sidebar({
           <div className="conversation-menu">
             <button
               disabled={busy}
-              onClick={(event) => {
+              onClick={async (event) => {
                 event.currentTarget.closest("details")?.removeAttribute("open");
-                onArchive(item, !item.archived);
+                const updated = await onArchive(item, !item.archived);
+                // A committed response hides/restores cached rows even if list revalidation fails.
+                if (updated) setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
               }}
             >
               {item.archived ? "Restore" : "Archive"} conversation
