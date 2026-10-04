@@ -10,6 +10,12 @@ export interface Thread {
   projectId: string;
   title: string;
 }
+export interface Change {
+  id: string;
+  threadId: string;
+  originMessageIds: string[];
+  contextRevision: string;
+}
 export interface Message {
   id: string;
   threadId: string;
@@ -26,6 +32,8 @@ export type RunStatus =
   | "failed"
   | "stopped";
 export interface Run {
+  // Optional only for legacy wire records; coordinator assigns every stored run.
+  changeId?: string;
   messageId?: string;
   id: string;
   threadId: string;
@@ -64,6 +72,7 @@ export interface Event {
   type:
     | "thread.created"
     | "message.created"
+    | "change.created"
     | "run.queued"
     | "run.started"
     | "run.awaiting_review"
@@ -78,10 +87,12 @@ export interface SubmitMessage {
   idempotencyKey: string;
 }
 export interface SubmitResult {
+  change?: Change;
   message: Message;
   run: Run;
 }
 export interface ExecutionInput {
+  changeId?: string;
   repositoryContext?: RepositoryContext;
   runId: string;
   projectId: string;
