@@ -175,6 +175,7 @@ export function createFixtureApi(): Api {
       },
     ],
     threads: async (id) => threads.filter((thread) => thread.projectId === id),
+    latestRun: async (id) => structuredClone(data[id]?.runs.at(-1)),
     snapshot: async (id) =>
       structuredClone(data[id] ?? { messages: [], runs: [], reviews: [], evidence: [] }),
     createThread: async (projectId, title, key) => {
