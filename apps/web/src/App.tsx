@@ -1,3 +1,4 @@
+import { Intake } from "./Intake";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Project, Run, Snapshot, Thread } from "./api";
 import "./styles.css";
@@ -326,6 +327,12 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           </div>
           {latest && <span className={`status ${latest.status}`}>{labels[latest.status]}</span>}
         </header>
+        {!demo && projectId && (
+          <details className="intake-panel" open={!threadId}>
+            <summary>Collect and group reports</summary>
+            <Intake key={projectId} projectId={projectId} onDispatch={refresh} />
+          </details>
+        )}
         {demo && (
           <div className="demo-banner">
             Synthetic preview · No cloud execution, model calls, or repository changes.
@@ -515,6 +522,42 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                   <p className="hint">Awaiting a trusted reviewer.</p>
                 )}
               </details>
+              {evidence?.verification && (
+                <div className="verification-evidence" aria-label="Verification evidence">
+                  <h3>Verification checks</h3>
+                  <p>Plan {evidence.verification.plan.fingerprint}</p>
+                  <p>
+                    Profile {evidence.verification.plan.profile.revision} · Acceptance{" "}
+                    {evidence.verification.plan.acceptance.revision}
+                  </p>
+                  {evidence.verification.plan.acceptance.criteria.map((c) => (
+                    <p key={c.id}>{c.text}</p>
+                  ))}
+                  {evidence.verification.outcomes.map((o) => (
+                    <details key={`${o.phase}:${o.checkId}`}>
+                      <summary>
+                        {o.checkId}: {o.status} ({o.phase})
+                      </summary>
+                      <p>
+                        SHA {o.checkedSha} · Artifact {o.artifactId} · Duration{" "}
+                        {o.durationMs === undefined ? "unmeasured" : `${o.durationMs} ms`}
+                      </p>
+                      <p>{o.reason}</p>
+                      <pre>
+                        {JSON.stringify(
+                          evidence.verification!.plan.profile.checks.find(
+                            (c) => c.id === o.checkId,
+                          ),
+                        )}
+                      </pre>
+                      <pre>
+                        {o.result?.stdout}
+                        {o.result?.stderr}
+                      </pre>
+                    </details>
+                  ))}
+                </div>
+              )}
               <LandingControl
                 api={api}
                 run={run}

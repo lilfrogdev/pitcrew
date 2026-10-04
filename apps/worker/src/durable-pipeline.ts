@@ -1,3 +1,5 @@
+import { verificationGaps } from "../../../packages/verification/src/index.ts";
+import type { VerificationEvidence } from "@pitcrew/protocol";
 import type { ExecutionInput, ExecutionResult, Review } from "@pitcrew/protocol";
 import type { Workspace, TestEvidence } from "../../../packages/execution/src/contracts";
 export type Stage =
@@ -17,6 +19,7 @@ export interface PipelineState {
   workspace?: Workspace;
   change?: { candidateSha: string; summary: string };
   evidence?: TestEvidence;
+  verification?: VerificationEvidence;
   review?: Pick<
     Review,
     "baseSha" | "candidateSha" | "configurationRevision" | "decision" | "summary" | "actor"
@@ -33,6 +36,7 @@ export interface PipelinePorts {
   change(workspace: Workspace, input: ExecutionInput): Promise<PipelineState["change"]>;
   publish(workspace: Workspace, candidate: string): Promise<void>;
   test(workspace: Workspace, candidate: string): Promise<TestEvidence>;
+  verify?(workspace: Workspace, candidate: string): Promise<VerificationEvidence | undefined>;
   review(workspace: Workspace, evidence: TestEvidence): Promise<PipelineState["review"]>;
   stop(workspace: Workspace): Promise<void>;
 }
@@ -95,6 +99,10 @@ export class DurableChangePipeline {
           break;
         case "test":
           state.evidence = await ports.test(state.workspace!, state.change!.candidateSha);
+          if (state.input.verificationPlan) {
+            state.verification = await ports.verify?.(state.workspace!, state.change!.candidateSha);
+            if (!state.verification) throw Error("verification_missing");
+          }
           state.stage = "review";
           break;
         case "review": {
@@ -118,6 +126,19 @@ export class DurableChangePipeline {
             (evidence.status !== "completed" || evidence.exitCode !== 0 || evidence.truncated)
           )
             throw Error("invalid_approval");
+          if (state.verification) {
+            const gaps = await verificationGaps(
+              state.verification.plan,
+              state.verification.outcomes,
+            );
+            if (gaps.length && review.decision === "approve") {
+              review.decision = "request_changes";
+              review.summary = `Verification gaps: ${gaps.join(", ")}. ${review.summary}`.slice(
+                0,
+                4096,
+              );
+            }
+          }
           state.review = review;
           state.stage = "stop";
           break;
@@ -127,6 +148,7 @@ export class DurableChangePipeline {
           const e = state.evidence!,
             w = state.workspace!;
           state.result = {
+            verification: state.verification,
             workerId: w.workerId,
             artifactId: w.artifactId,
             baseSha: e.baseSha,

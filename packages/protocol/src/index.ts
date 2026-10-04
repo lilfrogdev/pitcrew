@@ -1,3 +1,4 @@
+import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
 export interface Project {
   id: string;
   name: string;
@@ -93,6 +94,7 @@ export interface SubmitResult {
   run: Run;
 }
 export interface ExecutionInput {
+  verificationPlan?: VerificationPlan;
   changeId?: string;
   repositoryContext?: RepositoryContext;
   runId: string;
@@ -103,7 +105,12 @@ export interface ExecutionInput {
   configurationRevision: string;
   messages: Message[];
 }
+export interface VerificationEvidence {
+  plan: VerificationPlan;
+  outcomes: CheckOutcome[];
+}
 export interface ExecutionResult {
+  verification?: VerificationEvidence;
   workerId: string;
   artifactId: string;
   baseSha: string;
@@ -120,6 +127,7 @@ export interface ExecutionAdapter {
   delegate(input: ExecutionInput, signal?: AbortSignal): Promise<ExecutionResult>;
 }
 export interface RunEvidence {
+  verification?: VerificationEvidence;
   run: Run;
   tests?: TestEvidence;
   reviews: Review[];

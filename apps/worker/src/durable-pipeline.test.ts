@@ -147,3 +147,52 @@ it("binds idempotency to the exact configuration and original work brief", () =>
     "idempotency_conflict",
   );
 });
+it("persists verification failures without turning an independent approval into a passing check", async () => {
+  const { pinPlan, executePlan } = await import("../../../packages/verification/src/index.ts");
+  const initial = await pinPlan({
+    projectId: "p",
+    changeId: "c",
+    baseSha: base,
+    candidateSha: base,
+    configurationRevision: "1",
+    profile: {
+      projectId: "p",
+      revision: "v1",
+      checks: [
+        {
+          id: "behavior",
+          kind: "command",
+          command: { argv: ["fixture"], timeoutMs: 1000, maxOutputBytes: 1024 },
+        },
+      ],
+    },
+    acceptance: {
+      revision: "a1",
+      criteria: [{ id: "accept", text: "Behavior works", checkIds: ["behavior"] }],
+    },
+    reproduceBaseline: false,
+  });
+  const f = fixture();
+  f.ports.verify = async (workspace) => {
+    const { fingerprint: _fingerprint, ...spec } = initial;
+    const plan = await pinPlan({ ...spec, candidateSha: candidate });
+    return {
+      plan,
+      outcomes: await executePlan(plan, "candidate", workspace, {
+        inspect: async () => ({ sha: candidate, clean: true }),
+        run: async () => ({
+          status: "completed",
+          exitCode: 1,
+          stdout: "",
+          stderr: "assertion failed",
+          truncated: false,
+        }),
+      }),
+    };
+  };
+  const runner = new DurableChangePipeline(f.store);
+  runner.start({ ...input, changeId: "c", verificationPlan: initial });
+  for (let i = 0; i < 6; i++) await runner.advance(f.ports);
+  expect(f.store.read()!.result!.verification!.outcomes[0].status).toBe("failed");
+  expect(f.store.read()!.result!.review!.decision).toBe("request_changes");
+});

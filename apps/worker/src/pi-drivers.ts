@@ -45,6 +45,7 @@ export async function applyChange(
     configurationRevision: input.configurationRevision,
     repositoryContext: input.repositoryContext,
     messages: input.messages,
+    verificationPlan: input.verificationPlan,
   });
   await harness.submit(prompt, { operationId: `change:${input.runId}` });
   const result = await harness.wait(`change:${input.runId}`, { signal });
@@ -59,6 +60,7 @@ export async function applyChange(
   return { candidateSha: candidate.sha, summary: (result.text ?? "").slice(0, 4096) };
 }
 export interface ReviewBrief {
+  verification?: import("@pitcrew/protocol").VerificationEvidence;
   messages: ExecutionInput["messages"];
   repositoryContext?: ExecutionInput["repositoryContext"];
   implementationSummary: string;
