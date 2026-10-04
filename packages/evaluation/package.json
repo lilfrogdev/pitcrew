@@ -1,0 +1,10 @@
+{
+  "name": "@pitcrew/evaluation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-transform-types --test test/*.test.mjs && vp test run --root ../.. packages/evaluation/src/knowledge-coordinator.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}
