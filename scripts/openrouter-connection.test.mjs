@@ -2,24 +2,36 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Writable, Readable } from "node:stream";
-import { readFile } from "node:fs/promises";
+import { access, readFile, readlink, stat } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   createOpenRouterConnectionMiddleware,
   openRouterConnectionPlugin,
+  removeOpenRouterSecret,
   storeOpenRouterSecret,
 } from "./openrouter-connection.mjs";
+
 const route = "/api/provider-connection/openrouter";
+const mutation = (action) => (action === "store" ? { action, key: "mock-key" } : { action });
+
 async function fixture(t, options = {}) {
   const origin = "http://127.0.0.1:5199";
-  const stored = [];
+  const stored = [],
+    removed = [];
   const handler = createOpenRouterConnectionMiddleware({
     origin,
     enabled: true,
-    store: async (key) => stored.push(key),
+    userWranglerAuth: true,
+    store: async (key) => {
+      stored.push(key);
+    },
+    remove: async (...args) => {
+      removed.push(args);
+    },
     ...options,
   });
   const request = async (path = route, init = {}) => {
-    const req = Readable.from(init.body ? [Buffer.from(init.body)] : []);
+    const req = Readable.from(init.chunks ?? (init.body ? [Buffer.from(init.body)] : []));
     req.url = path;
     req.method = init.method ?? "GET";
     req.headers = Object.fromEntries(
@@ -54,168 +66,411 @@ async function fixture(t, options = {}) {
       "Content-Type": "application/json",
     };
   };
-  return { request, session, stored, origin };
+  const post = (headers, body, init = {}) =>
+    request(route, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      ...init,
+    });
+  return { request, session, post, stored, removed, origin };
 }
-test("explicit authenticated save stores only key and returns sanitized disabled execution status", async (t) => {
+
+test("authenticated save, replace and remove return sanitized status with execution disabled", async (t) => {
   const f = await fixture(t);
-  assert.deepEqual(await (await f.request()).json(), {
+  const expected = {
     available: true,
+    storageAvailable: true,
+    configured: false,
+    executionEnabled: false,
+  };
+  assert.deepEqual(await (await f.request()).json(), expected);
+  const headers = await f.session();
+  for (const key of ["mock-key-only", "mock-replacement-key"]) {
+    const saved = await f.post(headers, { action: "store", key });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(await saved.json(), { ...expected, configured: true });
+    assert.match(saved.headers.get("cache-control"), /no-store/);
+    assert.equal(saved.headers.get("x-content-type-options"), "nosniff");
+  }
+  assert.deepEqual(f.stored, ["mock-key-only", "mock-replacement-key"]);
+  const removed = await f.post(headers, { action: "remove" });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(await removed.json(), expected);
+  assert.deepEqual(f.removed, [[]]);
+  assert.deepEqual(await (await f.request()).json(), expected);
+});
+
+test("store and remove reject foreign origins, invalid sessions, wrong hosts and nonloopback sockets", async (t) => {
+  const f = await fixture(t);
+  const headers = await f.session();
+  for (const action of ["store", "remove"]) {
+    for (const changed of [
+      { Origin: "https://attacker.example" },
+      { Origin: "" },
+      { Origin: undefined, "Sec-Fetch-Site": "same-origin" },
+      { Cookie: "" },
+      { "X-Pitcrew-Connection-Nonce": "0".repeat(64) },
+      { "X-Pitcrew-Connection-Nonce": "é".repeat(64) },
+      { Cookie: `${headers.Cookie}; ${headers.Cookie}` },
+      { Host: "attacker.example" },
+    ]) {
+      assert.equal((await f.post({ ...headers, ...changed }, mutation(action))).status, 403);
+    }
+    for (const socket of [{ remoteAddress: "192.168.1.9" }, { localAddress: "0.0.0.0" }]) {
+      assert.equal((await f.post(headers, mutation(action), { socket })).status, 403);
+    }
+  }
+  assert.deepEqual(f.stored, []);
+  assert.deepEqual(f.removed, []);
+});
+
+test("only exact store and remove bodies are accepted and rejected input never reaches operations", async (t) => {
+  const f = await fixture(t);
+  const headers = await f.session();
+  for (const invalid of [
+    { action: "store", key: "x", account: "other" },
+    { action: "store", key: "x\ny" },
+    { action: "store", key: "é" },
+    { action: "store", key: "" },
+    { action: "store", key: "x".repeat(4097) },
+    { action: "store", key: 42 },
+    { action: "store" },
+    { action: "remove", key: "mock-key" },
+    { action: "remove", account: "other" },
+    { action: "remove", name: "other-worker" },
+    { action: "remove", args: ["--force"] },
+    { action: "remove", userWranglerAuth: true },
+    { action: "remove", XDG_CONFIG_HOME: "/other/path" },
+    { action: "delete" },
+    {},
+    [],
+    null,
+    42,
+    "mock-key",
+  ]) {
+    const rejected = await f.post(headers, invalid);
+    assert.equal(rejected.status, 400);
+    assert.deepEqual(await rejected.json(), { error: "provider_request_invalid" });
+  }
+  const malformed = await f.request(route, {
+    method: "POST",
+    headers,
+    body: "mock-secret-not-json",
+  });
+  assert.equal(malformed.status, 400);
+  assert.equal(await malformed.text(), '{"error":"provider_request_invalid"}');
+  assert.deepEqual(f.stored, []);
+  assert.deepEqual(f.removed, []);
+});
+
+test("request headers and streamed body bytes remain bounded for both operations", async (t) => {
+  const f = await fixture(t);
+  const headers = await f.session();
+  for (const action of ["store", "remove"]) {
+    for (const changed of [
+      { "Content-Type": "text/plain" },
+      { "Content-Type": "application/json; charset=utf-8" },
+      { "Content-Encoding": "gzip" },
+      { "Content-Length": "8193" },
+      { "Content-Length": "-1" },
+      { "Content-Length": "NaN" },
+    ]) {
+      assert.equal((await f.post({ ...headers, ...changed }, mutation(action))).status, 400);
+    }
+    const payload = JSON.stringify(mutation(action));
+    const oversized = await f.post(headers, mutation(action), {
+      chunks: [Buffer.from(payload), Buffer.alloc(8193 - Buffer.byteLength(payload), " ")],
+    });
+    assert.equal(oversized.status, 400);
+    assert.deepEqual(await oversized.json(), { error: "provider_request_invalid" });
+  }
+  assert.deepEqual(f.stored, []);
+  assert.deepEqual(f.removed, []);
+  const payload = JSON.stringify({ action: "remove" });
+  assert.equal(
+    (
+      await f.post(
+        headers,
+        { action: "remove" },
+        {
+          chunks: [Buffer.from(payload), Buffer.alloc(8192 - Buffer.byteLength(payload), " ")],
+        },
+      )
+    ).status,
+    200,
+  );
+  assert.deepEqual(f.removed, [[]]);
+});
+
+test("expired sessions cannot store or remove", async (t) => {
+  let clock = 0;
+  const f = await fixture(t, { now: () => clock });
+  const headers = await f.session();
+  clock = 900_001;
+  for (const action of ["store", "remove"]) {
+    assert.equal((await f.post(headers, mutation(action))).status, 403);
+  }
+  assert.deepEqual(f.stored, []);
+  assert.deepEqual(f.removed, []);
+});
+
+test("failed operations suppress diagnostics, preserve configured state and release the lock", async (t) => {
+  let failStore = true,
+    failRemove = true;
+  const f = await fixture(t, {
+    store: async () => {
+      if (failStore) throw new Error("mock-secret-sensitive-store-output");
+    },
+    remove: async () => {
+      if (failRemove) throw new Error("mock-secret-sensitive-remove-output");
+    },
+  });
+  const headers = await f.session();
+  const failedStore = await f.post(headers, mutation("store"));
+  assert.equal(failedStore.status, 400);
+  assert.equal(await failedStore.text(), '{"error":"provider_secret_store_failed"}');
+  assert.equal((await (await f.request()).json()).configured, false);
+  failStore = false;
+  assert.equal((await f.post(headers, mutation("store"))).status, 200);
+  const failedRemove = await f.post(headers, mutation("remove"));
+  assert.equal(failedRemove.status, 400);
+  assert.equal(await failedRemove.text(), '{"error":"provider_secret_remove_failed"}');
+  assert.equal((await (await f.request()).json()).configured, true);
+  failRemove = false;
+  assert.equal((await f.post(headers, mutation("remove"))).status, 200);
+  assert.equal((await (await f.request()).json()).configured, false);
+});
+
+test("storage is unavailable until the explicit boolean auth option is approved", async (t) => {
+  for (const userWranglerAuth of [false, undefined, "true"]) {
+    const f = await fixture(t, { userWranglerAuth });
+    assert.deepEqual(await (await f.request()).json(), {
+      available: true,
+      storageAvailable: false,
+      configured: false,
+      executionEnabled: false,
+    });
+    const headers = await f.session();
+    for (const action of ["store", "remove"]) {
+      const rejected = await f.post(headers, mutation(action));
+      assert.equal(rejected.status, 503);
+      assert.deepEqual(await rejected.json(), { error: "provider_storage_unavailable" });
+    }
+    assert.deepEqual(f.stored, []);
+    assert.deepEqual(f.removed, []);
+  }
+});
+
+test("unavailable controller fails closed and wildcard host configuration is rejected", async (t) => {
+  const f = await fixture(t, { enabled: false });
+  const result = await f.request();
+  assert.equal(result.status, 503);
+  assert.deepEqual(await result.json(), {
+    available: false,
+    storageAvailable: false,
     configured: false,
     executionEnabled: false,
   });
-  const headers = await f.session();
-  const saved = await f.request(route, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ action: "store", key: "mock-key-only" }),
-  });
-  assert.deepEqual(await saved.json(), {
-    available: true,
-    configured: true,
-    executionEnabled: false,
-  });
-  assert.deepEqual(f.stored, ["mock-key-only"]);
-  assert.match(saved.headers.get("cache-control"), /no-store/);
-});
-test("rejects cross-origin, missing session, forged cookie, duplicate cookie, wrong host and malformed requests", async (t) => {
-  const f = await fixture(t);
-  const headers = await f.session();
-  const body = JSON.stringify({ action: "store", key: "mock-key" });
-  for (const changed of [
-    { Origin: "https://attacker.example" },
-    { Origin: "" },
-    { Cookie: "" },
-    { "X-Pitcrew-Connection-Nonce": "0".repeat(64) },
-    { "X-Pitcrew-Connection-Nonce": "é".repeat(64) },
-    { Cookie: `${headers.Cookie}; ${headers.Cookie}` },
-    { Host: "attacker.example" },
-  ]) {
-    assert.equal(
-      (await f.request(route, { method: "POST", headers: { ...headers, ...changed }, body }))
-        .status,
-      403,
-    );
-  }
-  for (const invalid of [
-    JSON.stringify({ action: "store", key: "x", account: "other" }),
-    JSON.stringify({ action: "store", key: "x\ny" }),
-    "x".repeat(9000),
-    "{}",
-  ]) {
-    assert.equal((await f.request(route, { method: "POST", headers, body: invalid })).status, 400);
-  }
-  for (const socket of [{ remoteAddress: "192.168.1.9" }, { localAddress: "0.0.0.0" }])
-    assert.equal((await f.request(route, { method: "POST", headers, body, socket })).status, 403);
-  assert.deepEqual(f.stored, []);
-});
-test("expired sessions cannot save and store diagnostics never reach response", async (t) => {
-  let clock = 0;
-  const f = await fixture(t, {
-    now: () => clock,
-    store: async () => {
-      throw new Error("mock-secret-sensitive-output");
-    },
-  });
-  const headers = await f.session();
-  const post = () =>
-    f.request(route, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ action: "store", key: "mock-key" }),
-    });
-  const failure = await post();
-  assert.equal(await failure.text(), '{"error":"provider_secret_store_failed"}');
-  assert.equal((await (await f.request()).json()).configured, false);
-  clock = 900_001;
-  assert.equal((await post()).status, 403);
-});
-test("unavailable controller fails closed and wildcard host configuration is rejected", async (t) => {
-  const f = await fixture(t, { enabled: false });
-  assert.equal((await f.request()).status, 503);
   assert.throws(() => openRouterConnectionPlugin().configResolved({ server: { host: "0.0.0.0" } }));
 });
-test("Wrangler preflight and put use immutable target, stdin and discarded diagnostics", async () => {
-  const inspections = [];
-  const commands = [];
-  const fakeSpawn = (binary, args, options) => {
-    const child = new EventEmitter();
-    const chunks = [];
-    child.stdin = new Writable({
-      write(chunk, _encoding, done) {
-        chunks.push(chunk.toString());
-        done();
-      },
-    });
-    child.kill = () => {};
-    commands.push(args.slice(1, args.indexOf("--config")));
-    const inspect = (async () => {
-      assert.equal(binary, process.execPath);
-      assert.equal(options.shell, false);
-      assert.deepEqual(options.stdio, ["pipe", "ignore", "ignore"]);
-      assert.equal(args.includes("mock-key"), false);
-      const config = JSON.parse(await readFile(args[args.indexOf("--config") + 1], "utf8"));
-      assert.equal(config.name, "pitcrew-backend");
-      assert.equal(config.account_id, "004227d2029c56b084ce15356768def3");
-      assert.equal(Object.values(options.env).includes("mock-key"), false);
-      assert.equal(chunks.join(""), args[2] === "put" ? "mock-key" : "");
-      child.emit("close", 0);
-    })();
-    inspections.push(inspect);
-    return child;
+
+test("direct secret helpers fail before spawning unless auth is explicitly enabled", async () => {
+  let calls = 0;
+  const spawnProcess = () => {
+    calls++;
+    throw new Error("must not spawn");
   };
-  await storeOpenRouterSecret("mock-key", fakeSpawn);
-  await Promise.all(inspections);
-  assert.deepEqual(commands, [
-    ["secret", "list"],
-    ["secret", "put", "OPENROUTER_API_KEY"],
-  ]);
-});
-test("failed target preflight never starts put or transmits the key", async () => {
-  const commands = [],
-    sent = [];
-  const fakeSpawn = (_binary, args) => {
-    const child = new EventEmitter();
-    commands.push(args[2]);
-    child.stdin = new Writable({
-      write(chunk, _encoding, done) {
-        sent.push(chunk.toString());
-        done();
-      },
+  for (const userWranglerAuth of [false, undefined, "true"]) {
+    const options = { userWranglerAuth, spawnProcess };
+    await assert.rejects(storeOpenRouterSecret("mock-key", options), {
+      message: "provider_storage_unavailable",
     });
-    child.kill = () => {};
-    setImmediate(() => child.emit("close", 1));
-    return child;
-  };
-  await assert.rejects(storeOpenRouterSecret("mock-key", fakeSpawn), {
-    message: "provider_secret_store_failed",
-  });
-  assert.deepEqual(commands, ["list"]);
-  assert.deepEqual(sent, []);
+    await assert.rejects(removeOpenRouterSecret(options), {
+      message: "provider_storage_unavailable",
+    });
+  }
+  assert.equal(calls, 0);
 });
 
-test("concurrent saves reject the second request while the first is active", async (t) => {
-  let release;
-  const gate = new Promise((resolve) => {
-    release = resolve;
-  });
-  let calls = 0;
-  const f = await fixture(t, {
-    store: async () => {
+test("Wrangler operations use a fixed target, child-only auth context, stdin and discarded diagnostics", async (t) => {
+  for (const action of ["store", "remove"]) {
+    await t.test(action, async () => {
+      const commands = [],
+        inspections = [],
+        directories = [];
+      const parentHome = process.env.HOME,
+        parentConfigHome = process.env.XDG_CONFIG_HOME;
+      const spawnProcess = (binary, args, options) => {
+        const child = new EventEmitter(),
+          chunks = [];
+        child.stdin = new Writable({
+          write(chunk, _encoding, done) {
+            chunks.push(chunk.toString());
+            done();
+          },
+        });
+        child.kill = () => {};
+        commands.push(args.slice(1, args.indexOf("--config")));
+        directories.push(options.cwd);
+        const inspection = (async () => {
+          assert.equal(binary, process.execPath);
+          assert.equal(options.shell, false);
+          assert.deepEqual(options.stdio, ["pipe", "ignore", "ignore"]);
+          assert.equal(args.includes("mock-key"), false);
+          assert.equal(args.at(-1), "--env=");
+          const configPath = args[args.indexOf("--config") + 1];
+          assert.equal(options.cwd, dirname(configPath));
+          assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), {
+            name: "pitcrew-backend",
+            account_id: "004227d2029c56b084ce15356768def3",
+            compatibility_date: "2026-10-04",
+            send_metrics: false,
+          });
+          assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+          assert.equal(await readlink(options.env.WRANGLER_LOG_PATH), "/dev/null");
+          assert.deepEqual(Object.keys(options.env).sort(), [
+            "CI",
+            "CLOUDFLARE_ACCOUNT_ID",
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "WRANGLER_LOG_PATH",
+            "WRANGLER_LOG_SANITIZE",
+            "WRANGLER_SEND_METRICS",
+            "XDG_CONFIG_HOME",
+          ]);
+          assert.equal(options.env.HOME, parentHome);
+          assert.equal(options.env.XDG_CONFIG_HOME, "/Users/lilfrogdev/Library/Preferences");
+          assert.equal(options.env.CLOUDFLARE_ACCOUNT_ID, "004227d2029c56b084ce15356768def3");
+          assert.equal(options.env.CI, "true");
+          assert.equal(options.env.WRANGLER_SEND_METRICS, "false");
+          assert.equal(options.env.WRANGLER_LOG_SANITIZE, "true");
+          assert.equal(Object.values(options.env).includes("mock-key"), false);
+          assert.equal(chunks.join(""), args[2] === "put" ? "mock-key" : "");
+        })();
+        inspections.push(inspection);
+        inspection.then(
+          () => child.emit("close", 0),
+          () => child.emit("close", 1),
+        );
+        return child;
+      };
+      const options = { userWranglerAuth: true, spawnProcess };
+      if (action === "store") await storeOpenRouterSecret("mock-key", options);
+      else await removeOpenRouterSecret(options);
+      await Promise.all(inspections);
+      assert.deepEqual(commands, [
+        ["secret", "list"],
+        ["secret", action === "store" ? "put" : "delete", "OPENROUTER_API_KEY"],
+      ]);
+      for (const directory of directories)
+        await assert.rejects(access(directory), { code: "ENOENT" });
+      assert.equal(process.env.HOME, parentHome);
+      assert.equal(process.env.XDG_CONFIG_HOME, parentConfigHome);
+    });
+  }
+});
+
+test("failed target preflight never starts put or delete or transmits a key", async () => {
+  for (const action of ["store", "remove"]) {
+    const commands = [],
+      sent = [];
+    const spawnProcess = (_binary, args) => {
+      const child = new EventEmitter();
+      commands.push(args[2]);
+      child.stdin = new Writable({
+        write(chunk, _encoding, done) {
+          sent.push(chunk.toString());
+          done();
+        },
+      });
+      child.kill = () => {};
+      setImmediate(() => child.emit("close", 1));
+      return child;
+    };
+    const options = { userWranglerAuth: true, spawnProcess };
+    await assert.rejects(
+      action === "store"
+        ? storeOpenRouterSecret("mock-key", options)
+        : removeOpenRouterSecret(options),
+      {
+        message: `provider_secret_${action}_failed`,
+      },
+    );
+    assert.deepEqual(commands, ["list"]);
+    assert.deepEqual(sent, []);
+  }
+});
+
+test("subprocess exit, spawn and stdin failures remain sanitized for both operations", async () => {
+  for (const action of ["store", "remove"]) {
+    for (const errorMode of ["exit", "spawn", "event", "stdin"]) {
+      const commands = [],
+        killed = [];
+      const spawnProcess = (_binary, args) => {
+        commands.push(args[2]);
+        if (errorMode === "spawn") throw new Error("mock-secret-sensitive-spawn-error");
+        const child = new EventEmitter();
+        child.stdin = new Writable({
+          write(_chunk, _encoding, done) {
+            done();
+          },
+        });
+        child.kill = (signal) => {
+          killed.push(signal);
+        };
+        setImmediate(() => {
+          if (errorMode === "event")
+            child.emit("error", new Error("mock-secret-sensitive-child-error"));
+          else if (errorMode === "stdin")
+            child.stdin.emit("error", new Error("mock-secret-sensitive-stdin-error"));
+          else child.emit("close", args[2] === "list" ? 0 : 1);
+        });
+        return child;
+      };
+      const options = { userWranglerAuth: true, spawnProcess };
+      await assert.rejects(
+        action === "store"
+          ? storeOpenRouterSecret("mock-key", options)
+          : removeOpenRouterSecret(options),
+        {
+          message: `provider_secret_${action}_failed`,
+        },
+      );
+      assert.deepEqual(
+        commands,
+        errorMode === "exit" ? ["list", action === "store" ? "put" : "delete"] : ["list"],
+      );
+      assert.deepEqual(killed, errorMode === "stdin" ? ["SIGKILL"] : []);
+    }
+  }
+});
+
+test("save and remove share a lock that rejects any overlapping mutation", async (t) => {
+  for (const activeAction of ["store", "remove"]) {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const wait = async () => {
       calls++;
       await gate;
-    },
-  });
-  const headers = await f.session();
-  const post = () =>
-    f.request(route, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ action: "store", key: "mock-key" }),
-    });
-  const first = post();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal((await post()).status, 409);
-  release();
-  assert.equal((await first).status, 200);
-  assert.equal(calls, 1);
+    };
+    const f = await fixture(t, { store: wait, remove: wait });
+    const headers = await f.session();
+    const first = f.post(headers, mutation(activeAction));
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const action of ["store", "remove"]) {
+      const busy = await f.post(headers, mutation(action));
+      assert.equal(busy.status, 409);
+      assert.deepEqual(await busy.json(), { error: "provider_store_in_progress" });
+    }
+    release();
+    assert.equal((await first).status, 200);
+    assert.equal(calls, 1);
+    assert.equal((await f.post(headers, mutation(activeAction))).status, 200);
+    assert.equal(calls, 2);
+  }
 });

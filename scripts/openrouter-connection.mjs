@@ -24,10 +24,13 @@ const equal = (a, b) => {
   return left.length === right.length && timingSafeEqual(left, right);
 };
 
-// Only the key travels through stdin. This function never returns CLI diagnostics.
-export async function storeOpenRouterSecret(key, spawnProcess = spawn) {
-  const directory = await mkdtemp(join(tmpdir(), "pitcrew-provider-"));
+// Only a stored key travels through stdin. Neither operation returns CLI diagnostics.
+async function changeOpenRouterSecret(action, key, { userWranglerAuth, spawnProcess }) {
+  if (userWranglerAuth !== true) throw new Error("provider_storage_unavailable");
+  const failure = `provider_secret_${action}_failed`;
+  let directory;
   try {
+    directory = await mkdtemp(join(tmpdir(), "pitcrew-provider-"));
     const configPath = join(directory, "target.json");
     const logPath = join(directory, "discard.log");
     await writeFile(configPath, JSON.stringify(target), { mode: 0o600 });
@@ -36,6 +39,9 @@ export async function storeOpenRouterSecret(key, spawnProcess = spawn) {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       TMPDIR: process.env.TMPDIR,
+      // This explicit opt-in selects only Wrangler's approved config directory
+      // in its subprocess. The server and the child's HOME stay unchanged.
+      XDG_CONFIG_HOME: "/Users/lilfrogdev/Library/Preferences",
       CLOUDFLARE_ACCOUNT_ID: target.account_id,
       WRANGLER_SEND_METRICS: "false",
       WRANGLER_LOG_PATH: logPath,
@@ -62,7 +68,7 @@ export async function storeOpenRouterSecret(key, spawnProcess = spawn) {
           clearTimeout(timer);
           child.stdin.destroy();
           if (success) resolve();
-          else reject(new Error("provider_secret_store_failed"));
+          else reject(new Error(failure));
         };
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
@@ -79,18 +85,42 @@ export async function storeOpenRouterSecret(key, spawnProcess = spawn) {
     // secret put can create a draft Worker if absent. First require this fixed
     // Worker to exist. The separate operations cannot eliminate deletion races.
     await runWrangler(["secret", "list"]);
-    await runWrangler(["secret", "put", "OPENROUTER_API_KEY"], key);
+    if (action === "store") {
+      await runWrangler(["secret", "put", "OPENROUTER_API_KEY"], key);
+    } else {
+      // Wrangler 4.147.0 has no force flag for secret delete. Its confirmation
+      // accepts the default in this fixed CI/noninteractive subprocess.
+      await runWrangler(["secret", "delete", "OPENROUTER_API_KEY"]);
+    }
   } catch {
-    throw new Error("provider_secret_store_failed");
+    throw new Error(failure);
   } finally {
     key = "";
     try {
-      await rm(directory, { recursive: true, force: true });
+      if (directory) await rm(directory, { recursive: true, force: true });
     } catch {
       // This directory contains only fixed public target metadata and a /dev/null symlink.
       // A cleanup failure must not hide the result or expose CLI diagnostics.
     }
   }
+}
+
+export async function storeOpenRouterSecret(
+  key,
+  { userWranglerAuth = false, spawnProcess = spawn } = {},
+) {
+  try {
+    await changeOpenRouterSecret("store", key, { userWranglerAuth, spawnProcess });
+  } finally {
+    key = "";
+  }
+}
+
+export async function removeOpenRouterSecret({
+  userWranglerAuth = false,
+  spawnProcess = spawn,
+} = {}) {
+  await changeOpenRouterSecret("remove", undefined, { userWranglerAuth, spawnProcess });
 }
 
 function reply(res, status, value, headers = {}) {
@@ -103,17 +133,25 @@ function reply(res, status, value, headers = {}) {
   res.end(JSON.stringify(value));
 }
 
-// Dependency injection is for offline tests. Production uses the fixed store above.
+// Dependency injection is for offline tests. Production uses the fixed operations above.
 export function createOpenRouterConnectionMiddleware({
   origin,
-  store = storeOpenRouterSecret,
+  userWranglerAuth = false,
+  store = (key) => storeOpenRouterSecret(key, { userWranglerAuth }),
+  remove = () => removeOpenRouterSecret({ userWranglerAuth }),
   enabled = false,
   now = Date.now,
 } = {}) {
   const sessions = new Map();
   let configured = false;
-  let saving = false;
-  const status = () => ({ available: enabled, configured, executionEnabled: false });
+  let changing = false;
+  const storageAvailable = enabled && userWranglerAuth === true;
+  const status = () => ({
+    available: enabled,
+    storageAvailable,
+    configured,
+    executionEnabled: false,
+  });
   return async (req, res, next) => {
     const path = req.url?.split("?", 1)[0];
     if (path !== route && path !== `${route}/session`) return next();
@@ -169,10 +207,12 @@ export function createOpenRouterConnectionMiddleware({
     ) {
       return reply(res, 400, { error: "provider_request_invalid" });
     }
-    if (saving) return reply(res, 409, { error: "provider_store_in_progress" });
+    if (!storageAvailable) return reply(res, 503, { error: "provider_storage_unavailable" });
+    if (changing) return reply(res, 409, { error: "provider_store_in_progress" });
     let raw = "",
       body,
-      acquired = false;
+      acquired = false,
+      failure = "provider_request_invalid";
     const bodyTimer = setTimeout(() => req.destroy(), 10_000);
     try {
       let bytes = 0;
@@ -184,34 +224,40 @@ export function createOpenRouterConnectionMiddleware({
       clearTimeout(bodyTimer);
       body = JSON.parse(raw);
       raw = "";
-      if (
-        !body ||
-        Object.keys(body).sort().join(",") !== "action,key" ||
-        body.action !== "store" ||
-        typeof body.key !== "string" ||
-        !/^[\x21-\x7e]{1,4096}$/.test(body.key)
-      ) {
+      const fields =
+        body && typeof body === "object" && !Array.isArray(body)
+          ? Object.keys(body).sort().join(",")
+          : "";
+      const storing =
+        fields === "action,key" &&
+        body.action === "store" &&
+        typeof body.key === "string" &&
+        /^[\x21-\x7e]{1,4096}$/.test(body.key);
+      const removing = fields === "action" && body.action === "remove";
+      if (!storing && !removing) {
         return reply(res, 400, { error: "provider_request_invalid" });
       }
-      if (saving) return reply(res, 409, { error: "provider_store_in_progress" });
-      saving = true;
+      if (changing) return reply(res, 409, { error: "provider_store_in_progress" });
+      changing = true;
       acquired = true;
-      await store(body.key);
-      configured = true;
+      failure = storing ? "provider_secret_store_failed" : "provider_secret_remove_failed";
+      if (storing) await store(body.key);
+      else await remove();
+      configured = storing;
       reply(res, 200, status());
     } catch {
-      reply(res, 400, { error: "provider_secret_store_failed" });
+      reply(res, 400, { error: failure });
     } finally {
       clearTimeout(bodyTimer);
       raw = "";
-      if (body) body.key = "";
-      if (acquired) saving = false;
+      if (body && typeof body === "object" && "key" in body) body.key = "";
+      if (acquired) changing = false;
     }
   };
 }
 
 // Install before Vite's proxy. Never enable on a wildcard/network listener.
-export function openRouterConnectionPlugin({ enabled = false } = {}) {
+export function openRouterConnectionPlugin({ enabled = false, userWranglerAuth = false } = {}) {
   return {
     name: "pitcrew-openrouter-connection",
     configResolved(config) {
@@ -222,6 +268,7 @@ export function openRouterConnectionPlugin({ enabled = false } = {}) {
       server.middlewares.use(
         createOpenRouterConnectionMiddleware({
           enabled,
+          userWranglerAuth,
           origin: () => {
             const address = server.httpServer?.address();
             return address && typeof address !== "string" && address.address === "127.0.0.1"

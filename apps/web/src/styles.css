@@ -58,11 +58,27 @@ button:disabled {
 }
 button:focus-visible,
 a:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible,
+input[type="range"]:focus-visible,
 select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+/* Text fields need an explicit navigation modality: browsers may consider a
+   mouse-focused text input :focus-visible because it accepts keyboard input. */
+input:focus,
+textarea:focus,
+[contenteditable="true"]:focus {
+  outline: none;
+  box-shadow: none;
+}
+[data-keyboard-focus="true"]
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus-visible,
+[data-keyboard-focus="true"] textarea:focus-visible,
+[data-keyboard-focus="true"] [contenteditable="true"]:focus-visible {
+  outline: 1px solid var(--border-strong);
   outline-offset: 3px;
 }
 button.selected {
