@@ -1,7 +1,10 @@
 import { afterEach, expect, it, vi } from "vite-plus/test";
-import { httpApi } from "./api";
+import { apiFetch, httpApi } from "./api";
 import { createRepositoryApi } from "./repository-api";
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 it("initializes the HTTP repository adapter without a circular module crash", () => {
   expect(httpApi.repositories).toBeDefined();
   expect(createRepositoryApi().list).toBeTypeOf("function");
@@ -27,4 +30,30 @@ it("renders only allowlisted errors, even if backend errors include secret text"
     vi.fn(async () => Response.json({ error: "SECRET" }, { status: 500 })),
   );
   await expect(createRepositoryApi().list()).rejects.toThrow("Refresh to check its status");
+});
+
+it("allows the bounded Access preparation and upstream deadline for repository requests", async () => {
+  const timeout = vi.spyOn(AbortSignal, "timeout");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) =>
+      path === "/api/local-session"
+        ? Response.json({ nonce: null })
+        : path.endsWith("/create")
+          ? Response.json({ name: "sandbox", status: "ready" })
+          : Response.json({ repositories: [], cursor: null }),
+    ),
+  );
+  await createRepositoryApi().list();
+  expect(timeout).toHaveBeenCalledWith(45000);
+  timeout.mockClear();
+  await createRepositoryApi().provision({
+    name: "sandbox",
+    operation: "create",
+    credentialConsent: true,
+  });
+  expect(timeout).toHaveBeenCalledWith(45000);
+  timeout.mockClear();
+  await apiFetch("/snapshot");
+  expect(timeout).toHaveBeenCalledExactlyOnceWith(10000);
 });

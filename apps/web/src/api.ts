@@ -103,12 +103,12 @@ export async function mutationHeaders(): Promise<Record<string, string>> {
     ...(nonce ? { "X-Pitcrew-Local-Nonce": nonce } : {}),
   };
 }
-export async function apiFetch(path: string, body?: unknown): Promise<Response> {
+export async function apiFetch(path: string, body?: unknown, timeoutMs = 10000): Promise<Response> {
   const send = async () => {
     const headers = body ? await mutationHeaders() : undefined;
     const response = await fetch(`/api${path}`, {
       method: body ? "POST" : "GET",
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers,
       body: body ? JSON.stringify(body) : undefined,
     });

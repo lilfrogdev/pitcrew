@@ -343,7 +343,12 @@ export function createBackendRelayMiddleware({
       return next();
     }
     if (!raw.startsWith("/") || raw.startsWith("//")) return next();
-    const url = new URL(raw, origin);
+    let url;
+    try {
+      url = new URL(raw, origin);
+    } catch {
+      return reply(res, 400, { error: "invalid_repository_request" });
+    }
     const metadata =
       url.pathname === "/api/repositories" || url.pathname.startsWith("/api/repositories/");
     const session = url.pathname === "/api/local-session";

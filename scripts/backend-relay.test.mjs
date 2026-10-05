@@ -501,3 +501,15 @@ test("plugin admits actual ephemeral listener port and refuses unavailable or wi
     403,
   );
 });
+
+test("malformed request targets return sanitized errors with both opt-ins off or on", async () => {
+  for (const options of [{}, { enabled: false, userAccessSession: false }]) {
+    const f = fixture(options);
+    for (const path of ["/\\[", "/\\[invalid/api/repositories"]) {
+      const result = await request(f.handler, path);
+      assert.equal(result.status, 400);
+      assert.deepEqual(result.json, { error: "invalid_repository_request" });
+    }
+    assert.equal(f.tokens.length + f.calls.length, 0);
+  }
+});
