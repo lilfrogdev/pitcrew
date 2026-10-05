@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities } from "./api";
 import "./styles.css";
 import { LandingControl, type LandingState } from "./LandingControl";
+import { Workspace, WorkspaceResize, workspaceStyle } from "./Workspace";
 import { Composer, readAttachment, attachmentError, type AttachmentDraft } from "./Composer";
 import {
   validateMessageAttachments,
@@ -27,6 +28,8 @@ const labels: Record<Run["status"], string> = {
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong. Try again.";
 export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
+  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
+  const [workspaceWidth, setWorkspaceWidth] = useState(380);
   const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
   const [composerCapabilities, setComposerCapabilities] =
@@ -444,7 +447,11 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         {section === "work" ? "Skip to conversation" : "Skip to content"}
       </a>
       <NavigationRail section={section} onSelect={setSection} />
-      <div className={`shell ${shellStyles.work}`} hidden={section !== "work"}>
+      <div
+        className={`shell workspace-shell ${workspaceCollapsed ? "is-workspace-collapsed" : ""} ${shellStyles.work}`}
+        style={workspaceStyle(workspaceWidth)}
+        hidden={section !== "work"}
+      >
         <Sidebar
           api={api}
           projects={projects}
@@ -675,167 +682,179 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             {announcement}
           </p>
         </main>
-        <aside className="evidence" aria-label="Change evidence">
-          <div className="evidence-heading">
-            <h2>Change evidence</h2>
-            <span>{snapshot.runs.length} runs</span>
-          </div>
-          {!snapshot.runs.length && (
-            <p className="hint">
-              Worker activity, tests, and trusted reviews will appear here when a change runs.
-            </p>
-          )}
-          {[...snapshot.runs].reverse().map((run) => {
-            const evidence = snapshot.evidence.find((item) => item.run.id === run.id);
-            const reviews = snapshot.reviews.filter((item) => item.runId === run.id);
-            return (
-              <section className="run-card" key={run.id}>
-                <div className="run-title">
-                  <strong>Change run</strong>
-                  <span className={`status ${run.status}`}>{labels[run.status]}</span>
-                </div>
-                {run.error && (
-                  <p className="run-error">
-                    {run.error === "reconciliation_required"
-                      ? "Execution needs reconciliation before another attempt. No work has been replayed."
-                      : run.error === "execution_unavailable"
-                        ? "Cloud execution is unavailable."
-                        : "Execution failed. Inspect the evidence before trying a new change."}
-                  </p>
-                )}
-                <details>
-                  <summary>Tests and tool output</summary>
-                  <p className="run-id">{run.id}</p>
-                  <dl>
-                    <dt>Base</dt>
-                    <dd>
-                      <code>{run.baseSha}</code>
-                    </dd>
-                    <dt>Candidate</dt>
-                    <dd>
-                      <code>{run.candidateSha ?? "Not available yet"}</code>
-                    </dd>
-                    {run.workerId && (
-                      <>
-                        <dt>Worker</dt>
-                        <dd>{run.workerId}</dd>
-                      </>
+        {!workspaceCollapsed && (
+          <WorkspaceResize width={workspaceWidth} onWidth={setWorkspaceWidth} />
+        )}
+        <Workspace
+          scope={`${projectId}:${threadId}`}
+          project={project}
+          snapshot={snapshot}
+          api={api}
+          collapsed={workspaceCollapsed}
+          onCollapse={setWorkspaceCollapsed}
+        >
+          <div className="evidence" aria-label="Change evidence">
+            <div className="evidence-heading">
+              <h2>Change evidence</h2>
+              <span>{snapshot.runs.length} runs</span>
+            </div>
+            {!snapshot.runs.length && (
+              <p className="hint">
+                Worker activity, tests, and trusted reviews will appear here when a change runs.
+              </p>
+            )}
+            {[...snapshot.runs].reverse().map((run) => {
+              const evidence = snapshot.evidence.find((item) => item.run.id === run.id);
+              const reviews = snapshot.reviews.filter((item) => item.runId === run.id);
+              return (
+                <section className="run-card" key={run.id}>
+                  <div className="run-title">
+                    <strong>Change run</strong>
+                    <span className={`status ${run.status}`}>{labels[run.status]}</span>
+                  </div>
+                  {run.error && (
+                    <p className="run-error">
+                      {run.error === "reconciliation_required"
+                        ? "Execution needs reconciliation before another attempt. No work has been replayed."
+                        : run.error === "execution_unavailable"
+                          ? "Cloud execution is unavailable."
+                          : "Execution failed. Inspect the evidence before trying a new change."}
+                    </p>
+                  )}
+                  <details>
+                    <summary>Tests and tool output</summary>
+                    <p className="run-id">{run.id}</p>
+                    <dl>
+                      <dt>Base</dt>
+                      <dd>
+                        <code>{run.baseSha}</code>
+                      </dd>
+                      <dt>Candidate</dt>
+                      <dd>
+                        <code>{run.candidateSha ?? "Not available yet"}</code>
+                      </dd>
+                      {run.workerId && (
+                        <>
+                          <dt>Worker</dt>
+                          <dd>{run.workerId}</dd>
+                        </>
+                      )}
+                      <dt>Configuration</dt>
+                      <dd>{run.configurationRevision}</dd>
+                      {run.artifactId && (
+                        <>
+                          <dt>Artifacts fork</dt>
+                          <dd>{run.artifactId}</dd>
+                        </>
+                      )}
+                    </dl>
+                    {evidence?.verification && (
+                      <div className="verification-evidence">
+                        <p>Plan {evidence.verification.plan.fingerprint}</p>
+                        <p>
+                          Profile {evidence.verification.plan.profile.revision} · Acceptance{" "}
+                          {evidence.verification.plan.acceptance.revision}
+                        </p>
+                        {evidence.verification.plan.acceptance.criteria.map((c) => (
+                          <p key={c.id}>{c.text}</p>
+                        ))}
+                      </div>
                     )}
-                    <dt>Configuration</dt>
-                    <dd>{run.configurationRevision}</dd>
-                    {run.artifactId && (
+                    {evidence?.tests ? (
                       <>
-                        <dt>Artifacts fork</dt>
-                        <dd>{run.artifactId}</dd>
+                        <p className={`test-result ${evidence.tests.status}`}>
+                          Tests {evidence.tests.status.replace("_", " ")} · exit{" "}
+                          {evidence.tests.exitCode ?? "unavailable"}
+                        </p>
+                        <p>
+                          {evidence.tests.baseSha === run.baseSha &&
+                          evidence.tests.candidateSha === run.candidateSha &&
+                          evidence.tests.configurationRevision === run.configurationRevision
+                            ? "Tests match current candidate"
+                            : "Stale test evidence — inspect exact hashes"}
+                        </p>
+                        <code>{evidence.tests.candidateSha}</code>
+                        <br />
+                        <code>{evidence.tests.argv.join(" ")}</code>
+                        <pre>
+                          {evidence.tests.stdout || "No stdout recorded."}
+                          {evidence.tests.stderr && `\n${evidence.tests.stderr}`}
+                        </pre>
+                        {evidence.tests.truncated && <p>Output was truncated.</p>}
                       </>
+                    ) : (
+                      <p className="hint">No structured test evidence recorded.</p>
                     )}
-                  </dl>
+                  </details>
+                  <details open={reviews.length > 0}>
+                    <summary>Review evidence ({reviews.length})</summary>
+                    {reviews.length ? (
+                      reviews.map((review) => (
+                        <div className="review" key={review.id}>
+                          <strong>
+                            {review.decision === "approve"
+                              ? "Approved candidate"
+                              : "Changes requested"}
+                          </strong>
+                          <p>{review.summary}</p>
+                          <small>
+                            {review.actor} ·{" "}
+                            {review.candidateSha === run.candidateSha &&
+                            review.baseSha === run.baseSha &&
+                            review.configurationRevision === run.configurationRevision
+                              ? "Matches current candidate"
+                              : "Stale evidence — inspect exact hashes"}
+                          </small>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="hint">Awaiting a trusted reviewer.</p>
+                    )}
+                  </details>
                   {evidence?.verification && (
-                    <div className="verification-evidence">
-                      <p>Plan {evidence.verification.plan.fingerprint}</p>
-                      <p>
-                        Profile {evidence.verification.plan.profile.revision} · Acceptance{" "}
-                        {evidence.verification.plan.acceptance.revision}
-                      </p>
-                      {evidence.verification.plan.acceptance.criteria.map((c) => (
-                        <p key={c.id}>{c.text}</p>
+                    <div className="verification-evidence" aria-label="Verification evidence">
+                      <h3>Verification checks</h3>
+                      {evidence.verification.outcomes.map((o) => (
+                        <details key={`${o.phase}:${o.checkId}`}>
+                          <summary>
+                            {o.checkId}: {o.status} ({o.phase})
+                          </summary>
+                          <p>
+                            SHA {o.checkedSha} · Artifact {o.artifactId} · Duration{" "}
+                            {o.durationMs === undefined ? "unmeasured" : `${o.durationMs} ms`}
+                          </p>
+                          <p>{o.reason}</p>
+                          <pre>
+                            {JSON.stringify(
+                              evidence.verification!.plan.profile.checks.find(
+                                (c) => c.id === o.checkId,
+                              ),
+                            )}
+                          </pre>
+                          <pre>
+                            {o.result?.stdout}
+                            {o.result?.stderr}
+                          </pre>
+                        </details>
                       ))}
                     </div>
                   )}
-                  {evidence?.tests ? (
-                    <>
-                      <p className={`test-result ${evidence.tests.status}`}>
-                        Tests {evidence.tests.status.replace("_", " ")} · exit{" "}
-                        {evidence.tests.exitCode ?? "unavailable"}
-                      </p>
-                      <p>
-                        {evidence.tests.baseSha === run.baseSha &&
-                        evidence.tests.candidateSha === run.candidateSha &&
-                        evidence.tests.configurationRevision === run.configurationRevision
-                          ? "Tests match current candidate"
-                          : "Stale test evidence — inspect exact hashes"}
-                      </p>
-                      <code>{evidence.tests.candidateSha}</code>
-                      <br />
-                      <code>{evidence.tests.argv.join(" ")}</code>
-                      <pre>
-                        {evidence.tests.stdout || "No stdout recorded."}
-                        {evidence.tests.stderr && `\n${evidence.tests.stderr}`}
-                      </pre>
-                      {evidence.tests.truncated && <p>Output was truncated.</p>}
-                    </>
-                  ) : (
-                    <p className="hint">No structured test evidence recorded.</p>
-                  )}
-                </details>
-                <details open={reviews.length > 0}>
-                  <summary>Review evidence ({reviews.length})</summary>
-                  {reviews.length ? (
-                    reviews.map((review) => (
-                      <div className="review" key={review.id}>
-                        <strong>
-                          {review.decision === "approve"
-                            ? "Approved candidate"
-                            : "Changes requested"}
-                        </strong>
-                        <p>{review.summary}</p>
-                        <small>
-                          {review.actor} ·{" "}
-                          {review.candidateSha === run.candidateSha &&
-                          review.baseSha === run.baseSha &&
-                          review.configurationRevision === run.configurationRevision
-                            ? "Matches current candidate"
-                            : "Stale evidence — inspect exact hashes"}
-                        </small>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="hint">Awaiting a trusted reviewer.</p>
-                  )}
-                </details>
-                {evidence?.verification && (
-                  <div className="verification-evidence" aria-label="Verification evidence">
-                    <h3>Verification checks</h3>
-                    {evidence.verification.outcomes.map((o) => (
-                      <details key={`${o.phase}:${o.checkId}`}>
-                        <summary>
-                          {o.checkId}: {o.status} ({o.phase})
-                        </summary>
-                        <p>
-                          SHA {o.checkedSha} · Artifact {o.artifactId} · Duration{" "}
-                          {o.durationMs === undefined ? "unmeasured" : `${o.durationMs} ms`}
-                        </p>
-                        <p>{o.reason}</p>
-                        <pre>
-                          {JSON.stringify(
-                            evidence.verification!.plan.profile.checks.find(
-                              (c) => c.id === o.checkId,
-                            ),
-                          )}
-                        </pre>
-                        <pre>
-                          {o.result?.stdout}
-                          {o.result?.stderr}
-                        </pre>
-                      </details>
-                    ))}
-                  </div>
-                )}
-                <LandingControl
-                  api={api}
-                  run={run}
-                  evidence={evidence}
-                  reviews={reviews}
-                  enabled={landingEnabled}
-                  state={landingStates[run.id]}
-                  onStateChange={(state) =>
-                    setLandingStates((states) => ({ ...states, [run.id]: state }))
-                  }
-                />
-              </section>
-            );
-          })}
-        </aside>
+                  <LandingControl
+                    api={api}
+                    run={run}
+                    evidence={evidence}
+                    reviews={reviews}
+                    enabled={landingEnabled}
+                    state={landingStates[run.id]}
+                    onStateChange={(state) =>
+                      setLandingStates((states) => ({ ...states, [run.id]: state }))
+                    }
+                  />
+                </section>
+              );
+            })}
+          </div>
+        </Workspace>
       </div>
       {section !== "work" && <WorkspacePlaceholder section={section} />}
     </div>
