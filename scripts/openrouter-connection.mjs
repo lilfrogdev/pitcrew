@@ -43,6 +43,7 @@ async function changeOpenRouterSecret(action, key, { userWranglerAuth, spawnProc
       // in its subprocess. The server and the child's HOME stay unchanged.
       XDG_CONFIG_HOME: "/Users/lilfrogdev/Library/Preferences",
       CLOUDFLARE_ACCOUNT_ID: target.account_id,
+      CLOUDFLARE_AUTH_USE_KEYRING: "false",
       WRANGLER_SEND_METRICS: "false",
       WRANGLER_LOG_PATH: logPath,
       WRANGLER_LOG_SANITIZE: "true",
@@ -53,7 +54,8 @@ async function changeOpenRouterSecret(action, key, { userWranglerAuth, spawnProc
         const child = spawnProcess(
           process.execPath,
           [
-            join(dirname(require.resolve("wrangler/package.json")), "bin/wrangler.js"),
+            "--no-warnings",
+            join(dirname(require.resolve("wrangler/package.json")), "wrangler-dist/cli.js"),
             ...args,
             "--config",
             configPath,
@@ -61,7 +63,8 @@ async function changeOpenRouterSecret(action, key, { userWranglerAuth, spawnProc
           ],
           { cwd: directory, env, shell: false, stdio: ["pipe", "ignore", "ignore"] },
         );
-        let finished = false;
+        let finished = false,
+          failed = false;
         const finish = (success) => {
           if (finished) return;
           finished = true;
@@ -70,16 +73,21 @@ async function changeOpenRouterSecret(action, key, { userWranglerAuth, spawnProc
           if (success) resolve();
           else reject(new Error(failure));
         };
-        const timer = setTimeout(() => {
-          child.kill("SIGKILL");
-          finish(false);
-        }, 30_000);
-        child.once("error", () => finish(false));
-        child.once("close", (code) => finish(code === 0));
-        child.stdin.once("error", () => {
-          child.kill("SIGKILL");
-          finish(false);
-        });
+        const stop = () => {
+          if (finished || failed) return;
+          failed = true;
+          clearTimeout(timer);
+          child.stdin.destroy();
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Still await close before releasing the lock or removing configuration.
+          }
+        };
+        const timer = setTimeout(stop, 30_000);
+        child.once("error", stop);
+        child.once("close", (code) => finish(!failed && code === 0));
+        child.stdin.once("error", stop);
         child.stdin.end(value);
       });
     // secret put can create a draft Worker if absent. First require this fixed

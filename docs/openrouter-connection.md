@@ -43,9 +43,12 @@ The option remains off in this candidate and must not be applied by the agent wi
 Metadata confirmed `config/default.toml` exists in that normal-user directory and is absent in the
 isolated HOME; no file contents or OAuth scopes were read. Existing Wrangler may read and refresh
 its OAuth configuration, so approval must cover config-directory reads and refresh writes, including
-any temporary/atomic replacement files it needs. This is access to existing auth, not permission to
+any temporary/atomic replacement files it needs, plus Wrangler-owned nonsecret metadata/cache writes
+(such as metrics.json even with telemetry disabled) inside the selected .wrangler directory. This is access to existing auth, not permission to
 create a new token, broaden scopes, run provider inference, or deploy execution settings. The fixed
-child environment omits ambient API tokens. Legacy HOME-based Wrangler discovery still takes
+child environment omits ambient API tokens and sets `CLOUDFLARE_AUTH_USE_KEYRING=false` to keep
+Wrangler discovery file-only. Encrypted-only auth fails closed; this proposal does not authorize
+OS Keychain access or credential migration. Legacy HOME-based Wrangler discovery still takes
 precedence if the isolated HOME later gains a legacy config; keep that isolated directory absent.
 
 ## Backend handoff
