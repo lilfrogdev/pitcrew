@@ -10,6 +10,8 @@ export interface ModelChoice {
   provider: string;
   model: string;
   efforts: ModelEffort[];
+  defaultEffort?: ModelEffort;
+  pricing?: { input: number; output: number; currency: "USD"; per: "million_tokens"; asOf: string };
   contextWindow: number;
   imageLimits?: {
     maxBytes: number;
