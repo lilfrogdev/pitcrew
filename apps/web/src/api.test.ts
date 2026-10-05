@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, httpApi } from "./api";
 afterEach(() => vi.unstubAllGlobals());
+function withSession(fetch: (path: string, init?: RequestInit) => Promise<Response>) {
+  vi.stubGlobal("fetch", (path: string, init?: RequestInit) =>
+    path === "/api/local-session"
+      ? Promise.resolve(new Response(JSON.stringify({ nonce: null })))
+      : fetch(path, init),
+  );
+}
 describe("canonical HTTP adapter", () => {
   it("posts repository-scoped archive/restore state with escaped identifiers", async () => {
     const fetch = vi
@@ -11,7 +18,7 @@ describe("canonical HTTP adapter", () => {
             JSON.stringify({ id: "thread/1", archived: JSON.parse(input.body).archived }),
           ),
       );
-    vi.stubGlobal("fetch", fetch);
+    withSession(fetch);
     expect((await httpApi.setThreadArchived!("project/1", "thread/1", true)).archived).toBe(true);
     expect((await httpApi.setThreadArchived!("project/1", "thread/1", false)).archived).toBe(false);
     expect(fetch.mock.calls.map(([path]) => path)).toEqual(
@@ -31,7 +38,7 @@ describe("canonical HTTP adapter", () => {
       configurationRevision: "v1",
     }));
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(runs)));
-    vi.stubGlobal("fetch", fetch);
+    withSession(fetch);
     expect(await httpApi.latestRun!("thread/1")).toEqual(runs.at(-1));
     expect(fetch.mock.calls.map(([url]) => url)).toEqual(["/api/threads/thread%2F1/runs"]);
   });
@@ -62,7 +69,7 @@ describe("canonical HTTP adapter", () => {
             ),
           ),
       );
-    vi.stubGlobal("fetch", fetch);
+    withSession(fetch);
     const result = await httpApi.snapshot("thread/1");
     expect(fetch.mock.calls.map((call) => call[0])).toEqual([
       "/api/threads/thread%2F1/messages",
@@ -73,7 +80,7 @@ describe("canonical HTTP adapter", () => {
   });
   it("submits the explicit idempotency key without development identity or access headers", async () => {
     const fetch = vi.fn().mockImplementation(async () => new Response("{}"));
-    vi.stubGlobal("fetch", fetch);
+    withSession(fetch);
     await httpApi.send("thread", "change", "retry-key");
     expect(fetch.mock.calls[0]).toEqual([
       "/api/threads/thread/messages",
@@ -90,7 +97,7 @@ describe("canonical HTTP adapter", () => {
       .fn()
       .mockResolvedValueOnce(new Response("private server details", { status: 403 }))
       .mockRejectedValueOnce(new Error("private network details"));
-    vi.stubGlobal("fetch", fetch);
+    withSession(fetch);
     await expect(httpApi.projects()).rejects.toThrow("Access is unavailable");
     await expect(httpApi.projects()).rejects.toEqual(new ApiError(0));
   });
@@ -103,7 +110,7 @@ describe("canonical HTTP adapter", () => {
   });
   it("sends exact approval then separate landing and read-only reconciliation bodies", async () => {
     const fetch = vi.fn().mockImplementation(async () => new Response("{}"));
-    vi.stubGlobal("fetch", fetch);
+    withSession(fetch);
     const approval = {
       expectedTargetSha: "base",
       candidateSha: "candidate",
@@ -126,4 +133,80 @@ describe("canonical HTTP adapter", () => {
       JSON.stringify({ authorizationId: "receipt" }),
     ]);
   });
+});
+it("obtains a session nonce before local mutations and never sends it in the body", async () => {
+  const nonce = "a".repeat(64);
+  const fetch = vi
+    .fn()
+    .mockImplementation(async (path: string) =>
+      Response.json(path === "/api/local-session" ? { nonce } : {}),
+    );
+  vi.stubGlobal("fetch", fetch);
+  await httpApi.send("thread", "change", "retry-key");
+  expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+    "/api/local-session",
+    "/api/threads/thread/messages",
+  ]);
+  expect(fetch.mock.calls[1][1].headers).toEqual({
+    "Content-Type": "application/json",
+    "X-Pitcrew-Local-Nonce": nonce,
+  });
+  expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
+    content: "change",
+    idempotencyKey: "retry-key",
+  });
+});
+it("fails closed before a mutation when session bootstrap is denied or malformed", async () => {
+  for (const response of [
+    new Response("denied", { status: 403 }),
+    Response.json({ nonce: "guess" }),
+  ]) {
+    const fetch = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal("fetch", fetch);
+    await expect(httpApi.send("thread", "change", "key")).rejects.toBeInstanceOf(ApiError);
+    expect(fetch).toHaveBeenCalledOnce();
+  }
+});
+it("shares bootstrap between simultaneous first mutations", async () => {
+  const nonce = "b".repeat(64);
+  let complete!: (response: Response) => void;
+  const bootstrap = new Promise<Response>((resolve) => {
+    complete = resolve;
+  });
+  const fetch = vi
+    .fn()
+    .mockImplementation((path: string) =>
+      path === "/api/local-session" ? bootstrap : Promise.resolve(Response.json({})),
+    );
+  vi.stubGlobal("fetch", fetch);
+  const one = httpApi.send("one", "change", "one"),
+    two = httpApi.send("two", "change", "two");
+  expect(fetch.mock.calls.map(([path]) => path)).toEqual(["/api/local-session"]);
+  complete(Response.json({ nonce }));
+  await Promise.all([one, two]);
+  expect(
+    fetch.mock.calls.slice(1).map(([, input]) => input.headers["X-Pitcrew-Local-Nonce"]),
+  ).toEqual([nonce, nonce]);
+});
+it("refreshes a raced session once after a denied local admission with identical mutation input", async () => {
+  let sessions = 0,
+    mutations = 0;
+  const fetch = vi
+    .fn()
+    .mockImplementation(async (path: string) =>
+      path === "/api/local-session"
+        ? Response.json({ nonce: (++sessions === 1 ? "a" : "b").repeat(64) })
+        : ++mutations === 1
+          ? new Response("denied", { status: 403 })
+          : Response.json({}),
+    );
+  vi.stubGlobal("fetch", fetch);
+  await httpApi.send("thread", "change", "same-key");
+  const writes = fetch.mock.calls.filter(([path]) => path !== "/api/local-session");
+  expect(writes).toHaveLength(2);
+  expect(writes[0][1].body).toBe(writes[1][1].body);
+  expect(writes.map(([, input]) => input.headers["X-Pitcrew-Local-Nonce"])).toEqual([
+    "a".repeat(64),
+    "b".repeat(64),
+  ]);
 });

@@ -72,6 +72,7 @@ describe("thread/change/run traceability", () => {
     });
     const response = await app.request(`/api/threads/${thread.id}/messages`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "intent", idempotencyKey: "message" }),
     });
     expect(response.status).toBe(201);
@@ -79,6 +80,7 @@ describe("thread/change/run traceability", () => {
     expect(await (await app.request(`/api/threads/${thread.id}/changes`)).json()).toHaveLength(1);
     const retry = await app.request(`/api/changes/${submitted.change!.id}/runs`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ idempotencyKey: "retry" }),
     });
     expect(retry.status).toBe(201);

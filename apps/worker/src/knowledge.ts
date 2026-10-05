@@ -2,6 +2,7 @@ import type {
   CurrentKnowledge,
   Event,
   KnowledgeMutation,
+  WorkerKnowledgeContext,
 } from "../../../packages/protocol/src/index.ts";
 
 export const KNOWLEDGE_LIMITS = {
@@ -55,6 +56,33 @@ export function validKnowledge(input: KnowledgeMutation): boolean {
     !secrets.test(serialized)
   );
 }
+function nonempty(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+const contextFields = [
+  "attemptId",
+  "projectId",
+  "repository",
+  "threadId",
+  "changeId",
+  "runId",
+  "baseSha",
+  "configurationRevision",
+  "contextRevision",
+] as const satisfies readonly (keyof WorkerKnowledgeContext)[];
+
+// Transport serialization may reorder keys; fencing depends on every field's value.
+export function sameKnowledgeContext(
+  input: WorkerKnowledgeContext,
+  frozen: WorkerKnowledgeContext,
+): boolean {
+  return (
+    !!input &&
+    typeof input === "object" &&
+    Object.keys(input).length === contextFields.length &&
+    contextFields.every((field) => nonempty(input[field]) && input[field] === frozen[field])
+  );
+}
 // One authoritative journal; scope must match both project and repository. Legacy
 // objective events have no knowledge payload and never become inferred decisions.
 export function applyKnowledgePage(
@@ -75,11 +103,25 @@ export function applyKnowledgePage(
       record.repository !== repository
     )
       continue;
+    const previous = entries.get(record.id);
     if (
       event.type !== "knowledge.changed" ||
+      !Number.isSafeInteger(event.sequence) ||
+      event.sequence <= revision ||
+      event.entityId !== record.id ||
       !validKnowledge({ ...record, expectedVersion: record.version - 1 }) ||
-      record.version !== (entries.get(record.id)?.version ?? 0) + 1 ||
-      event.sequence <= revision
+      record.version !== (previous?.version ?? 0) + 1 ||
+      !nonempty(record.eventId) ||
+      !record.actor ||
+      !["principal", "worker", "application"].includes(record.actor.kind) ||
+      !nonempty(record.actor.id) ||
+      record.visibility !== "repository" ||
+      !nonempty(record.baseSha) ||
+      !nonempty(record.configurationRevision) ||
+      (record.actor.kind === "worker" && record.status !== "proposed") ||
+      (!previous && record.status === "superseded") ||
+      (previous?.status === "accepted" && record.status === "proposed") ||
+      previous?.status === "superseded"
     )
       throw Error("invalid_knowledge_history");
     entries.set(record.id, structuredClone(record));

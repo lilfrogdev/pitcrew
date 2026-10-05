@@ -1,3 +1,4 @@
+import { localHeaders } from "../test/local-session";
 import { expect, it } from "vite-plus/test";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
@@ -9,10 +10,22 @@ it("returns explicit unconfigured landing capability and rejects malformed reque
     landing: { enabled: false, backend: null },
   });
   expect(
-    (await app.request("/api/runs/missing/merge-approval", { method: "POST", body: "{}" })).status,
+    (
+      await app.request("/api/runs/missing/merge-approval", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+    ).status,
   ).toBe(503);
   expect(
-    (await app.request("/api/runs/missing/landing", { method: "POST", body: "null" })).status,
+    (
+      await app.request("/api/runs/missing/landing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "null",
+      })
+    ).status,
   ).toBe(400);
 });
 it("runs production repository routes with trusted evidence, one-use SQLite approval and config gate in a local fake backend", async () => {
@@ -58,8 +71,12 @@ it("runs production repository routes with trusted evidence, one-use SQLite appr
       resourcePersistencePath: `/tmp/pitcrew-landing-runtime-${crypto.randomUUID()}`,
     }),
   );
-  const post = (path: string, body: unknown) =>
-    mf.dispatchFetch(`http://localhost${path}`, { method: "POST", body: JSON.stringify(body) });
+  const post = async (path: string, body: unknown) =>
+    mf.dispatchFetch(`http://localhost${path}`, {
+      method: "POST",
+      headers: await localHeaders(mf),
+      body: JSON.stringify(body),
+    });
   try {
     const input = (await (await mf.dispatchFetch("http://localhost/__seed")).json()) as {
       runId: string;

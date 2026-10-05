@@ -230,9 +230,15 @@ describe("durable coordinator", () => {
       body: JSON.stringify({ content: "fix", idempotencyKey: "k" }),
     });
     expect(response.status).toBe(201);
-    expect((await app.request("/api/runs/x/reviews", { method: "POST", body: "{}" })).status).toBe(
-      404,
-    );
+    expect(
+      (
+        await app.request("/api/runs/x/reviews", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        })
+      ).status,
+    ).toBe(404);
   });
   it("fails closed outside loopback development fixture", () => {
     expect(
@@ -310,6 +316,7 @@ describe("durable coordinator", () => {
   it("bounds actual request bytes without Content-Length", async () => {
     const response = await api(fixture().core, () => {}).request("/api/projects/pitcrew/threads", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: "a".repeat(17000), idempotencyKey: "a" }),
     });
     expect(response.status).toBe(413);

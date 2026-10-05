@@ -1,3 +1,4 @@
+import { localHeaders } from "../test/local-session";
 import { expect, it } from "vite-plus/test";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
@@ -44,10 +45,10 @@ it("runs intake dispatch through actual RepositoryAgent SQLite, reload and prote
   const mf = new Miniflare(convertV4MiniflareOptions(options));
   const get = async (path: string) =>
     (await mf.dispatchFetch(`http://localhost/api${path}`)).json() as Promise<any>;
-  const post = (path: string, body: unknown) =>
+  const post = async (path: string, body: unknown) =>
     mf.dispatchFetch(`http://localhost/api${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+      headers: await localHeaders(mf),
       body: JSON.stringify(body),
     });
   try {

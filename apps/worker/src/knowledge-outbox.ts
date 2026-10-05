@@ -68,7 +68,23 @@ export class KnowledgeOutbox {
       ...this.pending().map((row) => Math.max(Date.now() + 1000, row.retry_after ?? 0)),
     );
   }
-  async deliver(send: (delivery: KnowledgeDelivery) => Promise<KnowledgeAck>) {
+  private delivery?: Promise<void>;
+  deliver(send: (delivery: KnowledgeDelivery) => Promise<KnowledgeAck>) {
+    // Lifecycle recovery and explicit flushes can overlap while an RPC is awaiting its ack.
+    // Share the pass so they cannot send an already-settled snapshot twice.
+    if (this.delivery) return this.delivery;
+    this.delivery = this.deliverPending(send).finally(() => {
+      this.delivery = undefined;
+    });
+    return this.delivery;
+  }
+  private async deliverPending(send: (delivery: KnowledgeDelivery) => Promise<KnowledgeAck>) {
+    let failed = false;
+    let firstError: unknown;
+    const remember = (error: unknown) => {
+      if (!failed) firstError = error;
+      failed = true;
+    };
     for (const row of this.pending()) {
       if ((row.retry_after ?? 0) > Date.now()) continue;
       let ack: KnowledgeAck;
@@ -85,7 +101,8 @@ export class KnowledgeOutbox {
           Date.now() + (persistent ? 60000 : 0),
           row.id,
         );
-        throw error;
+        remember(error);
+        continue;
       }
       if (
         !ack ||
@@ -99,7 +116,8 @@ export class KnowledgeOutbox {
           Date.now() + 60000,
           row.id,
         );
-        throw Error("invalid_knowledge_ack");
+        remember(Error("invalid_knowledge_ack"));
+        continue;
       }
       const existing = this.get(row.id);
       if (!existing || existing.body !== row.body) throw Error("idempotency_conflict");
@@ -111,5 +129,6 @@ export class KnowledgeOutbox {
         row.id,
       );
     }
+    if (failed) throw firstError;
   }
 }

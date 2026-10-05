@@ -131,3 +131,50 @@ it("recovers actual ChangeAgent delivery jobs after remote commit/lost ack and r
     await mf.dispose();
   }
 }, 30000);
+
+it("delivers an independent report behind a failing RPC and recovers only the failed report after DO restart", async () => {
+  const options = await fixtureOptions({
+    FAIL_FIRST: "1",
+    MODEL_CONFIGURATION: '{"provider":"fake"}',
+    EXECUTION_MODE: "fake",
+  });
+  const mf = new Miniflare(convertV4MiniflareOptions(options));
+  const rows = async (path: string) =>
+    (await (await mf.dispatchFetch(`http://fixture/${path}`)).json()) as Row[];
+  const waitFor = async (accept: (value: Row[]) => boolean) => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const value = await rows("worker");
+      if (accept(value)) return value;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw Error("fixture_timeout");
+  };
+  try {
+    expect((await mf.dispatchFetch("http://fixture/queue")).status).toBe(200);
+    const pending = await waitFor((value) => value.length === 2 && !!value[1].ack);
+    expect(pending[0].ack).toBeNull();
+    expect(JSON.parse(pending[1].ack!).status).toBe("recorded");
+    const received = await rows("receiver");
+    expect(received[1].attempts).toBe(1);
+    expect(received[1].recorded).toHaveLength(1);
+    await mf.setOptions(
+      convertV4MiniflareOptions({
+        ...options,
+        bindings: { MODEL_CONFIGURATION: '{"provider":"fake"}', EXECUTION_MODE: "fake" },
+        script: options.script + "\n// failed receiver repaired and worker restarted",
+      }),
+    );
+    const recovered = await waitFor(
+      (value) => value.length === 2 && value.every((row) => !!row.ack),
+    );
+    expect(recovered.map((row) => row.body)).toEqual(pending.map((row) => row.body));
+    expect(recovered[1].ack).toBe(pending[1].ack);
+    const after = await rows("receiver");
+    expect(after[0].recorded).toHaveLength(1);
+    expect(after[1].attempts).toBe(1);
+    expect(after[1].recorded).toHaveLength(1);
+  } finally {
+    await mf.dispose();
+  }
+}, 15000);

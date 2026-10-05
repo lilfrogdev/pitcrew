@@ -1,3 +1,4 @@
+import { protectedFetch } from "./access";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { httpApi } from "../../web/src/api";
 import { api } from "./api";
@@ -121,9 +122,19 @@ it("browser API admits two concurrent isolated edits, tests and reviews exact ev
       }),
     );
   });
-  vi.stubGlobal("fetch", async (path: string, options: RequestInit) =>
-    router.request(path, options),
-  );
+  let cookie = "";
+  vi.stubGlobal("fetch", async (path: string, options?: RequestInit) => {
+    const headers = new Headers(options?.headers);
+    headers.set("Cookie", cookie);
+    if (options?.method === "POST") headers.set("Origin", "http://localhost");
+    const response = await protectedFetch(
+      new Request(`http://localhost${path}`, { ...options, headers }),
+      { ENVIRONMENT: "development", FIXTURE_IDENTITY: "lilfrogdev" },
+      async (request) => router.fetch(request),
+    );
+    cookie = response.headers.get("set-cookie")?.split(";", 1)[0] ?? cookie;
+    return response;
+  });
   const a = await httpApi.createThread("pitcrew", "Change A", "a"),
     b = await httpApi.createThread("pitcrew", "Change B", "b");
   await Promise.all([httpApi.send(a.id, "A only", "a"), httpApi.send(b.id, "B only", "b")]);
@@ -147,6 +158,7 @@ it("browser API admits two concurrent isolated edits, tests and reviews exact ev
     (
       await router.request(`/api/runs/${as.runs[0].id}/merge-approval`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: "{}",
       })
     ).status,

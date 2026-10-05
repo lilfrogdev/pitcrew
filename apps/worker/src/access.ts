@@ -8,13 +8,44 @@ export interface AccessEnv {
   ACCESS_EMAIL?: string;
   ACCESS_HOSTNAME?: string;
 }
+const cookieName = "pitcrew-local-nonce";
+const noncePattern = /^[a-f0-9]{64}$/;
+function localNonce(request: Request) {
+  const values = (request.headers.get("cookie") ?? "")
+    .split(";")
+    .map((value) => value.trim())
+    .filter((value) => value.startsWith(`${cookieName}=`));
+  if (values.length !== 1) return;
+  const value = values[0].slice(cookieName.length + 1);
+  return noncePattern.test(value) ? value : undefined;
+}
+function trustedLocalOrigin(request: Request) {
+  const url = new URL(request.url);
+  const origin = request.headers.get("origin");
+  // The fixed Vite preview port is the only separate browser admission origin.
+  return (
+    origin === url.origin ||
+    ["http://localhost:5173", "http://127.0.0.1:5173"].includes(origin ?? "")
+  );
+}
 let cached: { issuer: string; keys: JWTVerifyGetKey } | undefined;
 export async function principal(
   request: Request,
   env: AccessEnv,
   keys?: JWTVerifyGetKey,
 ): Promise<{ actor: string } | undefined> {
-  if (fixtureAccess(request, env)) return { actor: "lilfrogdev" };
+  if (fixtureAccess(request, env)) {
+    if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+      const nonce = localNonce(request);
+      if (
+        !trustedLocalOrigin(request) ||
+        !nonce ||
+        request.headers.get("x-pitcrew-local-nonce") !== nonce
+      )
+        return;
+    }
+    return { actor: "lilfrogdev" };
+  }
   if (
     env.ENVIRONMENT !== "production" ||
     !env.ACCESS_ISSUER ||
@@ -76,6 +107,29 @@ export async function protectedFetch(
       { error: "access_not_configured_or_denied" },
       { status: 403, headers: { "Cache-Control": "no-store" } },
     );
+  if (new URL(request.url).pathname === "/api/local-session" && request.method === "GET") {
+    if (!fixtureAccess(request, env))
+      return Response.json({ nonce: null }, { headers: { "Cache-Control": "private, no-store" } });
+    if (
+      (request.headers.has("origin") && !trustedLocalOrigin(request)) ||
+      ["cross-site", "same-site"].includes(request.headers.get("sec-fetch-site") ?? "")
+    )
+      return Response.json({ error: "local_session_denied" }, { status: 403 });
+    const nonce =
+      localNonce(request) ??
+      Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+    return Response.json(
+      { nonce },
+      {
+        headers: {
+          "Cache-Control": "private, no-store",
+          "Set-Cookie": `${cookieName}=${nonce}; HttpOnly; SameSite=Strict; Path=/api${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`,
+        },
+      },
+    );
+  }
   const response = new URL(request.url).pathname.startsWith("/api/")
     ? await api(request)
     : assets

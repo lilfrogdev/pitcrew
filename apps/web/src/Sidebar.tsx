@@ -1,7 +1,22 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Project, Thread, Run } from "./api";
+import { Icon, type IconKind } from "./icons";
 import { useSidebarData } from "./useSidebarData";
+import { ConversationTitle } from "./ConversationTitle";
 
+const expansionKey = "pitcrew.sidebar.collapsed.v1";
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(expansionKey) ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value).filter(([, collapsed]) => typeof collapsed === "boolean"),
+        )
+      : {};
+  } catch {
+    return {};
+  }
+}
 const preferenceKey = "pitcrew.sidebar.pins.v1";
 type Pins = {
   repositories: string[];
@@ -34,22 +49,6 @@ function readPins(): Pins {
     return { repositories: [], conversations: [], conversationRepositories: {} };
   }
 }
-const iconPaths = {
-  bell: "M5 8a5 5 0 0 1 10 0v4l2 2H3l2-2Z M8 17h4",
-  repository:
-    "M5 2.5h10a1 1 0 0 1 1 1v14H5a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Z M3 15.5a2 2 0 0 1 2-2h11 M7 2.5v6l2-1.5 2 1.5v-6",
-  pin: "m7 2 6 0-1 5 3 3v2H5v-2l3-3Z M10 12v6",
-  search: "M14 14l4 4 M16 9a7 7 0 1 1-14 0 7 7 0 0 1 14 0",
-  queued: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M10 6v4l3 2",
-  working: "M17 10a7 7 0 1 1-7-7",
-  input:
-    "M5 3h10a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H8l-4 3v-3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M8 7a2 2 0 0 1 4 0c0 1.5-2 1.5-2 3 M10 11.5v.1",
-  review: "M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5Z M12.5 10a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0Z",
-  completed: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M6.5 10l2.5 2.5 4.5-5",
-  failed: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M10 6.5v4 M10 13v.1",
-  stopped: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z M7 7h6v6H7Z",
-};
-type IconKind = keyof typeof iconPaths;
 const runIcons: Record<Run["status"], { kind: IconKind; label: string }> = {
   queued: { kind: "queued", label: "Queued" },
   running: { kind: "working", label: "In progress" },
@@ -59,17 +58,6 @@ const runIcons: Record<Run["status"], { kind: IconKind; label: string }> = {
   failed: { kind: "failed", label: "Failed" },
   stopped: { kind: "stopped", label: "Stopped" },
 };
-function Icon({ kind }: { kind: IconKind }) {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      aria-hidden="true"
-      className={kind === "working" ? "working-spinner" : undefined}
-    >
-      <path d={iconPaths[kind]} />
-    </svg>
-  );
-}
 function PinButton({
   name,
   pinned,
@@ -117,12 +105,24 @@ export function Sidebar({
   activeRun?: Run;
   children?: ReactNode;
 }) {
+  const searchButton = useRef<HTMLButtonElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [archiveUpdates, setArchiveUpdates] = useState<Record<string, Thread>>({});
   const [searching, setSearching] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [pins, setPins] = useState(readPins);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => ({
+    [projectId]: false,
+    ...readCollapsed(),
+  }));
+  useEffect(() => {
+    try {
+      localStorage.setItem(expansionKey, JSON.stringify(collapsed));
+    } catch {
+      /* Collapsing remains usable without storage. */
+    }
+  }, [collapsed]);
   const matching = projects.filter((item) =>
     `${item.name} ${item.repository}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
@@ -142,10 +142,20 @@ export function Sidebar({
   const stateIndicator = (item: Thread) => {
     const run = item.id === threadId ? activeRun : runStates[item.id];
     if (!run) return null;
-    const { kind, label } = runIcons[run.status];
+    const { kind, label } = run.error
+      ? {
+          kind: "failed" as const,
+          label:
+            run.error === "reconciliation_required"
+              ? "Reconciliation required"
+              : run.error === "execution_unavailable"
+                ? "Execution unavailable"
+                : "Execution failed",
+        }
+      : runIcons[run.status];
     return (
       <span
-        className={`conversation-state state-${run.status}`}
+        className={`conversation-state state-${run.error ? "failed" : run.status}`}
         role="img"
         aria-label={label}
         title={label}
@@ -220,9 +230,12 @@ export function Sidebar({
         : [...all.repositories, id],
     }));
   const conversationRow = (item: Thread) => (
-    <div className="sidebar-row" key={item.id}>
+    <div
+      className={`sidebar-row conversation-row ${item.id === threadId ? "selected" : ""}`}
+      key={item.id}
+    >
       <button
-        className={`sidebar-item ${item.id === threadId ? "selected" : ""}`}
+        className="sidebar-item"
         aria-current={item.id === threadId ? "page" : undefined}
         aria-label={item.title}
         title={item.title}
@@ -232,18 +245,22 @@ export function Sidebar({
           onSelect(item.projectId, item.id);
         }}
       >
-        <span className="row-name conversation-name">{item.title}</span>
+        <ConversationTitle title={item.title} />
         {stateIndicator(item)}
       </button>
       {onArchive && api.setThreadArchived && (
         <details
           className="conversation-actions"
           onKeyDown={(event) => {
-            if (event.key === "Escape") event.currentTarget.open = false;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }
           }}
         >
           <summary className="row-action" aria-label={`Conversation actions ${item.title}`}>
-            ⋯
+            <Icon kind="more" />
           </summary>
           <div className="conversation-menu">
             <button
@@ -255,6 +272,7 @@ export function Sidebar({
                 if (updated) setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
               }}
             >
+              <Icon kind={item.archived ? "restore" : "archive"} />
               {item.archived ? "Restore" : "Archive"} conversation
             </button>
           </div>
@@ -273,18 +291,21 @@ export function Sidebar({
         className="sidebar-item"
         aria-label={`${item.name} · ${item.repository}`}
         title={item.repository}
-        aria-expanded={!pinnedSection ? !(collapsed[item.id] ?? item.id !== projectId) : undefined}
+        aria-expanded={!(collapsed[item.id] ?? (!pinnedSection && item.id !== projectId))}
         disabled={busy}
         onClick={() => {
-          if (!pinnedSection && item.id === projectId)
-            setCollapsed((all) => ({ ...all, [item.id]: !(all[item.id] ?? false) }));
-          else {
-            setCollapsed((all) => ({ ...all, [item.id]: false }));
-            onSelect(item.id);
-          }
+          const wasCollapsed = collapsed[item.id] ?? (!pinnedSection && item.id !== projectId);
+          setCollapsed((all) => ({ ...all, [item.id]: !wasCollapsed }));
+          if (wasCollapsed && item.id !== projectId) onSelect(item.id);
         }}
       >
-        <Icon kind="repository" />
+        <Icon
+          kind={
+            (collapsed[item.id] ?? (!pinnedSection && item.id !== projectId))
+              ? "repository"
+              : "folderOpen"
+          }
+        />
         <span className="row-name">{item.name}</span>
       </button>
       <button
@@ -296,7 +317,7 @@ export function Sidebar({
           onCreate(item.id);
         }}
       >
-        +
+        <Icon kind="plus" />
       </button>
       <PinButton
         name={`repository ${item.name}`}
@@ -325,6 +346,7 @@ export function Sidebar({
           </button>
           <button
             className="row-action"
+            ref={searchButton}
             aria-label="Search repositories"
             aria-expanded={searching}
             aria-controls="repository-search"
@@ -351,6 +373,7 @@ export function Sidebar({
       {searching && (
         <div id="repository-search" className="repository-search">
           <input
+            ref={searchInput}
             autoFocus
             aria-label="Search repositories"
             placeholder="Search repositories or conversations"
@@ -360,12 +383,19 @@ export function Sidebar({
               if (event.key === "Escape") {
                 setSearching(false);
                 setQuery("");
+                searchButton.current?.focus();
               }
             }}
           />
           {query && (
-            <button aria-label="Clear repository search" onClick={() => setQuery("")}>
-              ×
+            <button
+              aria-label="Clear repository search"
+              onClick={() => {
+                setQuery("");
+                searchInput.current?.focus();
+              }}
+            >
+              <Icon kind="close" />
             </button>
           )}
         </div>
@@ -384,17 +414,19 @@ export function Sidebar({
           .map((item) => (
             <div key={item.id}>
               {repositoryRow(item, true)}
-              <div
-                className="repository-conversations"
-                aria-label={`Pinned conversations in ${item.name}`}
-              >
-                {conversations(item.id)
-                  .filter(
-                    (conversation) =>
-                      !conversation.archived && pins.conversations.includes(conversation.id),
-                  )
-                  .map(conversationRow)}
-              </div>
+              {!(collapsed[item.id] ?? false) && (
+                <div
+                  className="repository-conversations"
+                  aria-label={`Pinned conversations in ${item.name}`}
+                >
+                  {conversations(item.id)
+                    .filter(
+                      (conversation) =>
+                        !conversation.archived && pins.conversations.includes(conversation.id),
+                    )
+                    .map(conversationRow)}
+                </div>
+              )}
             </div>
           ))}
       </section>

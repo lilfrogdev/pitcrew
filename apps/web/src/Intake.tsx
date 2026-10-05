@@ -1,13 +1,10 @@
+import { apiFetch } from "./api";
 import { useEffect, useRef, useState } from "react";
 import type { VerificationProfile } from "../../../packages/verification/src/index";
 import type { intakeGroups } from "../../worker/src/intake";
 type Group = ReturnType<typeof intakeGroups>[number];
 async function call<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const response = await apiFetch(path, body);
   if (!response.ok)
     throw Error(
       response.status === 409

@@ -31,17 +31,28 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [threadsLoading, setThreadsLoading] = useState(false);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const loading = projectsLoading || threadsLoading || snapshotLoading;
+  const [mutationError, setMutationError] = useState("");
+  const [projectsError, setProjectsError] = useState("");
+  const [threadsError, setThreadsError] = useState("");
+  const [snapshotError, setSnapshotError] = useState("");
+  const error = mutationError || projectsError || threadsError || snapshotError;
   const [announcement, setAnnouncement] = useState("");
   const [revision, setRevision] = useState(0);
   const [sidebarRevision, setSidebarRevision] = useState(0);
   const requestedThread = useRef<string | undefined>(undefined);
   const generation = useRef(0);
+  const snapshotSequence = useRef(0);
   const pending = useRef<{ threadId: string; content: string; key: string } | null>(null);
   const createKey = useRef<{ projectId: string; title: string; key: string } | null>(null);
   const mutation = useRef(false);
-  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const refresh = useCallback(() => {
+    setMutationError("");
+    setRevision((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,20 +74,21 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   }, [api, revision]);
   useEffect(() => {
     let cancelled = false;
+    setProjectsLoading(true);
     api
       .projects()
       .then((items) => {
         if (!cancelled) {
           setProjects(items);
           setProjectId((id) => (items.some((item) => item.id === id) ? id : (items[0]?.id ?? "")));
-          setLoading(false);
-          setError("");
+          setProjectsLoading(false);
+          setProjectsError("");
         }
       })
       .catch((cause: unknown) => {
         if (!cancelled) {
-          setError(errorText(cause));
-          setLoading(false);
+          setProjectsError(errorText(cause));
+          setProjectsLoading(false);
         }
       });
     return () => {
@@ -84,9 +96,15 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     };
   }, [api, revision]);
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId) {
+      setThreads([]);
+      setThreadId("");
+      setThreadsLoading(false);
+      setThreadsError("");
+      return;
+    }
     let cancelled = false;
-    setLoading(true);
+    setThreadsLoading(true);
     api
       .threads(projectId)
       .then((items) => {
@@ -100,47 +118,52 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               ? desired
               : (items.find((item) => !item.archived)?.id ?? "");
           });
-          setLoading(false);
-          setError("");
+          setThreadsLoading(false);
+          setThreadsError("");
         }
       })
       .catch((cause: unknown) => {
         if (!cancelled) {
-          setError(errorText(cause));
-          setLoading(false);
+          setThreadsError(errorText(cause));
+          setThreadsLoading(false);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [api, projectId, revision]);
+  // Failed writes belong to the selected conversation/repository, not its destination.
+  useEffect(() => {
+    setMutationError("");
+  }, [api, projectId, threadId]);
   useEffect(() => {
     const current = ++generation.current;
     if (!threadId) {
       setSnapshot(empty);
+      setSnapshotLoading(false);
+      setSnapshotError("");
       return;
     }
     let cancelled = false;
-    let requestSequence = 0;
     let inFlight = false;
     setSnapshot(empty);
-    setLoading(true);
-    setError("");
+    setSnapshotLoading(true);
+    setSnapshotError("");
     const load = async () => {
-      if (inFlight) return;
+      if (inFlight || mutation.current) return;
       inFlight = true;
-      const sequence = ++requestSequence;
+      const sequence = ++snapshotSequence.current;
       try {
         const next = await api.snapshot(threadId);
-        if (!cancelled && current === generation.current && sequence === requestSequence) {
+        if (!cancelled && current === generation.current && sequence === snapshotSequence.current) {
           setSnapshot(next);
-          setLoading(false);
-          setError("");
+          setSnapshotLoading(false);
+          setSnapshotError("");
         }
       } catch (cause) {
-        if (!cancelled && current === generation.current && sequence === requestSequence) {
-          setError(errorText(cause));
-          setLoading(false);
+        if (!cancelled && current === generation.current && sequence === snapshotSequence.current) {
+          setSnapshotError(errorText(cause));
+          setSnapshotLoading(false);
         }
       } finally {
         inFlight = false;
@@ -168,6 +191,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     if (!content || mutation.current || loading || !threadId) return;
     const selected = threadId;
     const selectedGeneration = generation.current;
+    // Supersede any poll started before this write; it may contain an older transcript.
+    const selectedSequence = ++snapshotSequence.current;
     if (
       !pending.current ||
       pending.current.threadId !== selected ||
@@ -176,16 +201,30 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       pending.current = { threadId: selected, content, key: crypto.randomUUID() };
     mutation.current = true;
     setBusy(true);
-    setError("");
+    setMutationError("");
     try {
       await api.send(selected, content, pending.current.key);
       pending.current = null;
       setDrafts((all) => ({ ...all, [selected]: "" }));
       setAnnouncement("Message sent and change queued.");
-      const next = await api.snapshot(selected);
-      if (selectedGeneration === generation.current) setSnapshot(next);
+      try {
+        const next = await api.snapshot(selected);
+        if (
+          selectedGeneration === generation.current &&
+          selectedSequence === snapshotSequence.current
+        ) {
+          setSnapshot(next);
+          setSnapshotError("");
+        }
+      } catch (cause) {
+        if (
+          selectedGeneration === generation.current &&
+          selectedSequence === snapshotSequence.current
+        )
+          setSnapshotError(errorText(cause));
+      }
     } catch (cause) {
-      if (selectedGeneration === generation.current) setError(errorText(cause));
+      if (selectedGeneration === generation.current) setMutationError(errorText(cause));
     } finally {
       mutation.current = false;
       setBusy(false);
@@ -194,7 +233,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   async function addThread(event: React.FormEvent) {
     event.preventDefault();
     const trimmed = title.trim();
-    if (!trimmed || mutation.current || !projectId) return;
+    if (!trimmed || mutation.current || loading || !projectId) return;
     const selected = projectId;
     if (
       !createKey.current ||
@@ -204,7 +243,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       createKey.current = { projectId: selected, title: trimmed, key: crypto.randomUUID() };
     mutation.current = true;
     setBusy(true);
-    setError("");
+    setMutationError("");
     try {
       const thread = await api.createThread(selected, trimmed, createKey.current.key);
       createKey.current = null;
@@ -216,7 +255,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       setThreadId(thread.id);
       setAnnouncement("Thread created.");
     } catch (cause) {
-      setError(errorText(cause));
+      setMutationError(errorText(cause));
     } finally {
       mutation.current = false;
       setBusy(false);
@@ -226,7 +265,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     if (mutation.current || !api.setThreadArchived) return;
     mutation.current = true;
     setBusy(true);
-    setError("");
+    setMutationError("");
     try {
       const updated = await api.setThreadArchived(item.projectId, item.id, archived);
       setThreads((all) => all.map((thread) => (thread.id === updated.id ? updated : thread)));
@@ -235,7 +274,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       setAnnouncement(archived ? "Conversation archived." : "Conversation restored.");
       return updated;
     } catch (cause) {
-      setError(errorText(cause));
+      setMutationError(errorText(cause));
     } finally {
       mutation.current = false;
       setBusy(false);
@@ -297,7 +336,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                 required
                 disabled={busy}
               />
-              <button type="submit" disabled={busy || !title.trim()}>
+              <button type="submit" disabled={busy || loading || !title.trim()}>
                 Create
               </button>
               <button type="button" disabled={busy} onClick={() => setCreating(false)}>
