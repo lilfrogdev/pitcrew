@@ -56,6 +56,8 @@ it("supports keyboard tabs, submitted text files, truthful diff states and safe 
   await user.keyboard("{ArrowRight}");
   expect(screen.getByText("Patch content unavailable")).toBeTruthy();
   expect(screen.getByText(snapshot.runs[0].candidateSha!)).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Inspect review evidence" }));
+  expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Review / PR" }));
   await user.click(screen.getByRole("tab", { name: "Browser" }));
   for (const url of ["javascript:alert(1)", "https://user:secret@example.com"]) {
     await user.clear(screen.getByLabelText("Preview URL"));

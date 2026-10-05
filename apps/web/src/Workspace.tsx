@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type ReactNode, type CSSProperties } from "react";
 import {
   IconWorld,
   IconFiles,
@@ -199,10 +199,10 @@ export function Workspace({
           hidden={state.tab !== "files"}
           tabIndex={0}
         >
-          <h2>Conversation files</h2>
-          <p className="hint">
-            Submitted attachments from this thread. Repository file access is not connected.
-          </p>
+          <h2>Repository files</h2>
+          <p className="hint">Repository source is not connected.</p>
+          <h2>Conversation attachments</h2>
+          <p className="hint">Submitted files from this thread.</p>
           {files.length ? (
             <>
               <label className="workspace-select">
@@ -251,7 +251,7 @@ export function Workspace({
           hidden={state.tab !== "diffs"}
           tabIndex={0}
         >
-          <h2>Candidate comparison</h2>
+          <h2>Change identity</h2>
           {selectedRun ? (
             <>
               <label className="workspace-select">
@@ -290,7 +290,13 @@ export function Workspace({
               The current connection supplies change identities and review evidence, but no file
               list or patch text.
             </p>
-            <button type="button" onClick={() => update({ tab: "review" })}>
+            <button
+              type="button"
+              onClick={() => {
+                update({ tab: "review" });
+                tabRefs.current[3]?.focus();
+              }}
+            >
               Inspect review evidence
             </button>
           </div>
@@ -322,17 +328,34 @@ export function WorkspaceResize({
   width: number;
   onWidth: (width: number) => void;
 }) {
-  const clamp = (value: number) => Math.min(640, Math.max(300, value));
+  const separator = useRef<HTMLDivElement>(null);
+  const [maximum, setMaximum] = useState(640);
+  useEffect(() => {
+    const parent = separator.current?.parentElement;
+    if (!parent || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const sidebar = parent.querySelector(".sidebar")?.getBoundingClientRect().width ?? 250;
+      const chatMinimum = window.matchMedia("(min-width: 1500px)").matches ? 400 : 320;
+      setMaximum(Math.max(300, Math.min(640, parent.clientWidth - sidebar - chatMinimum - 6)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(parent);
+    return () => observer.disconnect();
+  }, []);
+  const currentWidth = Math.min(width, maximum);
+  const clamp = (value: number) => Math.min(maximum, Math.max(300, value));
   return (
     <div
+      ref={separator}
       className="workspace-resize"
       role="separator"
       tabIndex={0}
       aria-label="Resize workspace"
       aria-orientation="vertical"
       aria-valuemin={300}
-      aria-valuemax={640}
-      aria-valuenow={width}
+      aria-valuemax={maximum}
+      aria-valuenow={currentWidth}
       onKeyDown={(event) => {
         if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
           event.preventDefault();
@@ -340,8 +363,8 @@ export function WorkspaceResize({
             event.key === "Home"
               ? 300
               : event.key === "End"
-                ? 640
-                : clamp(width + (event.key === "ArrowLeft" ? 20 : -20)),
+                ? maximum
+                : clamp(currentWidth + (event.key === "ArrowLeft" ? 20 : -20)),
           );
         }
       }}
