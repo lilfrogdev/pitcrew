@@ -214,6 +214,7 @@ small {
 .conversation-row:focus-within .conversation-actions {
   opacity: 1;
   pointer-events: auto;
+  transition: opacity 80ms ease 160ms;
 }
 .pin-action[aria-pressed="true"] {
   color: var(--accent);
@@ -791,8 +792,22 @@ textarea::placeholder {
 .conversation-row {
   position: relative;
 }
+.conversation-row {
+  --conversation-actions-inset: 34px;
+}
+.conversation-row:has(.archive-action) {
+  --conversation-actions-inset: 60px;
+}
 .conversation-row .sidebar-item {
-  padding-right: 60px;
+  padding-right: 8px;
+  transition: padding-right 160ms ease;
+}
+.conversation-row:has(.conversation-state) .sidebar-item {
+  padding-right: 30px;
+}
+.conversation-row:hover .sidebar-item,
+.conversation-row:focus-within .sidebar-item {
+  padding-right: var(--conversation-actions-inset);
 }
 .conversation-state {
   position: absolute;
@@ -831,22 +846,40 @@ textarea::placeholder {
   }
 }
 @media (hover: none), (pointer: coarse) {
-  .conversation-actions {
+  .conversation-row .conversation-actions,
+  .conversation-row:hover .conversation-actions,
+  .conversation-row:focus-within .conversation-actions {
     opacity: 1;
     pointer-events: auto;
+    transition: none;
   }
   .sidebar-row .row-action {
     width: 34px;
     height: 36px;
   }
-  .conversation-row .sidebar-item {
-    padding-right: 76px;
+  .conversation-row {
+    --conversation-actions-inset: 42px;
+  }
+  .conversation-row:has(.archive-action) {
+    --conversation-actions-inset: 76px;
+  }
+  .conversation-row .sidebar-item,
+  .conversation-row:has(.conversation-state) .sidebar-item {
+    padding-right: var(--conversation-actions-inset);
   }
   .conversation-row .conversation-state {
     opacity: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .conversation-row .conversation-actions,
+  .conversation-row:hover .conversation-actions,
+  .conversation-row:focus-within .conversation-actions {
+    transition: none;
+  }
+  .conversation-row .sidebar-item {
+    transition: none;
+  }
   .conversation-row .conversation-title-text,
   .conversation-row:hover .conversation-title-text {
     transform: none;

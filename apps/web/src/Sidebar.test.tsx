@@ -59,11 +59,11 @@ describe("repository sidebar", () => {
     await user.click(screen.getByRole("button", { name: "Make agent work visible" }));
     await user.tab();
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Pin conversation Make agent work visible" }),
+      screen.getByRole("button", { name: "Archive conversation Make agent work visible" }),
     );
     await user.tab();
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Archive conversation Make agent work visible" }),
+      screen.getByRole("button", { name: "Pin conversation Make agent work visible" }),
     );
     expect(document.querySelector(".conversation-row details")).toBeNull();
   });
