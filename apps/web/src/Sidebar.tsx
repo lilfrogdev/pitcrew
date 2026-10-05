@@ -2,7 +2,21 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Project, Thread, Run } from "./api";
 import { Icon, type IconKind } from "./icons";
 import { useSidebarData } from "./useSidebarData";
+import { ConversationTitle } from "./ConversationTitle";
 
+const expansionKey = "pitcrew.sidebar.collapsed.v1";
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(expansionKey) ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value).filter(([, collapsed]) => typeof collapsed === "boolean"),
+        )
+      : {};
+  } catch {
+    return {};
+  }
+}
 const preferenceKey = "pitcrew.sidebar.pins.v1";
 type Pins = {
   repositories: string[];
@@ -98,7 +112,17 @@ export function Sidebar({
   const [searching, setSearching] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [pins, setPins] = useState(readPins);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => ({
+    [projectId]: false,
+    ...readCollapsed(),
+  }));
+  useEffect(() => {
+    try {
+      localStorage.setItem(expansionKey, JSON.stringify(collapsed));
+    } catch {
+      /* Collapsing remains usable without storage. */
+    }
+  }, [collapsed]);
   const matching = projects.filter((item) =>
     `${item.name} ${item.repository}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
@@ -118,10 +142,20 @@ export function Sidebar({
   const stateIndicator = (item: Thread) => {
     const run = item.id === threadId ? activeRun : runStates[item.id];
     if (!run) return null;
-    const { kind, label } = runIcons[run.status];
+    const { kind, label } = run.error
+      ? {
+          kind: "failed" as const,
+          label:
+            run.error === "reconciliation_required"
+              ? "Reconciliation required"
+              : run.error === "execution_unavailable"
+                ? "Execution unavailable"
+                : "Execution failed",
+        }
+      : runIcons[run.status];
     return (
       <span
-        className={`conversation-state state-${run.status}`}
+        className={`conversation-state state-${run.error ? "failed" : run.status}`}
         role="img"
         aria-label={label}
         title={label}
@@ -196,9 +230,12 @@ export function Sidebar({
         : [...all.repositories, id],
     }));
   const conversationRow = (item: Thread) => (
-    <div className="sidebar-row" key={item.id}>
+    <div
+      className={`sidebar-row conversation-row ${item.id === threadId ? "selected" : ""}`}
+      key={item.id}
+    >
       <button
-        className={`sidebar-item ${item.id === threadId ? "selected" : ""}`}
+        className="sidebar-item"
         aria-current={item.id === threadId ? "page" : undefined}
         aria-label={item.title}
         title={item.title}
@@ -208,7 +245,7 @@ export function Sidebar({
           onSelect(item.projectId, item.id);
         }}
       >
-        <span className="row-name conversation-name">{item.title}</span>
+        <ConversationTitle title={item.title} />
         {stateIndicator(item)}
       </button>
       {onArchive && api.setThreadArchived && (
@@ -235,6 +272,7 @@ export function Sidebar({
                 if (updated) setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
               }}
             >
+              <Icon kind={item.archived ? "restore" : "archive"} />
               {item.archived ? "Restore" : "Archive"} conversation
             </button>
           </div>
@@ -253,18 +291,21 @@ export function Sidebar({
         className="sidebar-item"
         aria-label={`${item.name} · ${item.repository}`}
         title={item.repository}
-        aria-expanded={!pinnedSection ? !(collapsed[item.id] ?? item.id !== projectId) : undefined}
+        aria-expanded={!(collapsed[item.id] ?? (!pinnedSection && item.id !== projectId))}
         disabled={busy}
         onClick={() => {
-          if (!pinnedSection && item.id === projectId)
-            setCollapsed((all) => ({ ...all, [item.id]: !(all[item.id] ?? false) }));
-          else {
-            setCollapsed((all) => ({ ...all, [item.id]: false }));
-            onSelect(item.id);
-          }
+          const wasCollapsed = collapsed[item.id] ?? (!pinnedSection && item.id !== projectId);
+          setCollapsed((all) => ({ ...all, [item.id]: !wasCollapsed }));
+          if (wasCollapsed && item.id !== projectId) onSelect(item.id);
         }}
       >
-        <Icon kind="repository" />
+        <Icon
+          kind={
+            (collapsed[item.id] ?? (!pinnedSection && item.id !== projectId))
+              ? "repository"
+              : "folderOpen"
+          }
+        />
         <span className="row-name">{item.name}</span>
       </button>
       <button
@@ -373,17 +414,19 @@ export function Sidebar({
           .map((item) => (
             <div key={item.id}>
               {repositoryRow(item, true)}
-              <div
-                className="repository-conversations"
-                aria-label={`Pinned conversations in ${item.name}`}
-              >
-                {conversations(item.id)
-                  .filter(
-                    (conversation) =>
-                      !conversation.archived && pins.conversations.includes(conversation.id),
-                  )
-                  .map(conversationRow)}
-              </div>
+              {!(collapsed[item.id] ?? false) && (
+                <div
+                  className="repository-conversations"
+                  aria-label={`Pinned conversations in ${item.name}`}
+                >
+                  {conversations(item.id)
+                    .filter(
+                      (conversation) =>
+                        !conversation.archived && pins.conversations.includes(conversation.id),
+                    )
+                    .map(conversationRow)}
+                </div>
+              )}
             </div>
           ))}
       </section>
