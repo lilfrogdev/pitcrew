@@ -24,12 +24,21 @@ it("keeps the selected conversation and draft mounted across placeholder section
     expect(screen.getByRole("heading", { name, level: 1 })).toBeTruthy();
     expect(screen.getByText("Coming soon")).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Message your crew" })).toBeNull();
-    expect(within(rail).getByRole("button", { name }).getAttribute("aria-current")).toBe("page");
+    const active = within(rail).getByRole("button", { name });
+    expect(active.getAttribute("aria-current")).toBe("page");
+    expect(active.querySelector('svg[data-filled="true"]')).toBeTruthy();
+    for (const inactive of within(rail)
+      .getAllByRole("button")
+      .filter((button) => button !== active))
+      expect(inactive.querySelector('svg[data-filled="true"]')).toBeNull();
   }
   await user.click(within(rail).getByRole("button", { name: "Work" }));
   expect(screen.getByRole("heading", { name: "Recover interrupted work" })).toBeTruthy();
   expect(screen.getByLabelText("Message your crew")).toBe(composer);
   expect(composer.value).toBe("Keep this unfinished change");
+  expect(
+    within(rail).getByRole("button", { name: "Work" }).querySelector(".tabler-icon-home-filled"),
+  ).toBeTruthy();
   expect(api.send).not.toHaveBeenCalled();
   expect(api.createThread).not.toHaveBeenCalled();
 });

@@ -44,7 +44,7 @@ describe("repository sidebar", () => {
     fireEvent.keyDown(search, { key: "Escape" });
     expect(screen.queryByRole("textbox", { name: "Search repositories" })).toBeNull();
   });
-  it("returns keyboard focus when search and conversation actions close", async () => {
+  it("returns search focus and exposes direct conversation actions in keyboard order", async () => {
     const user = userEvent.setup();
     await mount();
     const trigger = screen.getByRole("button", { name: "Search repositories" });
@@ -56,25 +56,25 @@ describe("repository sidebar", () => {
     expect(document.activeElement).toBe(input);
     await user.keyboard("{Escape}");
     expect(document.activeElement).toBe(trigger);
-    const summary = screen.getByLabelText("Conversation actions Make agent work visible");
-    await user.click(summary);
+    await user.click(screen.getByRole("button", { name: "Make agent work visible" }));
     await user.tab();
     expect(document.activeElement).toBe(
-      within(summary.closest("details")!).getByRole("button", { name: "Archive conversation" }),
+      screen.getByRole("button", { name: "Pin conversation Make agent work visible" }),
     );
-    await user.keyboard("{Escape}");
-    expect(summary.closest("details")!.open).toBe(false);
-    expect(document.activeElement).toBe(summary);
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Archive conversation Make agent work visible" }),
+    );
+    expect(document.querySelector(".conversation-row details")).toBeNull();
   });
-  it("persists repository and conversation pins, navigates across repositories, and unpins", async () => {
+  it("persists conversation pins with automatic repository nesting, navigates, and unpins", async () => {
     const user = userEvent.setup();
     await mount();
-    await user.click(screen.getByRole("button", { name: "Pin repository Pitcrew" }));
     await user.click(
       screen.getByRole("button", { name: "Pin conversation Recover interrupted work" }),
     );
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual({
-      repositories: ["pitcrew"],
+      repositories: [],
       conversations: ["recovery"],
       conversationRepositories: { recovery: "pitcrew" },
     });
@@ -93,7 +93,6 @@ describe("repository sidebar", () => {
     await user.click(
       within(pinned).getByRole("button", { name: "Unpin conversation Recover interrupted work" }),
     );
-    await user.click(within(pinned).getByRole("button", { name: "Unpin repository Pitcrew" }));
     expect(within(pinned).queryAllByRole("button")).toHaveLength(0);
     expect(JSON.parse(localStorage.getItem(key)!)).toEqual({
       repositories: [],
@@ -101,7 +100,7 @@ describe("repository sidebar", () => {
       conversationRepositories: {},
     });
   });
-  it("groups child pins, preserves their parent through repeated unpins and reload, and retains manual pins", async () => {
+  it("groups child pins through reload, removes repository pin controls, and retains legacy manual pins", async () => {
     const user = userEvent.setup();
     await mount();
     const nav = screen.getByRole("navigation", { name: "Repositories" });
@@ -118,8 +117,7 @@ describe("repository sidebar", () => {
     expect(
       within(pinned).getAllByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" }),
     ).toHaveLength(1);
-    await user.click(within(pinned).getByRole("button", { name: "Unpin repository Pitcrew" }));
-    await user.click(within(pinned).getByRole("button", { name: "Unpin repository Pitcrew" }));
+    expect(screen.queryByRole("button", { name: /(?:Pin|Unpin) repository/ })).toBeNull();
     cleanup();
     await mount();
     pinned = screen.getByRole("region", { name: "Pinned" });
@@ -131,7 +129,10 @@ describe("repository sidebar", () => {
       within(pinned).getByRole("button", { name: "Unpin conversation Recover interrupted work" }),
     );
     expect(within(pinned).queryAllByRole("button")).toHaveLength(0);
-    await user.click(screen.getByRole("button", { name: "Pin repository Pitcrew" }));
+    cleanup();
+    localStorage.setItem(key, JSON.stringify({ repositories: ["pitcrew"], conversations: [] }));
+    await mount();
+    pinned = screen.getByRole("region", { name: "Pinned" });
     await user.click(
       screen.getByRole("button", { name: "Pin conversation Recover interrupted work" }),
     );

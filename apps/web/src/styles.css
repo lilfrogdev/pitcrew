@@ -135,7 +135,7 @@ small {
   gap: 8px;
 }
 .sidebar .brand strong {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
 }
 .sidebar-tools {
@@ -152,7 +152,7 @@ small {
 }
 .sidebar .section-label {
   margin: 0 8px 6px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 400;
   letter-spacing: 0;
 }
@@ -160,7 +160,7 @@ small {
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: 34px;
+  min-height: 36px;
   border-radius: 10px;
 }
 .sidebar-row:hover {
@@ -177,7 +177,7 @@ small {
   background: transparent;
   padding: 6px 8px;
   text-align: left;
-  font-size: 14px;
+  font-size: 15px;
 }
 .row-name {
   overflow: hidden;
@@ -185,8 +185,8 @@ small {
   white-space: nowrap;
 }
 .sidebar svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   fill: none;
   stroke: currentColor;
@@ -195,8 +195,8 @@ small {
   stroke-linecap: round;
 }
 .row-action {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
@@ -206,16 +206,12 @@ small {
   border-radius: 8px;
   color: var(--muted);
 }
-.pin-action,
 .conversation-actions {
   opacity: 0;
   pointer-events: none;
 }
-.sidebar-row:hover .pin-action,
-.sidebar-row:focus-within .pin-action,
-.sidebar-row:hover .conversation-actions,
-.sidebar-row:focus-within .conversation-actions,
-.conversation-actions[open] {
+.conversation-row:hover .conversation-actions,
+.conversation-row:focus-within .conversation-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -792,33 +788,27 @@ textarea::placeholder {
   }
 }
 
-.conversation-actions {
+.conversation-row {
   position: relative;
-  flex-shrink: 0;
-  border: 0;
-  padding: 0;
-  margin: 0;
 }
-.conversation-actions summary {
-  list-style: none;
-  cursor: pointer;
+.conversation-row .sidebar-item {
+  padding-right: 60px;
 }
-.conversation-actions summary::-webkit-details-marker {
-  display: none;
-}
-.conversation-menu {
+.conversation-state {
   position: absolute;
-  right: 0;
-  top: 100%;
-  z-index: 5;
-  padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px #0002;
+  right: 8px;
+  width: 18px;
+  pointer-events: none;
 }
-.conversation-menu button {
-  white-space: nowrap;
+.conversation-actions {
+  position: absolute;
+  right: 4px;
+  display: flex;
+  align-items: center;
+}
+.conversation-row:hover .conversation-state,
+.conversation-row:focus-within .conversation-state {
+  opacity: 0;
 }
 
 .sidebar-row.selected,
@@ -834,32 +824,32 @@ textarea::placeholder {
 .conversation-row.selected .sidebar-item:hover {
   background: transparent;
 }
-.conversation-row:hover .conversation-title-text,
-.conversation-row:focus-within .conversation-title-text {
-  transform: translateX(var(--title-travel));
-  transition: transform var(--title-duration) linear 800ms;
+@media (hover: hover) {
+  .conversation-row:hover .conversation-title-text {
+    transform: translateX(var(--title-travel));
+    transition: transform var(--title-duration) linear 800ms;
+  }
 }
 @media (hover: none), (pointer: coarse) {
-  .pin-action,
   .conversation-actions {
     opacity: 1;
     pointer-events: auto;
   }
   .sidebar-row .row-action {
-    width: 32px;
-    height: 34px;
+    width: 34px;
+    height: 36px;
+  }
+  .conversation-row .sidebar-item {
+    padding-right: 76px;
+  }
+  .conversation-row .conversation-state {
+    opacity: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .conversation-row .conversation-title-text,
-  .conversation-row:hover .conversation-title-text,
-  .conversation-row:focus-within .conversation-title-text {
+  .conversation-row:hover .conversation-title-text {
     transform: none;
     transition: none;
   }
-}
-.conversation-menu button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }

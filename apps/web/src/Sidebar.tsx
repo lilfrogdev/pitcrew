@@ -222,13 +222,6 @@ export function Sidebar({
           : [...all.conversations, item.id],
       };
     });
-  const toggleRepositoryPin = (id: string) =>
-    setPins((all) => ({
-      ...all,
-      repositories: pinnedRepositories.has(id)
-        ? all.repositories.filter((item) => item !== id)
-        : [...all.repositories, id],
-    }));
   const conversationRow = (item: Thread) => (
     <div
       className={`sidebar-row conversation-row ${item.id === threadId ? "selected" : ""}`}
@@ -248,41 +241,28 @@ export function Sidebar({
         <ConversationTitle title={item.title} />
         {stateIndicator(item)}
       </button>
-      {onArchive && api.setThreadArchived && (
-        <details
-          className="conversation-actions"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.currentTarget.open = false;
-              event.currentTarget.querySelector("summary")?.focus();
-            }
-          }}
-        >
-          <summary className="row-action" aria-label={`Conversation actions ${item.title}`}>
-            <Icon kind="more" />
-          </summary>
-          <div className="conversation-menu">
-            <button
-              disabled={busy}
-              onClick={async (event) => {
-                event.currentTarget.closest("details")?.removeAttribute("open");
-                const updated = await onArchive(item, !item.archived);
-                // A committed response hides/restores cached rows even if list revalidation fails.
-                if (updated) setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
-              }}
-            >
-              <Icon kind={item.archived ? "restore" : "archive"} />
-              {item.archived ? "Restore" : "Archive"} conversation
-            </button>
-          </div>
-        </details>
-      )}
-      <PinButton
-        name={`conversation ${item.title}`}
-        pinned={pins.conversations.includes(item.id)}
-        onClick={() => toggleConversationPin(item)}
-      />
+      <div className="conversation-actions">
+        <PinButton
+          name={`conversation ${item.title}`}
+          pinned={pins.conversations.includes(item.id)}
+          onClick={() => toggleConversationPin(item)}
+        />
+        {onArchive && api.setThreadArchived && (
+          <button
+            className="row-action archive-action"
+            disabled={busy}
+            aria-label={`${item.archived ? "Restore" : "Archive"} conversation ${item.title}`}
+            title={`${item.archived ? "Restore" : "Archive"} conversation`}
+            onClick={async () => {
+              const updated = await onArchive(item, !item.archived);
+              // A committed response survives a failed list revalidation.
+              if (updated) setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
+            }}
+          >
+            <Icon kind={item.archived ? "restore" : "archive"} />
+          </button>
+        )}
+      </div>
     </div>
   );
   const repositoryRow = (item: Project, pinnedSection = false) => (
@@ -319,11 +299,6 @@ export function Sidebar({
       >
         <Icon kind="plus" />
       </button>
-      <PinButton
-        name={`repository ${item.name}`}
-        pinned={pinnedRepositories.has(item.id)}
-        onClick={() => toggleRepositoryPin(item.id)}
-      />
     </div>
   );
   return (

@@ -21,10 +21,8 @@ async function act(
   action: "Archive" | "Restore",
   container: HTMLElement,
 ) {
-  const summary = within(container).getByLabelText(`Conversation actions ${name}`);
-  await user.click(summary);
   await user.click(
-    within(summary.closest("details")!).getByRole("button", { name: `${action} conversation` }),
+    within(container).getByRole("button", { name: `${action} conversation ${name}` }),
   );
 }
 async function search(user: ReturnType<typeof userEvent.setup>, title: string) {
