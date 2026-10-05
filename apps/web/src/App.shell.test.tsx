@@ -22,7 +22,9 @@ it("keeps the selected conversation and draft mounted across placeholder section
   for (const name of ["Repositories", "Tickets"]) {
     await user.click(within(rail).getByRole("button", { name }));
     expect(screen.getByRole("heading", { name, level: 1 })).toBeTruthy();
-    expect(screen.getByText("Coming soon")).toBeTruthy();
+    if (name === "Repositories")
+      expect(screen.getByRole("alert").textContent).toContain("unavailable");
+    else expect(screen.getByText("Coming soon")).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Message your crew" })).toBeNull();
     const active = within(rail).getByRole("button", { name });
     expect(active.getAttribute("aria-current")).toBe("page");

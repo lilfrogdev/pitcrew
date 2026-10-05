@@ -1,3 +1,4 @@
+import { Repositories } from "./Repositories";
 import { NavigationRail, WorkspacePlaceholder, type WorkspaceSection } from "./NavigationRail";
 import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
@@ -845,7 +846,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         </Workspace>
       </div>
       {section === "account" && <ProfileProviders api={api.openrouter} />}
-      {section !== "work" && section !== "account" && <WorkspacePlaceholder section={section} />}
+      {section === "repositories" && <Repositories api={api.repositories} />}
+      {section === "tickets" && <WorkspacePlaceholder section={section} />}
     </div>
   );
 }

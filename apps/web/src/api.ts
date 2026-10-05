@@ -1,3 +1,4 @@
+import { createRepositoryApi, type RepositoryApi } from "./repository-api";
 import type {
   Project,
   Thread,
@@ -41,6 +42,7 @@ export type Authorization = LandingAuthorizationReceipt;
 export type LandingResult = LandingResultReceipt;
 export interface Api {
   openrouter?: OpenRouterConnectionApi;
+  repositories?: RepositoryApi;
   capabilities(): Promise<LandingCapabilities>;
   approve(runId: string, input: ApprovalInput): Promise<Authorization>;
   land(runId: string, authorizationId: string): Promise<LandingResult>;
@@ -172,6 +174,7 @@ async function connectionMutation(
   });
 }
 export const httpApi: Api = {
+  repositories: createRepositoryApi(),
   openrouter: {
     async status() {
       return connectionRequest("/api/provider-connection/openrouter");

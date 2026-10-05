@@ -1,3 +1,8 @@
+import {
+  RepositoryLifecycle,
+  lifecycleRequest,
+  type LifecycleRecord,
+} from "./repository-lifecycle";
 import { readRepositoryState, writeRepositoryState } from "./repository-state";
 import { sameKnowledgeContext } from "./knowledge";
 import { RepoConversationAgent } from "./repo-conversation-agent";
@@ -31,9 +36,53 @@ interface Env extends PiEnv, AccessEnv {
   FIXTURE_IDENTITY?: string;
   LANDING_MODE?: string;
   EXECUTION_MODE: string;
+  REPOSITORY_LIFECYCLE?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
+  private repositoryLifecycle?: RepositoryLifecycle;
+  private getRepositoryLifecycle() {
+    if (
+      this.env.REPOSITORY_LIFECYCLE !== "enabled" ||
+      !this.env.ARTIFACTS ||
+      this.env.ENVIRONMENT !== "production"
+    )
+      return;
+    if (!this.repositoryLifecycle) {
+      const sql = this.ctx.storage.sql;
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS repository_lifecycle(name TEXT PRIMARY KEY,value TEXT NOT NULL)",
+      );
+      this.repositoryLifecycle = new RepositoryLifecycle(
+        this.env.ARTIFACTS,
+        {
+          get: (name) => {
+            const row = [
+              ...sql.exec<{ value: string }>(
+                "SELECT value FROM repository_lifecycle WHERE name=?",
+                name,
+              ),
+            ][0];
+            return row ? (JSON.parse(row.value) as LifecycleRecord) : undefined;
+          },
+          list: () =>
+            [
+              ...sql.exec<{ value: string }>("SELECT value FROM repository_lifecycle LIMIT 200"),
+            ].map((row) => JSON.parse(row.value) as LifecycleRecord),
+          put: (record) => {
+            sql.exec(
+              "INSERT OR REPLACE INTO repository_lifecycle VALUES(?,?)",
+              record.name,
+              JSON.stringify(record),
+            );
+          },
+        },
+        (name) =>
+          name === this.env.ARTIFACT_REPOSITORY || name === "pitcrew" || name === "pitcrew-test",
+      );
+    }
+    return this.repositoryLifecycle;
+  }
   private landingStore?: SqliteLandingStore;
   private getLandingStore() {
     return (this.landingStore ??= new SqliteLandingStore(this.ctx.storage));
@@ -287,6 +336,10 @@ export class RepositoryAgent extends Agent<Env> {
   async onRequest(request: Request) {
     if (!(await principal(request, this.env)))
       return Response.json({ error: "access_not_configured" }, { status: 403 });
+    if (/^\/api\/repositories(?:\/|$)/.test(new URL(request.url).pathname))
+      return lifecycleRequest(request, this.getRepositoryLifecycle(), (task) =>
+        this.ctx.waitUntil(task),
+      );
     const bodyLimit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
       ? ATTACHMENT_LIMITS.requestBytes
       : 16384;
