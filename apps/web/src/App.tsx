@@ -16,7 +16,8 @@ import {
   type ModelSelection,
 } from "@pitcrew/protocol";
 import { ModelPicker } from "./ModelPicker";
-import { OpenRouterConnection } from "./OpenRouterConnection";
+import { useKeyboardFocus } from "./useKeyboardFocus";
+import { ProfileProviders } from "./ProfileProviders";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -32,6 +33,7 @@ const errorText = (error: unknown) =>
 export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceWidth, setWorkspaceWidth] = useState(380);
+  const keyboardFocus = useKeyboardFocus();
   const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
   const [composerCapabilities, setComposerCapabilities] =
@@ -444,7 +446,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const thread = threads.find((item) => item.id === threadId);
   const latest = snapshot.runs.at(-1);
   return (
-    <div className={shellStyles.shell}>
+    <div className={shellStyles.shell} data-keyboard-focus={keyboardFocus}>
       <a className="skip" href={section === "work" ? "#conversation" : "#workspace-content"}>
         {section === "work" ? "Skip to conversation" : "Skip to content"}
       </a>
@@ -667,7 +669,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           <p className="sr-only" role="status">
             {announcement}
           </p>
-          {api.openrouter && <OpenRouterConnection api={api.openrouter} />}
         </main>
         {!workspaceCollapsed && (
           <WorkspaceResize width={workspaceWidth} onWidth={setWorkspaceWidth} />
@@ -843,7 +844,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           </div>
         </Workspace>
       </div>
-      {section !== "work" && <WorkspacePlaceholder section={section} />}
+      {section === "account" && <ProfileProviders api={api.openrouter} />}
+      {section !== "work" && section !== "account" && <WorkspacePlaceholder section={section} />}
     </div>
   );
 }

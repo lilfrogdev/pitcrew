@@ -5,7 +5,7 @@ const sections = [
   { id: "work", label: "Work", icon: "work" },
   { id: "repositories", label: "Repositories", icon: "repository" },
   { id: "tickets", label: "Tickets", icon: "tickets" },
-  { id: "account", label: "Account", icon: "account" },
+  { id: "account", label: "Profile", icon: "account" },
 ] as const;
 export function NavigationRail({
   section,

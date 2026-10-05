@@ -1,0 +1,121 @@
+.profile {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  min-height: 100dvh;
+}
+.sidebar {
+  padding: 24px 18px;
+  border-right: 1px solid var(--border);
+  background: var(--canvas);
+}
+.sidebar h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 12px 0 24px;
+}
+.sidebar button {
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+  color: var(--text);
+  background: var(--hover);
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+}
+.content {
+  min-width: 0;
+  background: var(--surface);
+  outline: none;
+}
+.content header {
+  padding: 24px 30px;
+  border-bottom: 1px solid var(--border);
+}
+.content header p {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.content h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+.provider {
+  max-width: 520px;
+  padding: 30px;
+}
+.provider h2 {
+  margin: 0 0 24px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.provider label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.provider input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 8px 0 16px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+}
+.actions button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+}
+.actions button[type="submit"] {
+  color: var(--surface);
+  background: var(--text);
+  border-color: var(--text);
+}
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.error {
+  color: var(--error);
+  font-size: 13px;
+}
+@media (max-width: 760px) {
+  .profile {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    padding: 16px 20px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar h2 {
+    margin: 0 0 12px;
+  }
+  .sidebar button {
+    width: auto;
+  }
+  .content header {
+    padding: 20px;
+  }
+  .provider {
+    padding: 24px 20px;
+  }
+}

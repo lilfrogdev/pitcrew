@@ -152,27 +152,32 @@ async function connectionRequest(path: string, init?: RequestInit): Promise<Open
     available: value.available,
     configured: value.configured,
     executionEnabled: value.executionEnabled,
+    storageAvailable: value.storageAvailable === true,
   };
+}
+async function connectionMutation(
+  body: { action: "store"; key: string } | { action: "remove" },
+): Promise<OpenRouterStatus> {
+  const session = await fetch("/api/provider-connection/openrouter/session", {
+    cache: "no-store",
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!session.ok) throw new ApiError(0);
+  const { nonce } = (await session.json()) as { nonce?: unknown };
+  if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)) throw new ApiError(0);
+  return connectionRequest("/api/provider-connection/openrouter", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Pitcrew-Connection-Nonce": nonce },
+    body: JSON.stringify(body),
+  });
 }
 export const httpApi: Api = {
   openrouter: {
     async status() {
       return connectionRequest("/api/provider-connection/openrouter");
     },
-    async store(key) {
-      const session = await fetch("/api/provider-connection/openrouter/session", {
-        cache: "no-store",
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!session.ok) throw new ApiError(0);
-      const { nonce } = (await session.json()) as { nonce?: unknown };
-      if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)) throw new ApiError(0);
-      return connectionRequest("/api/provider-connection/openrouter", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Pitcrew-Connection-Nonce": nonce },
-        body: JSON.stringify({ action: "store", key }),
-      });
-    },
+    store: (key) => connectionMutation({ action: "store", key }),
+    remove: () => connectionMutation({ action: "remove" }),
   },
   attachmentUrl: (threadId, attachmentId) =>
     `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`,
