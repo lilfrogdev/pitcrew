@@ -26,18 +26,18 @@ it("keeps the selected conversation and draft mounted across placeholder section
     expect(screen.queryByRole("textbox", { name: "Message your crew" })).toBeNull();
     const active = within(rail).getByRole("button", { name });
     expect(active.getAttribute("aria-current")).toBe("page");
-    expect(active.querySelector('svg[data-filled="true"]')).toBeTruthy();
+    expect(active.querySelector("svg")?.getAttribute("fill")).toBe("none");
     for (const inactive of within(rail)
       .getAllByRole("button")
       .filter((button) => button !== active))
-      expect(inactive.querySelector('svg[data-filled="true"]')).toBeNull();
+      expect(inactive.querySelector("svg")?.getAttribute("fill")).toBe("none");
   }
   await user.click(within(rail).getByRole("button", { name: "Work" }));
   expect(screen.getByRole("heading", { name: "Recover interrupted work" })).toBeTruthy();
   expect(screen.getByLabelText("Message your crew")).toBe(composer);
   expect(composer.value).toBe("Keep this unfinished change");
   expect(
-    within(rail).getByRole("button", { name: "Work" }).querySelector(".tabler-icon-home-filled"),
+    within(rail).getByRole("button", { name: "Work" }).querySelector(".tabler-icon-home"),
   ).toBeTruthy();
   expect(api.send).not.toHaveBeenCalled();
   expect(api.createThread).not.toHaveBeenCalled();

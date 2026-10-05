@@ -121,8 +121,3 @@
     padding: 20px;
   }
 }
-
-.item svg[data-filled="true"] {
-  fill: currentColor;
-  stroke: none;
-}

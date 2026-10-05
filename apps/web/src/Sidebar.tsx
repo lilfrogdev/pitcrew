@@ -242,11 +242,6 @@ export function Sidebar({
         {stateIndicator(item)}
       </button>
       <div className="conversation-actions">
-        <PinButton
-          name={`conversation ${item.title}`}
-          pinned={pins.conversations.includes(item.id)}
-          onClick={() => toggleConversationPin(item)}
-        />
         {onArchive && api.setThreadArchived && (
           <button
             className="row-action archive-action"
@@ -262,6 +257,11 @@ export function Sidebar({
             <Icon kind={item.archived ? "restore" : "archive"} />
           </button>
         )}
+        <PinButton
+          name={`conversation ${item.title}`}
+          pinned={pins.conversations.includes(item.id)}
+          onClick={() => toggleConversationPin(item)}
+        />
       </div>
     </div>
   );
