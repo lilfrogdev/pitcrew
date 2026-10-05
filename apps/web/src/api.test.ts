@@ -7,6 +7,7 @@ it("uses a separate secure connection session and returns public status only", a
       ? Response.json({ nonce: "a".repeat(64) })
       : Response.json({
           available: true,
+          storageAvailable: true,
           configured: true,
           executionEnabled: false,
           key: "never-returned",
@@ -15,6 +16,7 @@ it("uses a separate secure connection session and returns public status only", a
   vi.stubGlobal("fetch", fetch);
   expect(await httpApi.openrouter!.store("synthetic-not-a-credential")).toEqual({
     available: true,
+    storageAvailable: true,
     configured: true,
     executionEnabled: false,
   });
@@ -26,6 +28,17 @@ it("uses a separate secure connection session and returns public status only", a
   });
   expect(init.body).toBe(JSON.stringify({ action: "store", key: "synthetic-not-a-credential" }));
   expect(init.cache).toBe("no-store");
+});
+it("removes only the fixed provider binding and fails closed for legacy storage status", async () => {
+  const fetch = vi.fn(async (path: string) =>
+    path.endsWith("/session")
+      ? Response.json({ nonce: "b".repeat(64) })
+      : Response.json({ available: true, configured: false, executionEnabled: false }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect((await httpApi.openrouter!.remove()).storageAvailable).toBe(false);
+  const init = (fetch.mock.calls as unknown as [string, RequestInit][])[1][1];
+  expect(init.body).toBe(JSON.stringify({ action: "remove" }));
 });
 function withSession(fetch: (path: string, init?: RequestInit) => Promise<Response>) {
   vi.stubGlobal("fetch", (path: string, init?: RequestInit) =>

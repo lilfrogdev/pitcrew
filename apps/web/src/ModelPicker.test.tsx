@@ -21,6 +21,32 @@ const models: ModelChoice[] = [
     contextWindow: 100000,
   },
 ];
+it("uses the transport provider for the glyph without inferring a brand from the model label", () => {
+  const branded = [{ ...models[0], provider: "openrouter", label: "Qwen custom label" }];
+  const { rerender } = render(
+    <ModelPicker
+      models={branded}
+      selection={{ modelId: "a", effort: "high" }}
+      onSelection={vi.fn()}
+      disabled={false}
+    />,
+  );
+  expect(
+    screen.getByRole("img", { name: "openrouter provider" }).querySelector("img"),
+  ).not.toBeNull();
+  expect(screen.getByRole("combobox", { name: "Repo agent model" })).toHaveProperty("value", "a");
+  expect(screen.getByRole("option", { name: "Qwen custom label" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "High" })).toBeTruthy();
+  rerender(
+    <ModelPicker
+      models={[{ ...branded[0], provider: "unknown" }]}
+      selection={{ modelId: "a", effort: "high" }}
+      onSelection={vi.fn()}
+      disabled={false}
+    />,
+  );
+  expect(screen.getByRole("img", { name: "unknown provider" }).querySelector("img")).toBeNull();
+});
 it("shows supported efforts and chooses a supported default on model change", () => {
   const onSelection = vi.fn();
   const { rerender } = render(
@@ -31,7 +57,7 @@ it("shows supported efforts and chooses a supported default on model change", ()
       disabled={false}
     />,
   );
-  expect(screen.queryByRole("option", { name: "Max effort" })).toBeNull();
+  expect(screen.queryByRole("option", { name: "Max" })).toBeNull();
   fireEvent.change(screen.getByLabelText("Repo agent model"), { target: { value: "b" } });
   expect(onSelection).toHaveBeenCalledWith({ modelId: "b", effort: "off" });
   rerender(
@@ -43,7 +69,7 @@ it("shows supported efforts and chooses a supported default on model change", ()
     />,
   );
   expect(screen.getByLabelText("Repo agent effort")).toHaveProperty("value", "off");
-  expect(screen.queryByRole("option", { name: "High effort" })).toBeNull();
+  expect(screen.queryByRole("option", { name: "High" })).toBeNull();
   fireEvent.change(screen.getByLabelText("Repo agent model"), { target: { value: "a" } });
   expect(onSelection).toHaveBeenLastCalledWith({ modelId: "a", effort: "medium" });
 });

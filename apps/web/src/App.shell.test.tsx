@@ -19,7 +19,7 @@ it("keeps the selected conversation and draft mounted across placeholder section
   const composer = screen.getByLabelText("Message your crew") as HTMLTextAreaElement;
   await user.type(composer, "Keep this unfinished change");
   const rail = screen.getByRole("navigation", { name: "Workspace" });
-  for (const name of ["Repositories", "Tickets", "Account"]) {
+  for (const name of ["Repositories", "Tickets"]) {
     await user.click(within(rail).getByRole("button", { name }));
     expect(screen.getByRole("heading", { name, level: 1 })).toBeTruthy();
     expect(screen.getByText("Coming soon")).toBeTruthy();
@@ -32,6 +32,10 @@ it("keeps the selected conversation and draft mounted across placeholder section
       .filter((button) => button !== active))
       expect(inactive.querySelector("svg")?.getAttribute("fill")).toBe("none");
   }
+  await user.click(within(rail).getByRole("button", { name: "Profile" }));
+  expect(screen.getByRole("heading", { name: "Providers", level: 1 })).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "Message your crew" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /OpenRouter ·/ })).toBeNull();
   await user.click(within(rail).getByRole("button", { name: "Work" }));
   expect(screen.getByRole("heading", { name: "Recover interrupted work" })).toBeTruthy();
   expect(screen.getByLabelText("Message your crew")).toBe(composer);

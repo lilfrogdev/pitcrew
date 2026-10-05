@@ -6,8 +6,8 @@
 .work {
   min-width: 0;
 }
-.work[hidden] {
-  display: none;
+.shell .work[hidden] {
+  display: none !important;
 }
 .rail {
   display: flex;

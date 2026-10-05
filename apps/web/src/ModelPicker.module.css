@@ -4,8 +4,8 @@
 .controls {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
+  justify-content: flex-start;
+  gap: 2px;
   flex-wrap: wrap;
 }
 .control {
@@ -22,18 +22,30 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 8px 24px 8px 9px;
+  padding: 6px 22px 6px 6px;
   font: inherit;
   font-size: 12px;
-  max-width: 240px;
-  min-height: 36px;
+  max-width: 200px;
+  min-height: 32px;
   cursor: pointer;
   text-overflow: ellipsis;
 }
-.control svg {
+.control > svg {
   position: absolute;
   right: 6px;
   pointer-events: none;
+}
+.provider {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+.provider img {
+  width: 18px;
+  height: auto;
 }
 .control select:hover {
   background: var(--canvas);
@@ -126,6 +138,6 @@
 }
 @media (max-width: 600px) {
   .control select {
-    max-width: 160px;
+    max-width: 125px;
   }
 }

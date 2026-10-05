@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { IconChevronDown, IconSettings } from "@tabler/icons-react";
+import { IconBrandOpenai, IconChevronDown, IconCpu, IconSettings } from "@tabler/icons-react";
 import type { ModelChoice, ModelSelection, ModelSettings } from "@pitcrew/protocol";
 import styles from "./ModelPicker.module.css";
+import openRouterLogo from "./assets/openrouter.svg";
 
 export interface ModelPickerProps {
   models: ModelChoice[];
@@ -42,7 +43,21 @@ export function ModelPicker({
       <div className={styles.controls} role="group" aria-label={`${label} model and effort`}>
         <label className={styles.control}>
           <span className={styles.srOnly}>{label} model</span>
+          <span
+            className={styles.provider}
+            role="img"
+            aria-label={`${model?.provider ?? "Unknown"} provider`}
+          >
+            {model?.provider === "openrouter" ? (
+              <img src={openRouterLogo} alt="" />
+            ) : model?.provider === "openai" ? (
+              <IconBrandOpenai size={18} stroke={1.5} aria-hidden="true" />
+            ) : (
+              <IconCpu size={18} stroke={1.5} aria-hidden="true" />
+            )}
+          </span>
           <select
+            aria-label={`${label} model`}
             aria-describedby={error ? `${id}-error` : undefined}
             aria-invalid={!model || undefined}
             value={model ? selection.modelId : ""}
@@ -60,7 +75,7 @@ export function ModelPicker({
             )}
             {models.map((choice) => (
               <option key={choice.id} value={choice.id} disabled={!choice.efforts.length}>
-                {choice.label} · {choice.provider}
+                {choice.label}
               </option>
             ))}
           </select>
@@ -85,7 +100,7 @@ export function ModelPicker({
             )}
             {model?.efforts.map((effort) => (
               <option key={effort} value={effort}>
-                {effort === "off" ? "Off" : effort.charAt(0).toUpperCase() + effort.slice(1)} effort
+                {effort === "off" ? "Off" : effort.charAt(0).toUpperCase() + effort.slice(1)}
               </option>
             ))}
           </select>

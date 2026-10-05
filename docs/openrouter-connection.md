@@ -1,31 +1,55 @@
 # OpenRouter connection
 
-The browser never stores a key in localStorage, conversation state, or repository configuration.
-The user opens **OpenRouter · Connect**, enters their existing key in a masked field, explicitly
-approves persistent Cloudflare storage, and selects **Store in Cloudflare**. The field clears immediately,
-including on failure. The agent must never enter, inspect, capture, or test a real key.
+The user opens **Profile → Providers**, enters their existing key in a masked field, and selects
+**Save**. The short storage hint identifies the Pitcrew Cloudflare Worker. Save also replaces an
+existing key; **Remove** deletes the fixed binding. No separate checkbox or composer popup is used.
+The field clears immediately, including on failure and navigation. The browser never persists a key
+in localStorage, conversation state, or repository configuration. The agent must never enter,
+inspect, capture, or test a real key.
 
-The reviewed local Vite controller is opt-in: start the local frontend with
-`PITCREW_OPENROUTER_SETUP=true pnpm -C apps/web dev --port <isolated-port>`.
+The local controller is opt-in through `PITCREW_OPENROUTER_SETUP=true`. Storage has a separate,
+default-off `PITCREW_OPENROUTER_AUTH_CONTEXT=user-preferences` option. Do not enable this option
+without action-time approval for the subprocess auth boundary below. Route availability alone does
+not indicate usable storage: public `storageAvailable` is false until this explicit option is enabled,
+and the Profile form stays disabled. Actual OAuth validity is determined by the fixed preflight when
+the user acts; status never claims cloud execution is connected.
+
 Use the exact `http://127.0.0.1:<port>` origin; `localhost` and network hosts are rejected.
-Managed preview installation belongs to the preview owner after parent review. Do not change port 5173 directly.
-Setup is unavailable without the controller; a deployed static frontend has no secret-setting route.
+Managed preview installation belongs to the preview owner after parent review. Do not change port
+5173 directly. A deployed static frontend needs the reviewed controller wired separately.
 
 The controller requires loopback peer/listener, exact Host and Origin, and an expiring HttpOnly,
-SameSite=Strict session cookie with a matching nonce header. It accepts only an 8 KiB JSON request
-with `{action:"store",key:"…"}`. It uses the installed Wrangler and existing narrowed Cloudflare OAuth.
-The fixed account is Pitcrew `004227d2029c56b084ce15356768def3`, Worker `pitcrew-backend`,
-secret binding `OPENROUTER_API_KEY`. A read-only existence preflight precedes secret put.
-Wrangler receives the key through stdin only; stdout/stderr are discarded and Wrangler's log is
-redirected to `/dev/null`. Temporary configuration contains public target metadata only.
-The Worker must remain stable during save: Wrangler could create a draft if a trusted operator deletes
-it between the existence check and the secret write.
+SameSite=Strict session cookie with a matching nonce header. It accepts at most 8 KiB JSON:
+`{action:"store",key:"…"}` or exactly `{action:"remove"}`. Both mutations share a lock. The fixed
+account is Pitcrew `004227d2029c56b084ce15356768def3`, Worker `pitcrew-backend`, secret binding
+`OPENROUTER_API_KEY`. A read-only existence preflight precedes fixed secret put/delete commands.
+Wrangler receives the key through stdin only; stdout/stderr are discarded and its log is redirected
+to `/dev/null`. Temporary configuration contains public target metadata only. The Worker must stay
+stable during save: Wrangler could create a draft if a trusted operator deletes it between preflight
+and the write.
 
-The secret persists encrypted in Cloudflare until the user replaces/removes it. To remove it, use that
-Worker's Cloudflare dashboard Settings → Variables and Secrets. Local controller restart does not
-remove the cloud secret; local status records only a successful save during this process and cannot
-verify previously stored key material. No endpoint returns the key or tests validity with OpenRouter.
-Replacing a key changes a deployment secret; only do so with no active cloud runs.
+The secret persists encrypted in Cloudflare until replaced/removed. Local status records only a
+successful mutation during this process; it cannot verify previously stored key material. No endpoint
+returns the key or tests validity with OpenRouter. Replace/remove only with no active cloud runs.
+
+## Subprocess auth proposal — approval pending
+
+The managed service retains its isolated HOME. Only the fixed Wrangler preflight/store/remove child
+receives `XDG_CONFIG_HOME=/Users/lilfrogdev/Library/Preferences`. This selects the existing macOS
+Wrangler config directory `/Users/lilfrogdev/Library/Preferences/.wrangler`; it does not copy or symlink
+credentials, expand the service HOME, or expose management credentials to the browser or Worker.
+The option remains off in this candidate and must not be applied by the agent without approval.
+
+Metadata confirmed `config/default.toml` exists in that normal-user directory and is absent in the
+isolated HOME; no file contents or OAuth scopes were read. Existing Wrangler may read and refresh
+its OAuth configuration, so approval must cover config-directory reads and refresh writes, including
+any temporary/atomic replacement files it needs, plus Wrangler-owned nonsecret metadata/cache writes
+(such as metrics.json even with telemetry disabled) inside the selected .wrangler directory. This is access to existing auth, not permission to
+create a new token, broaden scopes, run provider inference, or deploy execution settings. The fixed
+child environment omits ambient API tokens and sets `CLOUDFLARE_AUTH_USE_KEYRING=false` to keep
+Wrangler discovery file-only. Encrypted-only auth fails closed; this proposal does not authorize
+OS Keychain access or credential migration. Legacy HOME-based Wrangler discovery still takes
+precedence if the isolated HOME later gains a legacy config; keep that isolated directory absent.
 
 ## Backend handoff
 

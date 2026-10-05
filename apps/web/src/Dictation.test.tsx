@@ -149,7 +149,7 @@ it("aborts when leaving Work or unmounting, without clearing the editable draft"
   const { view } = await mount();
   const recognition = await start();
   result(recognition, "Keep words");
-  fireEvent.click(screen.getByRole("button", { name: "Account" }));
+  fireEvent.click(screen.getByRole("button", { name: "Profile" }));
   expect(recognition.abort).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole("button", { name: "Work" }));
   expect(screen.getByLabelText("Message your crew")).toHaveProperty("value", "Keep words");
