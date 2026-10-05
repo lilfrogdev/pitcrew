@@ -39,7 +39,7 @@ export const repositoryIssues: Record<string, string> = {
   reconciliation_unavailable: "This operation needs owner investigation before it can be retried.",
 };
 async function request<T>(path: string, body?: unknown): Promise<T> {
-  const response = await apiFetch(`/repositories${path}`, body, 45000);
+  const response = await apiFetch(`/repositories${path}`, body, 45000, false);
   if (!response.ok) {
     const value = (await response.json().catch(() => ({}))) as { error?: string };
     throw Error(

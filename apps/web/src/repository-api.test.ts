@@ -57,3 +57,27 @@ it("allows the bounded Access preparation and upstream deadline for repository r
   await apiFetch("/snapshot");
   expect(timeout).toHaveBeenCalledExactlyOnceWith(10000);
 });
+
+it("never automatically retries repository mutations after Access or admission rejection", async () => {
+  const fetcher = vi.fn(async (path: string) =>
+    path === "/api/local-session"
+      ? Response.json({ nonce: "a".repeat(64) })
+      : Response.json({ error: "backend_sign_in_required" }, { status: 403 }),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  await expect(
+    createRepositoryApi().provision({
+      name: "sandbox",
+      operation: "create",
+      credentialConsent: true,
+    }),
+  ).rejects.toThrow();
+  expect(fetcher.mock.calls.filter(([path]) => path === "/api/repositories/create")).toHaveLength(
+    1,
+  );
+  fetcher.mockClear();
+  await apiFetch("/threads/thread/messages", { text: "synthetic" });
+  expect(
+    fetcher.mock.calls.filter(([path]) => path === "/api/threads/thread/messages"),
+  ).toHaveLength(2);
+});
