@@ -7,7 +7,7 @@
   min-width: 0;
 }
 .shell .work[hidden] {
-  display: none;
+  display: none !important;
 }
 .rail {
   display: flex;
