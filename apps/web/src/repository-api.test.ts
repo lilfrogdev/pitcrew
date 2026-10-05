@@ -9,10 +9,10 @@ it("initializes the HTTP repository adapter without a circular module crash", ()
   expect(httpApi.repositories).toBeDefined();
   expect(createRepositoryApi().list).toBeTypeOf("function");
 });
-it("uses existing session admission for consented mutations and sends no credentials", async () => {
+it("uses isolated backend session admission for consented mutations and sends no credentials", async () => {
   const fetcher = vi.fn(async (path: string) =>
-    path === "/api/local-session"
-      ? Response.json({ nonce: null })
+    path === "/api/backend-session"
+      ? Response.json({ nonce: "a".repeat(64) })
       : Response.json({ name: "sandbox", status: "ready" }),
   );
   vi.stubGlobal("fetch", fetcher);
@@ -21,7 +21,9 @@ it("uses existing session admission for consented mutations and sends no credent
     operation: "create",
     credentialConsent: true,
   });
+  expect(fetcher.mock.calls[0][0]).toBe("/api/backend-session");
   expect(fetcher.mock.calls[1][0]).toBe("/api/repositories/create");
+  expect(JSON.stringify(fetcher.mock.calls)).not.toContain("X-Pitcrew-Local-Nonce");
   expect(JSON.stringify(fetcher.mock.calls)).not.toContain("token");
 });
 it("renders only allowlisted errors, even if backend errors include secret text", async () => {
@@ -37,8 +39,8 @@ it("allows the bounded Access preparation and upstream deadline for repository r
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) =>
-      path === "/api/local-session"
-        ? Response.json({ nonce: null })
+      path === "/api/backend-session"
+        ? Response.json({ nonce: "a".repeat(64) })
         : path.endsWith("/create")
           ? Response.json({ name: "sandbox", status: "ready" })
           : Response.json({ repositories: [], cursor: null }),
@@ -60,7 +62,7 @@ it("allows the bounded Access preparation and upstream deadline for repository r
 
 it("never automatically retries repository mutations after Access or admission rejection", async () => {
   const fetcher = vi.fn(async (path: string) =>
-    path === "/api/local-session"
+    path === "/api/backend-session" || path === "/api/local-session"
       ? Response.json({ nonce: "a".repeat(64) })
       : Response.json({ error: "backend_sign_in_required" }, { status: 403 }),
   );

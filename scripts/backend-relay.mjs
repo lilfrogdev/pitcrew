@@ -10,7 +10,7 @@ export const BACKEND_ACCESS = Object.freeze({
   audience: "147a2e216894b65c6445fc8dec1a3347c6b1681e01089dd066f875a581e81683",
   email: "dev@lilfrogdev.com",
 });
-const cookieName = "pitcrew-local-nonce";
+const cookieName = "pitcrew-backend-nonce";
 const lifetime = 30 * 60 * 1000;
 const namePattern = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const statuses = new Set([
@@ -139,7 +139,7 @@ function reply(res, status, value, extra = {}) {
 function admitted(req, origin) {
   const expected = new URL(origin);
   const header = req.headers.origin;
-  const singles = ["host", "origin", "content-type", "x-pitcrew-local-nonce"];
+  const singles = ["host", "origin", "content-type", "x-pitcrew-backend-nonce"];
   const counts = new Map();
   for (let i = 0; i < (req.rawHeaders?.length ?? 0); i += 2) {
     const name = req.rawHeaders[i].toLowerCase();
@@ -337,7 +337,7 @@ export function createBackendRelayMiddleware({
     if (!validOrigin(origin)) {
       if (
         raw.startsWith("/api/repositories") ||
-        (enabled && userAccessSession && raw.startsWith("/api/local-session"))
+        (enabled && userAccessSession && raw.startsWith("/api/backend-session"))
       )
         return reply(res, 403, { error: "backend_relay_forbidden" });
       return next();
@@ -351,7 +351,7 @@ export function createBackendRelayMiddleware({
     }
     const metadata =
       url.pathname === "/api/repositories" || url.pathname.startsWith("/api/repositories/");
-    const session = url.pathname === "/api/local-session";
+    const session = url.pathname === "/api/backend-session";
     if (!metadata && !(session && enabled && userAccessSession)) return next();
     if (!admitted(req, origin)) return reply(res, 403, { error: "backend_relay_forbidden" });
     if (!enabled || !userAccessSession)
@@ -395,7 +395,7 @@ export function createBackendRelayMiddleware({
         req.headers.origin !== origin ||
         !nonce ||
         (sessions.get(nonce) ?? 0) <= Date.now() ||
-        !equal(nonce, req.headers["x-pitcrew-local-nonce"])
+        !equal(nonce, req.headers["x-pitcrew-backend-nonce"])
       )
         return reply(res, 403, { error: "backend_session_required" });
       try {

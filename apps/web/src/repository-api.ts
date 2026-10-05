@@ -1,4 +1,3 @@
-import { apiFetch } from "./api";
 export type RepositoryEntry = {
   name: string;
   lifecycle: "external" | "pending" | "cleanup_required" | "ready" | "deleting" | "deleted";
@@ -39,7 +38,21 @@ export const repositoryIssues: Record<string, string> = {
   reconciliation_unavailable: "This operation needs owner investigation before it can be retried.",
 };
 async function request<T>(path: string, body?: unknown): Promise<T> {
-  const response = await apiFetch(`/repositories${path}`, body, 45000, false);
+  let headers: Record<string, string> | undefined;
+  if (body !== undefined) {
+    const session = await fetch("/api/backend-session", { signal: AbortSignal.timeout(10000) });
+    const value = (await session.json().catch(() => ({}))) as { nonce?: unknown };
+    if (!session.ok || typeof value.nonce !== "string" || !/^[a-f0-9]{64}$/.test(value.nonce))
+      throw Error(repositoryIssues.repository_backend_unavailable);
+    headers = { "Content-Type": "application/json", "X-Pitcrew-Backend-Nonce": value.nonce };
+  }
+  // A repository operation is attempted once. Ambiguous results need explicit reconciliation.
+  const response = await fetch(`/api/repositories${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    signal: AbortSignal.timeout(45000),
+    headers,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
   if (!response.ok) {
     const value = (await response.json().catch(() => ({}))) as { error?: string };
     throw Error(

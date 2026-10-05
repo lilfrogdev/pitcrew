@@ -103,17 +103,12 @@ export async function mutationHeaders(): Promise<Record<string, string>> {
     ...(nonce ? { "X-Pitcrew-Local-Nonce": nonce } : {}),
   };
 }
-export async function apiFetch(
-  path: string,
-  body?: unknown,
-  timeoutMs = 10000,
-  retryLocalAdmission = true,
-): Promise<Response> {
+export async function apiFetch(path: string, body?: unknown): Promise<Response> {
   const send = async () => {
     const headers = body ? await mutationHeaders() : undefined;
     const response = await fetch(`/api${path}`, {
       method: body ? "POST" : "GET",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(10000),
       headers,
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -122,8 +117,7 @@ export async function apiFetch(
   const first = await send();
   // A rejected local admission has no side effects. Another tab may have
   // established the session cookie while our initial bootstrap was in flight.
-  if (retryLocalAdmission && first.local && first.response.status === 403)
-    return (await send()).response;
+  if (first.local && first.response.status === 403) return (await send()).response;
   return first.response;
 }
 async function request<T>(path: string, body?: unknown): Promise<T> {

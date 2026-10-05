@@ -68,12 +68,12 @@ async function request(handler, path = "/api/repositories", options = {}) {
   return result;
 }
 async function session(handler) {
-  const response = await request(handler, "/api/local-session");
+  const response = await request(handler, "/api/backend-session");
   assert.equal(response.status, 200);
   return {
     origin,
-    cookie: `pitcrew-local-nonce=${response.json.nonce}`,
-    "x-pitcrew-local-nonce": response.json.nonce,
+    cookie: `pitcrew-backend-nonce=${response.json.nonce}`,
+    "x-pitcrew-backend-nonce": response.json.nonce,
     "content-type": "application/json",
   };
 }
@@ -81,7 +81,7 @@ test("both runtime opt-ins default off without token reads or network calls", as
   for (const options of [{ enabled: false }, { userAccessSession: false }]) {
     const f = fixture(options);
     assert.equal((await request(f.handler)).status, 503);
-    assert.equal((await request(f.handler, "/api/local-session")).next, true);
+    assert.equal((await request(f.handler, "/api/backend-session")).next, true);
     assert.equal(f.calls.length + f.tokens.length, 0);
   }
 });
@@ -89,6 +89,7 @@ test("Work/provider APIs and arbitrary URLs never enter the cloud relay", async 
   const f = fixture();
   for (const path of [
     "/api/projects",
+    "/api/local-session",
     "/api/threads/x/messages",
     "/api/provider-connection/openrouter",
     "https://example.com/api/repositories",
@@ -110,14 +111,14 @@ test("exact socket/Host/Origin/fetch-site admission rejects before side effects"
     assert.equal((await request(f.handler, "/api/repositories", options)).status, 403);
   assert.equal(f.calls.length + f.tokens.length, 0);
 });
-test("session is private HttpOnly Strict and can bootstrap existing fake Work nonce admission", async () => {
+test("repository session is private HttpOnly Strict and isolated from Work admission", async () => {
   const f = fixture();
-  const first = await request(f.handler, "/api/local-session");
+  const first = await request(f.handler, "/api/backend-session");
   assert.match(first.json.nonce, /^[a-f0-9]{64}$/);
   assert.match(first.headers["Set-Cookie"], /HttpOnly; SameSite=Strict; Path=\/api; Max-Age=1800/);
   assert.equal(first.headers["Cache-Control"], "private, no-store");
-  const second = await request(f.handler, "/api/local-session", {
-    headers: { cookie: `pitcrew-local-nonce=${first.json.nonce}` },
+  const second = await request(f.handler, "/api/backend-session", {
+    headers: { cookie: `pitcrew-backend-nonce=${first.json.nonce}` },
   });
   assert.equal(second.json.nonce, first.json.nonce);
   assert.equal(f.calls.length + f.tokens.length, 0);
@@ -129,7 +130,7 @@ test("mutations require issued nonce, strict Origin and bounded valid JSON", asy
   for (const [change, expected] of [
     [{ cookie: "" }, 403],
     [{ origin: undefined }, 403],
-    [{ "x-pitcrew-local-nonce": "é".repeat(64) }, 403],
+    [{ "x-pitcrew-backend-nonce": "é".repeat(64) }, 403],
     [{ "content-type": "text/plain" }, 415],
   ])
     assert.equal(
@@ -281,7 +282,7 @@ test("approved metadata mutation rewrites Origin to the protected backend", asyn
   assert.deepEqual(result.json, { name: "new-test", status: "pending" });
   assert.equal(calls[1].init.headers.Origin, BACKEND_ACCESS.origin);
   assert.equal(calls[1].init.headers.Cookie, undefined);
-  assert.equal(calls[1].init.headers["X-Pitcrew-Local-Nonce"], undefined);
+  assert.equal(calls[1].init.headers["X-Pitcrew-Backend-Nonce"], undefined);
 });
 test("Access redirects are never followed or exposed and clear cached sessions", async () => {
   let remote = 0;
@@ -489,15 +490,17 @@ test("plugin admits actual ephemeral listener port and refuses unavailable or wi
     },
   });
   assert.equal(
-    (await request(handler, "/api/local-session", { headers: { host: "127.0.0.1:5220" } })).status,
+    (await request(handler, "/api/backend-session", { headers: { host: "127.0.0.1:5220" } }))
+      .status,
     200,
   );
-  assert.equal((await request(handler, "/api/local-session")).status, 403);
+  assert.equal((await request(handler, "/api/backend-session")).status, 403);
   address = undefined;
-  assert.equal((await request(handler, "/api/local-session")).status, 403);
+  assert.equal((await request(handler, "/api/backend-session")).status, 403);
   address = { address: "0.0.0.0", port: 5220 };
   assert.equal(
-    (await request(handler, "/api/local-session", { headers: { host: "127.0.0.1:5220" } })).status,
+    (await request(handler, "/api/backend-session", { headers: { host: "127.0.0.1:5220" } }))
+      .status,
     403,
   );
 });
