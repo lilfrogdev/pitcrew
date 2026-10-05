@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Writable, Readable } from "node:stream";
 import { access, readFile, readlink, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import {
   createOpenRouterConnectionMiddleware,
   openRouterConnectionPlugin,
@@ -12,6 +13,8 @@ import {
 } from "./openrouter-connection.mjs";
 
 const route = "/api/provider-connection/openrouter";
+const require = createRequire(import.meta.url);
+const realSetTimeout = globalThis.setTimeout;
 const mutation = (action) => (action === "store" ? { action, key: "mock-key" } : { action });
 
 async function fixture(t, options = {}) {
@@ -311,10 +314,14 @@ test("Wrangler operations use a fixed target, child-only auth context, stdin and
           },
         });
         child.kill = () => {};
-        commands.push(args.slice(1, args.indexOf("--config")));
+        commands.push(args.slice(2, args.indexOf("--config")));
         directories.push(options.cwd);
         const inspection = (async () => {
           assert.equal(binary, process.execPath);
+          assert.deepEqual(args.slice(0, 2), [
+            "--no-warnings",
+            join(dirname(require.resolve("wrangler/package.json")), "wrangler-dist/cli.js"),
+          ]);
           assert.equal(options.shell, false);
           assert.deepEqual(options.stdio, ["pipe", "ignore", "ignore"]);
           assert.equal(args.includes("mock-key"), false);
@@ -332,6 +339,7 @@ test("Wrangler operations use a fixed target, child-only auth context, stdin and
           assert.deepEqual(Object.keys(options.env).sort(), [
             "CI",
             "CLOUDFLARE_ACCOUNT_ID",
+            "CLOUDFLARE_AUTH_USE_KEYRING",
             "HOME",
             "PATH",
             "TMPDIR",
@@ -343,11 +351,12 @@ test("Wrangler operations use a fixed target, child-only auth context, stdin and
           assert.equal(options.env.HOME, parentHome);
           assert.equal(options.env.XDG_CONFIG_HOME, "/Users/lilfrogdev/Library/Preferences");
           assert.equal(options.env.CLOUDFLARE_ACCOUNT_ID, "004227d2029c56b084ce15356768def3");
+          assert.equal(options.env.CLOUDFLARE_AUTH_USE_KEYRING, "false");
           assert.equal(options.env.CI, "true");
           assert.equal(options.env.WRANGLER_SEND_METRICS, "false");
           assert.equal(options.env.WRANGLER_LOG_SANITIZE, "true");
           assert.equal(Object.values(options.env).includes("mock-key"), false);
-          assert.equal(chunks.join(""), args[2] === "put" ? "mock-key" : "");
+          assert.equal(chunks.join(""), args[3] === "put" ? "mock-key" : "");
         })();
         inspections.push(inspection);
         inspection.then(
@@ -378,7 +387,7 @@ test("failed target preflight never starts put or delete or transmits a key", as
       sent = [];
     const spawnProcess = (_binary, args) => {
       const child = new EventEmitter();
-      commands.push(args[2]);
+      commands.push(args[3]);
       child.stdin = new Writable({
         write(chunk, _encoding, done) {
           sent.push(chunk.toString());
@@ -409,7 +418,7 @@ test("subprocess exit, spawn and stdin failures remain sanitized for both operat
       const commands = [],
         killed = [];
       const spawnProcess = (_binary, args) => {
-        commands.push(args[2]);
+        commands.push(args[3]);
         if (errorMode === "spawn") throw new Error("mock-secret-sensitive-spawn-error");
         const child = new EventEmitter();
         child.stdin = new Writable({
@@ -419,13 +428,14 @@ test("subprocess exit, spawn and stdin failures remain sanitized for both operat
         });
         child.kill = (signal) => {
           killed.push(signal);
+          setImmediate(() => child.emit("close", null, signal));
         };
         setImmediate(() => {
           if (errorMode === "event")
             child.emit("error", new Error("mock-secret-sensitive-child-error"));
           else if (errorMode === "stdin")
             child.stdin.emit("error", new Error("mock-secret-sensitive-stdin-error"));
-          else child.emit("close", args[2] === "list" ? 0 : 1);
+          else child.emit("close", args[3] === "list" ? 0 : 1);
         });
         return child;
       };
@@ -442,7 +452,94 @@ test("subprocess exit, spawn and stdin failures remain sanitized for both operat
         commands,
         errorMode === "exit" ? ["list", action === "store" ? "put" : "delete"] : ["list"],
       );
-      assert.deepEqual(killed, errorMode === "stdin" ? ["SIGKILL"] : []);
+      assert.deepEqual(killed, ["event", "stdin"].includes(errorMode) ? ["SIGKILL"] : []);
+    }
+  }
+});
+
+test("termination waits for close before settling, releasing the lock or removing config", async (t) => {
+  for (const action of ["store", "remove"]) {
+    for (const phase of ["preflight", "mutation"]) {
+      for (const errorMode of ["timeout", "stdin"]) {
+        await t.test(`${action} ${phase} ${errorMode}`, async (t) => {
+          t.mock.timers.enable({ apis: ["setTimeout"] });
+          const commands = [],
+            killed = [];
+          let heldChild,
+            configPath,
+            hold = true,
+            closed = false,
+            notifyReady;
+          const ready = new Promise((resolve) => {
+            notifyReady = resolve;
+          });
+          const spawnProcess = (_binary, args) => {
+            const child = new EventEmitter();
+            const command = args[3];
+            commands.push(command);
+            child.stdin = new Writable({
+              write(_chunk, _encoding, done) {
+                done();
+              },
+            });
+            child.kill = (signal) => {
+              killed.push(signal);
+              return true;
+            };
+            if (hold && (phase === "preflight" ? command === "list" : command !== "list")) {
+              heldChild = child;
+              configPath = args[args.indexOf("--config") + 1];
+              notifyReady();
+            } else {
+              setImmediate(() => child.emit("close", 0));
+            }
+            return child;
+          };
+          const options = { userWranglerAuth: true, spawnProcess };
+          const f = await fixture(t, {
+            store: (key) => storeOpenRouterSecret(key, options),
+            remove: () => removeOpenRouterSecret(options),
+          });
+          const headers = await f.session();
+          let settled = false;
+          const pending = f.post(headers, mutation(action)).then((result) => {
+            settled = true;
+            return result;
+          });
+          t.after(async () => {
+            if (!closed && heldChild) heldChild.emit("close", null, "SIGKILL");
+            await pending;
+          });
+          await ready;
+          if (errorMode === "timeout") t.mock.timers.tick(30_000);
+          else heldChild.stdin.emit("error", new Error("mock-secret-sensitive-stdin-error"));
+          assert.deepEqual(killed, ["SIGKILL"]);
+          heldChild.emit("exit", null, "SIGKILL");
+          // Allow asynchronous cleanup to run if the operation incorrectly settled.
+          await new Promise((resolve) => realSetTimeout(resolve, 20));
+          assert.equal(settled, false);
+          await access(configPath);
+          assert.deepEqual(
+            commands,
+            phase === "preflight" ? ["list"] : ["list", action === "store" ? "put" : "delete"],
+          );
+          for (const competingAction of ["store", "remove"]) {
+            const busy = await f.post(headers, mutation(competingAction));
+            assert.equal(busy.status, 409);
+            assert.deepEqual(await busy.json(), { error: "provider_store_in_progress" });
+          }
+          hold = false;
+          closed = true;
+          // A failure must stay a failure even if close reports a zero exit code.
+          heldChild.emit("close", 0);
+          const failed = await pending;
+          assert.equal(failed.status, 400);
+          assert.deepEqual(await failed.json(), { error: `provider_secret_${action}_failed` });
+          assert.equal((await (await f.request()).json()).configured, false);
+          await assert.rejects(access(configPath), { code: "ENOENT" });
+          assert.equal((await f.post(headers, mutation(action))).status, 200);
+        });
+      }
     }
   }
 });
