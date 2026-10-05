@@ -1,3 +1,5 @@
+import { normalizePublicRepositoryImportUrl } from "../../../packages/protocol/src/repository-import-url.mjs";
+
 /** Metadata only. No creation token is stored, returned, or used for Git. */
 export type LifecycleRecord = {
   name: string;
@@ -27,23 +29,7 @@ export function repositoryName(value: unknown): string {
   if (typeof value !== "string" || !namePattern.test(value)) throw Error("invalid_name");
   return value;
 }
-export function publicImportUrl(value: unknown): string {
-  if (typeof value !== "string" || value.length > 512) throw Error("invalid_public_url");
-  const url = new URL(value);
-  if (
-    url.protocol !== "https:" ||
-    url.hostname !== "github.com" ||
-    url.port ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    !/^\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+(?:\.git)?$/.test(url.pathname) ||
-    url.pathname.split("/").some((part) => part === "." || part === "..")
-  )
-    throw Error("invalid_public_url");
-  return url.href;
-}
+export const publicImportUrl = normalizePublicRepositoryImportUrl;
 export class RepositoryLifecycle {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(
