@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   ATTACHMENT_LIMITS,
   validateMessageAttachments,
@@ -65,11 +65,29 @@ export function Composer({
     ...(imagesSupported ? [".png", ".jpg", ".jpeg", ".webp"] : []),
   ].join(",");
   const support = `4 files · UTF-8 text/source: 64 KiB each, ${Math.floor((capabilities?.textTotalBytes ?? ATTACHMENT_LIMITS.totalBytes) / 1024)} KiB total. ${imagesSupported ? `Static PNG/JPEG/WebP: ${Math.floor(capabilities.imageFileBytes / 1024)} KiB each, ${Math.floor(capabilities.imageTotalBytes / 1024)} KiB total, 4096 pixels per edge.` : "Images are unavailable for this connection."} PDFs and other binary files are not supported.`;
-  useEffect(() => {
-    if (textarea.current) {
-      textarea.current.style.height = "auto";
-      textarea.current.style.height = `${Math.min(240, Math.max(64, textarea.current.scrollHeight))}px`;
-    }
+  useLayoutEffect(() => {
+    const field = textarea.current;
+    if (!field) return;
+    const resize = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(field).lineHeight) || 24;
+      const limit = lineHeight * 6;
+      field.style.height = "auto";
+      const contentHeight = field.scrollHeight;
+      field.style.height = `${Math.min(limit, Math.max(lineHeight, contentHeight))}px`;
+      field.style.overflowY = contentHeight > limit ? "auto" : "hidden";
+    };
+    resize();
+    if (typeof ResizeObserver === "undefined") return;
+    let width = field.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = field.getBoundingClientRect().width;
+      if (nextWidth !== width) {
+        width = nextWidth;
+        resize();
+      }
+    });
+    observer.observe(field);
+    return () => observer.disconnect();
   }, [draft]);
   return (
     <form
@@ -136,7 +154,7 @@ export function Composer({
         ref={textarea}
         id="message"
         placeholder="Describe a change or ask about the work…"
-        rows={2}
+        rows={1}
         value={draft}
         disabled={disabled}
         onChange={(event) => onDraft(event.target.value)}
@@ -189,8 +207,8 @@ export function Composer({
         >
           <Icon kind="plus" />
         </button>
+        {modelControls && <div className="composer-models">{modelControls}</div>}
         <div className="composer-actions">
-          {modelControls}
           <button
             type="button"
             className={`composer-mic${dictation.active ? " recording" : ""}`}

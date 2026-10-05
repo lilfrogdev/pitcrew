@@ -382,55 +382,58 @@ textarea {
 }
 .composer {
   margin: 0 30px 24px;
-  padding: 18px 18px 12px;
+  padding: 14px 14px 10px;
   background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 22px;
-}
-.composer label:not(.sr-only) {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 9px;
-  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow:
+    0 3px 14px rgb(0 0 0 / 7%),
+    0 1px 3px rgb(0 0 0 / 3%);
 }
 .composer textarea {
   border: 0;
   background: transparent;
   padding: 0;
   outline-offset: 5px;
-  min-height: 64px;
-  max-height: 240px;
+  min-height: 24px;
+  max-height: 144px;
   resize: none;
-  line-height: 1.6;
+  line-height: 24px;
+  overflow-y: hidden;
 }
 .composer-footer {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 10px;
+}
+.composer-models {
+  min-width: 0;
+  flex: 1;
 }
 .composer-actions {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 4px;
   min-width: 0;
+  flex-shrink: 0;
 }
 .composer-footer .composer-attach {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   padding: 6px;
   border: 0;
   background: transparent;
   color: var(--text);
+  flex-shrink: 0;
 }
 .composer-footer .composer-mic {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   padding: 6px;
   border: 0;
   border-radius: 50%;
@@ -453,14 +456,18 @@ textarea {
 .composer-footer .composer-send {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 28px;
+  height: 28px;
   padding: 6px;
   border-radius: 50%;
   background: var(--text);
   color: var(--surface);
   border: 0;
   flex-shrink: 0;
+}
+.composer-send svg {
+  width: 16px;
+  height: 16px;
 }
 .composer-footer .composer-send:hover:not(:disabled) {
   background: var(--accent);
