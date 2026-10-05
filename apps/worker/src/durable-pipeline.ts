@@ -17,6 +17,8 @@ export interface PipelineState {
   stage: Stage;
   startedAt: number;
   workspace?: Workspace;
+  /** Persisted before preparation; absence of a workspace is not cleanup proof. */
+  preparePending?: boolean;
   change?: { candidateSha: string; summary: string };
   evidence?: TestEvidence;
   verification?: VerificationEvidence;
@@ -82,13 +84,20 @@ export class DurableChangePipeline {
     this.store.write({
       ...state,
       stopRequested: true,
-      cleanupPending: !!state.workspace,
+      cleanupPending:
+        !!state.workspace || !!state.preparePending || state.error === "reconciliation_required",
       stage: "blocked",
-      error: "execution_failed",
+      error: state.error === "reconciliation_required" ? state.error : "execution_failed",
     });
   }
   private async cleanup(state: PipelineState, ports: PipelinePorts) {
-    if (!state.cleanupPending || !state.workspace || state.cleanupParked) return;
+    if (!state.cleanupPending || state.cleanupParked) return;
+    if (!state.workspace) {
+      // A failed or interrupted prepare cannot be safely replayed after Stop.
+      // Keep its reservation for reconciliation until an owned acknowledgement arrives.
+      this.store.write({ ...state, cleanupParked: true, error: "reconciliation_required" });
+      return;
+    }
     if ((state.cleanupAttempts ?? 0) >= 12) {
       this.store.write({ ...state, cleanupParked: true, error: "reconciliation_required" });
       return;
@@ -102,7 +111,7 @@ export class DurableChangePipeline {
     }
     const current = this.store.read();
     if (!current || current.fingerprint !== state.fingerprint) throw Error("context_conflict");
-    this.store.write({ ...current, cleanupPending: false });
+    this.store.write({ ...current, cleanupPending: !!current.preparePending });
   }
   async advance(ports: PipelinePorts) {
     const saved = this.store.read();
@@ -115,7 +124,7 @@ export class DurableChangePipeline {
     if (this.now() - state.startedAt > 30 * 60 * 1000) {
       state.stage = "blocked";
       state.error = "deadline_exceeded";
-      state.cleanupPending = !!state.workspace;
+      state.cleanupPending = !!state.workspace || !!state.preparePending;
       this.store.write(state);
       await this.cleanup(state, ports);
       return;
@@ -123,7 +132,11 @@ export class DurableChangePipeline {
     try {
       switch (state.stage) {
         case "prepare":
+          if (state.preparePending) throw Error("reconciliation_required");
+          state.preparePending = true;
+          this.store.write(state);
           state.workspace = await ports.prepare(state.input);
+          state.preparePending = false;
           state.stage = "change";
           break;
         case "change": {
@@ -227,7 +240,11 @@ export class DurableChangePipeline {
           (error instanceof Error && error.message === "reconciliation_required"))
           ? "reconciliation_required"
           : "execution_failed";
-      state.cleanupPending = !!state.workspace;
+      state.cleanupPending = !!state.workspace || !!state.preparePending;
+      if (state.preparePending && !state.workspace) {
+        state.error = "reconciliation_required";
+        state.cleanupParked = true;
+      }
     }
     // A lost stage acknowledgement must be retried from the prior persisted stage.
     // Native ports use the operation journal; Pi ports reuse their durable receipt.
@@ -235,8 +252,21 @@ export class DurableChangePipeline {
     if (current?.stopRequested) {
       // Stop can arrive while prepare or another effect is awaiting its acknowledgement.
       // Retain any newly created workspace, but never publish its stale completion.
-      const stopped = { ...current, workspace: current.workspace ?? state.workspace };
-      stopped.cleanupPending = !!stopped.workspace;
+      const stopped = {
+        ...current,
+        workspace: current.workspace ?? state.workspace,
+        preparePending: state.preparePending,
+        ...(state.workspace && current.preparePending
+          ? {
+              cleanupParked: false,
+              error: "execution_failed" as const,
+            }
+          : {}),
+      };
+      stopped.cleanupPending =
+        !!stopped.workspace ||
+        !!stopped.preparePending ||
+        stopped.error === "reconciliation_required";
       this.store.write(stopped);
       await this.cleanup(stopped, ports);
       return;

@@ -264,7 +264,19 @@ it("Stop during prepare retains the late workspace for cleanup and never advance
     },
   });
   runner.requestStop(input.runId);
-  expect(f.store.read()!.stopRequested).toBe(true);
+  expect(f.store.read()).toMatchObject({
+    stopRequested: true,
+    preparePending: true,
+    cleanupPending: true,
+  });
+  // A recovery may park the unknown prepare while the original call still awaits.
+  await new DurableChangePipeline(f.store).advance(f.ports);
+  expect(f.store.read()).toMatchObject({
+    preparePending: true,
+    cleanupPending: true,
+    cleanupParked: true,
+    error: "reconciliation_required",
+  });
   release();
   await pending;
   await new DurableChangePipeline(f.store).advance(f.ports);
@@ -272,8 +284,76 @@ it("Stop during prepare retains the late workspace for cleanup and never advance
     stage: "blocked",
     stopRequested: true,
     cleanupPending: false,
+    preparePending: false,
+    cleanupParked: false,
   });
   expect(f.calls).toEqual(["prepare", "stop"]);
+});
+it("retains uncertain preparation ownership through Stop and restart without replay", async () => {
+  const f = fixture(),
+    runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  const ports = {
+    ...f.ports,
+    prepare: async () => {
+      f.calls.push("uncertain-prepare");
+      throw new ExecutionError("UNCERTAIN_OPERATION");
+    },
+  };
+  await runner.advance(ports);
+  new DurableChangePipeline(f.store).requestStop(input.runId);
+  for (let i = 0; i < 3; i++) await new DurableChangePipeline(f.store).advance(ports);
+  expect(f.store.read()).toMatchObject({
+    stage: "blocked",
+    preparePending: true,
+    cleanupPending: true,
+    cleanupParked: true,
+    error: "reconciliation_required",
+  });
+  expect(f.calls).toEqual(["uncertain-prepare"]);
+});
+it("retains a lost prepare acknowledgement and never interprets its missing workspace as absence", async () => {
+  const f = fixture(),
+    runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  await expect(
+    runner.advance({
+      ...f.ports,
+      prepare: async () => {
+        const workspace = await f.ports.prepare(input);
+        f.dropAck();
+        return workspace;
+      },
+    }),
+  ).rejects.toThrow("lost_stage_ack");
+  expect(f.store.read()).toMatchObject({ stage: "prepare", preparePending: true });
+  new DurableChangePipeline(f.store).requestStop(input.runId);
+  await new DurableChangePipeline(f.store).advance(f.ports);
+  expect(f.store.read()).toMatchObject({
+    cleanupPending: true,
+    cleanupParked: true,
+    error: "reconciliation_required",
+  });
+  expect(f.calls).toEqual(["prepare"]);
+});
+it("preserves legacy reconciliation ownership on Stop and verifies absence before any prepare attempt", async () => {
+  const f = fixture(),
+    runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  runner.requestStop(input.runId);
+  expect(f.store.read()).toMatchObject({ stage: "blocked", cleanupPending: false });
+  expect(f.calls).toEqual([]);
+  const g = fixture();
+  const old = new DurableChangePipeline(g.store).start(input);
+  g.store.write({ ...old, stage: "blocked", error: "reconciliation_required" });
+  new DurableChangePipeline(g.store).requestStop(input.runId);
+  await new DurableChangePipeline(g.store).advance(g.ports);
+  expect(g.store.read()).toMatchObject({
+    cleanupPending: true,
+    cleanupParked: true,
+    error: "reconciliation_required",
+  });
+  expect(g.calls).toEqual([]);
 });
 it("separates persisted result from coordinator acknowledgement and preserves terminal results on Stop", async () => {
   const f = fixture();

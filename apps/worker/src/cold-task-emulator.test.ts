@@ -205,6 +205,20 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
       closes: 1,
     });
 
+    // Expiry during the factory must still finish lifecycle startup so recovery
+    // can record cleanup intent instead of failing before its capabilities start.
+    await call("cross-open", "seed", { deadline, crossOpen: true });
+    await call("cross-open", "queue", { time: deadline });
+    expect((await call("cross-open", "awaken")).snapshot).toMatchObject({
+      opens: 1,
+      resumes: 0,
+      effects: 0,
+      closes: 1,
+      started: true,
+    });
+    await call("cross-open", "fire");
+    expect((await call("cross-open", "result")).result.stage).toBe("blocked");
+
     await call("held", "seed", { deadline, stage: "done" });
     expect((await call("held", "held")).result).toEqual([
       "execution_disabled",
@@ -225,6 +239,113 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
       opens: 1,
       resumes: 1,
       effects: 1,
+    });
+
+    // Recover cleanup interrupted after its tombstone, assemble the pinned result,
+    // and let the parent's retry-start-before-result protocol observe it after reload.
+    await call("completed", "seed", {
+      deadline,
+      stage: "stop",
+      allowCleanup: true,
+      tombstone: true,
+    });
+    await call("completed", "queue", { time: deadline });
+    await reload();
+    expect((await call("completed", "fire")).snapshot).toMatchObject({
+      opens: 0,
+      resumes: 0,
+      effects: 0,
+    });
+    expect((await call("completed", "result")).result).toMatchObject({
+      stage: "done",
+      cleanupVerified: true,
+      result: { summary: "pinned successful result", candidateSha: "b".repeat(40) },
+    });
+    await reload({
+      INFRASTRUCTURE_ADMISSION_ENABLED: "false",
+      EXECUTION_MODE: "disabled",
+      CONFIGURATION_REVISION: "changed",
+    });
+    expect((await call("completed", "retry")).result).toMatchObject({ stage: "done" });
+    expect((await call("completed", "retry")).snapshot).toMatchObject({
+      opens: 0,
+      resumes: 0,
+      effects: 0,
+    });
+    expect(await call("completed", "mismatch")).toMatchObject({ error: "idempotency_conflict" });
+    expect((await call("completed", "result")).result.stage).toBe("done");
+    await reload({
+      INFRASTRUCTURE_ADMISSION_ENABLED: "true",
+      EXECUTION_MODE: "cloud",
+      CONFIGURATION_REVISION: "fixture",
+    });
+
+    await call("explicit-stop", "seed", { deadline, stage: "stop", allowCleanup: true });
+    await call("explicit-stop", "queue", { time: deadline });
+    await call("explicit-stop", "stop");
+    await call("explicit-stop", "fire");
+    expect((await call("explicit-stop", "result")).result).toMatchObject({
+      stage: "blocked",
+      cleanupVerified: true,
+    });
+    expect((await call("explicit-stop", "retry")).result.stage).toBe("blocked");
+
+    await call("held-prepare", "seed", { deadline, allowCleanup: true });
+    const preparing = call("held-prepare", "begin");
+    let held = false;
+    for (let i = 0; i < 50; i++) {
+      held = (await call("held-prepare", "pending")).result;
+      if (held) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(held).toBe(true);
+    await call("held-prepare", "stop");
+    expect((await call("held-prepare", "result")).result).toMatchObject({
+      stage: "blocked",
+      cleanupVerified: false,
+    });
+    expect((await call("held-prepare", "pending")).result).toBe(true);
+    await call("held-prepare", "release");
+    await preparing;
+    expect((await call("held-prepare", "pending")).result).toBe(false);
+    expect((await call("held-prepare", "result")).result).toMatchObject({
+      stage: "blocked",
+      cleanupVerified: true,
+    });
+    expect((await call("held-prepare", "inspect")).snapshot).toMatchObject({
+      opens: 0,
+      resumes: 0,
+      effects: 0,
+    });
+
+    // Unknown preparation ownership must survive Stop and a cold SQLite restart.
+    await call("uncertain-prepare", "seed", { deadline, allowCleanup: true });
+    await call("uncertain-prepare", "uncertain");
+    await call("uncertain-prepare", "stop");
+    await reload();
+    expect((await call("uncertain-prepare", "result")).result).toMatchObject({
+      stage: "blocked",
+      error: "reconciliation_required",
+      cleanupVerified: false,
+    });
+    expect((await call("uncertain-prepare", "inspect")).snapshot).toMatchObject({
+      opens: 0,
+      resumes: 0,
+      effects: 0,
+    });
+
+    await call("legacy-uncertain", "seed", {
+      deadline,
+      stage: "blocked",
+      uncertain: true,
+      allowCleanup: true,
+    });
+    await call("legacy-uncertain", "stop");
+    await reload();
+    expect((await call("legacy-uncertain", "result")).result).toMatchObject({
+      stage: "blocked",
+      error: "reconciliation_required",
+      cleanupVerified: false,
     });
   } finally {
     await mf.dispose();

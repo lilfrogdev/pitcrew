@@ -1,23 +1,28 @@
 import type { Harness } from "@earendil-works/pi-durable";
 import type { LifecycleServices } from "agents/lifecycle";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "../src/pi-agents";
-import type { PipelineState } from "../src/durable-pipeline";
+import type { DurableChangePipeline, PipelineState, PipelinePorts } from "../src/durable-pipeline";
+import { ExecutionError } from "../../../packages/execution/src/contracts";
 
 interface Seed {
   deadline?: number;
   stage?: PipelineState["stage"];
   cleanup?: boolean;
   crossRoot?: boolean;
+  crossOpen?: boolean;
   withoutPipeline?: boolean;
+  allowCleanup?: boolean;
+  tombstone?: boolean;
+  uncertain?: boolean;
 }
 const runId = "cold-run";
-function seedPending(sql: SqlStorage, crossRoot = false) {
+function seedPending(sql: SqlStorage, crossing = 0) {
   sql.exec(
     "CREATE TABLE IF NOT EXISTS fixture_counters(id INTEGER PRIMARY KEY,opens INTEGER,resumes INTEGER,effects INTEGER,closes INTEGER)",
   );
   sql.exec("INSERT OR IGNORE INTO fixture_counters VALUES(1,0,0,0,0)");
   sql.exec("CREATE TABLE IF NOT EXISTS fixture_pending(id INTEGER PRIMARY KEY,cross_root INTEGER)");
-  sql.exec("INSERT OR REPLACE INTO fixture_pending VALUES(1,?)", Number(crossRoot));
+  sql.exec("INSERT OR REPLACE INTO fixture_pending VALUES(1,?)", crossing);
 }
 function snapshot(sql: SqlStorage, started: boolean) {
   const counters = sql.exec("SELECT * FROM fixture_counters WHERE id=1").toArray()[0];
@@ -38,12 +43,16 @@ function expire(sql: SqlStorage) {
 // Harness.open's return value is fake, so no provider or sandbox can be called.
 function fakeHarness(sql: SqlStorage): Harness {
   sql.exec("UPDATE fixture_counters SET opens=opens+1 WHERE id=1");
+  const [pending] = sql
+    .exec<{ cross_root: number }>("SELECT cross_root FROM fixture_pending WHERE id=1")
+    .toArray();
+  if (pending?.cross_root === 2) expire(sql);
   return {
     root: async () => {
       const [pending] = sql
         .exec<{ cross_root: number }>("SELECT cross_root FROM fixture_pending WHERE id=1")
         .toArray();
-      if (pending?.cross_root) expire(sql);
+      if (pending?.cross_root === 1) expire(sql);
       return { configure: async () => {} };
     },
     resume: () => {
@@ -57,12 +66,37 @@ function fakeHarness(sql: SqlStorage): Harness {
   } as unknown as Harness;
 }
 export class ColdChangeFixture extends ChangeAgent {
+  constructor(ctx: DurableObjectState, env: PiEnv) {
+    super(ctx, env);
+    const native = (this as unknown as { coordinator: () => unknown }).coordinator.bind(this);
+    // Only the owned native cleanup port is replaced; stage transitions and result
+    // assembly stay in the actual DurableChangePipeline and ChangeAgent methods.
+    Object.assign(this, {
+      coordinator: () => {
+        const [table] = ctx.storage.sql
+          .exec("SELECT name FROM sqlite_master WHERE name='fixture_pending'")
+          .toArray();
+        const [mode] = table
+          ? ctx.storage.sql
+              .exec<{ cross_root: number }>("SELECT cross_root FROM fixture_pending WHERE id=1")
+              .toArray()
+          : [];
+        return mode?.cross_root === 3
+          ? { coordinator: { stop: async () => {} }, transport: {} }
+          : native();
+      },
+    });
+  }
   protected openHarness() {
     return Promise.resolve(fakeHarness(this.ctx.storage.sql));
   }
   seed(options: Seed) {
-    seedPending(this.ctx.storage.sql, options.crossRoot);
+    seedPending(
+      this.ctx.storage.sql,
+      options.allowCleanup ? 3 : options.crossOpen ? 2 : Number(!!options.crossRoot),
+    );
     this.bindModelAdmission(undefined, "implementer", options.deadline);
+    if (options.tombstone) this.recordStop(runId);
     if (options.withoutPipeline) return this.inspectFixture();
     const input = {
       runId,
@@ -78,9 +112,10 @@ export class ColdChangeFixture extends ChangeAgent {
       fingerprint: JSON.stringify(input),
       stage: options.stage ?? "prepare",
       startedAt: Date.now(),
-      ...(options.cleanup
+      ...(options.uncertain ? { error: "reconciliation_required" as const } : {}),
+      ...(options.cleanup || options.stage === "stop"
         ? {
-            cleanupPending: true,
+            ...(options.cleanup ? { cleanupPending: true } : {}),
             workspace: {
               runId,
               projectId: input.projectId,
@@ -89,6 +124,32 @@ export class ColdChangeFixture extends ChangeAgent {
               artifactId: "artifact",
               baseSha: input.baseSha,
               configurationRevision: "fixture",
+            },
+          }
+        : {}),
+      ...(options.stage === "stop"
+        ? {
+            change: { candidateSha: "b".repeat(40), summary: "pinned successful result" },
+            evidence: {
+              runId,
+              commandId: "tests",
+              baseSha: input.baseSha,
+              candidateSha: "b".repeat(40),
+              configurationRevision: "fixture",
+              argv: ["test"],
+              exitCode: 0,
+              stdout: "",
+              stderr: "",
+              truncated: false,
+              status: "completed" as const,
+            },
+            review: {
+              baseSha: input.baseSha,
+              candidateSha: "b".repeat(40),
+              configurationRevision: "fixture",
+              decision: "approve" as const,
+              summary: "reviewed",
+              actor: "independent",
             },
           }
         : {}),
@@ -107,6 +168,53 @@ export class ColdChangeFixture extends ChangeAgent {
   }
   async legacyObservation() {
     return this.result(runId);
+  }
+  async retryStart(mismatch = false) {
+    const row = this.ctx.storage.sql
+      .exec<{ value: string }>("SELECT value FROM change_pipeline WHERE id=1")
+      .toArray()[0];
+    const input = (JSON.parse(row.value) as PipelineState).input;
+    return this.start(mismatch ? { ...input, repository: "owner/different" } : input);
+  }
+  private releaseHeld?: () => void;
+  beginPrepare(uncertain = false) {
+    return (this as unknown as { pipeline: DurableChangePipeline }).pipeline.advance({
+      prepare: async (input) => {
+        this.ctx.storage.sql.exec(
+          "CREATE TABLE IF NOT EXISTS held_prepare(id INTEGER PRIMARY KEY)",
+        );
+        this.ctx.storage.sql.exec("INSERT INTO held_prepare VALUES(1)");
+        if (uncertain) throw new ExecutionError("UNCERTAIN_OPERATION");
+        await new Promise<void>((resolve) => {
+          this.releaseHeld = resolve;
+        });
+        return { ...input, workerId: "worker", artifactId: "fork" };
+      },
+      stop: async () => {
+        this.ctx.storage.sql.exec("DELETE FROM held_prepare");
+      },
+      change: async () => {
+        throw Error("unexpected_change");
+      },
+      publish: async () => {
+        throw Error("unexpected_publish");
+      },
+      test: async () => {
+        throw Error("unexpected_test");
+      },
+      review: async () => {
+        throw Error("unexpected_review");
+      },
+    } satisfies PipelinePorts);
+  }
+  releasePrepare() {
+    this.releaseHeld?.();
+  }
+  pendingPrepare() {
+    const [table] = this.ctx.storage.sql
+      .exec("SELECT name FROM sqlite_master WHERE name='held_prepare'")
+      .toArray();
+    return !!table && this.ctx.storage.sql.exec("SELECT id FROM held_prepare").toArray().length > 0;
   }
   expireGrant() {
     expire(this.ctx.storage.sql);
@@ -149,7 +257,7 @@ export class ColdReviewFixture extends ReviewAgent {
     return Promise.resolve(fakeHarness(this.ctx.storage.sql));
   }
   seed(options: Seed) {
-    seedPending(this.ctx.storage.sql, options.crossRoot);
+    seedPending(this.ctx.storage.sql, options.crossOpen ? 2 : Number(!!options.crossRoot));
     this.bindModelAdmission(undefined, "reviewer", options.deadline);
   }
   inspectFixture() {
@@ -193,6 +301,24 @@ export default {
           break;
         case "legacy-result":
           result = await stub.legacyObservation();
+          break;
+        case "retry":
+          result = await stub.retryStart();
+          break;
+        case "mismatch":
+          result = await stub.retryStart(true);
+          break;
+        case "begin":
+          result = await stub.beginPrepare();
+          break;
+        case "uncertain":
+          result = await stub.beginPrepare(true);
+          break;
+        case "release":
+          result = await stub.releasePrepare();
+          break;
+        case "pending":
+          result = await stub.pendingPrepare();
           break;
         case "ack":
           result = await stub.acknowledge(runId);

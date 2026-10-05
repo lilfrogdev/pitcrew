@@ -50,6 +50,7 @@ export interface PiEnv {
   ENVIRONMENT: string;
   EXECUTION_MODE: string;
   INFRASTRUCTURE_ADMISSION_ENABLED?: string;
+  CLOUD_CONVERSATION_ENABLED?: string;
   MODEL_CONFIGURATION?: string;
   MODELS_CONFIGURATION?: string;
   CONFIGURATION_REVISION?: string;
@@ -80,7 +81,7 @@ class TaskModelAdmission extends LifecycleCapability<TaskAdmission> {
 }
 // Lifecycle starts before async native RPCs and before alarm jobs. Denied startup
 // must still let cleanup capabilities run, without reopening Pi's durable tasks.
-class AdmittedPiHarness extends PiHarness {
+export class AdmittedPiHarness extends PiHarness {
   constructor(
     options: ConstructorParameters<typeof PiHarness>[0],
     private allowed: () => boolean,
@@ -89,12 +90,23 @@ class AdmittedPiHarness extends PiHarness {
   }
   async onStart(context: CapabilityStartContext) {
     if (!this.allowed()) return this.dispose();
-    await super.onStart(context);
+    try {
+      await super.onStart(context);
+    } catch (error) {
+      if (this.allowed() || !(error instanceof Error) || error.message !== "execution_disabled")
+        throw error;
+    }
     if (!this.allowed()) await this.dispose();
   }
   async onJob(context: LifecycleJobContext) {
     if (!this.allowed()) return this.dispose();
-    return super.onJob(context);
+    try {
+      return await super.onJob(context);
+    } catch (error) {
+      if (this.allowed() || !(error instanceof Error) || error.message !== "execution_disabled")
+        throw error;
+      await this.dispose();
+    }
   }
 }
 abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
@@ -493,7 +505,9 @@ export class ChangeAgent extends TaskAgent {
         if (!saved || saved.stage === "done") return;
         if (!this.taskActive()) {
           this.recordStop(saved.input.runId);
-          this.pipeline.requestStop(saved.input.runId);
+          // A pinned successful result still needs its owned cleanup after a crash.
+          // Explicit Stop has already moved the pipeline to blocked instead.
+          if (saved.stage !== "stop") this.pipeline.requestStop(saved.input.runId);
         }
         const stopped = this.pipeline.status()!;
         if (stopped.stage === "blocked" && !stopped.cleanupPending) return;
@@ -610,6 +624,16 @@ export class ChangeAgent extends TaskAgent {
     return { coordinator, transport };
   }
   async start(input: ExecutionInput) {
+    if (this.pipeline.status()) {
+      this.bindModelAdmission(input.runModels);
+      const existing = this.pipeline.start(input); // Validate the immutable request identity.
+      if (
+        existing.stage === "stop" ||
+        (this.taskActive() && !["done", "blocked"].includes(existing.stage))
+      )
+        await this.jobs.enqueue("pipeline", { runId: input.runId });
+      return { runId: input.runId, stage: existing.stage };
+    }
     const rejected = {
       runId: input.runId,
       stage: "blocked" as const,
@@ -693,6 +717,7 @@ export class ChangeAgent extends TaskAgent {
       acknowledged: !!state.resultAcknowledged,
       cleanupVerified:
         !state.cleanupPending &&
+        !state.preparePending &&
         (state.stage === "done" ||
           (state.stage === "blocked" && state.error !== "reconciliation_required")),
     };
