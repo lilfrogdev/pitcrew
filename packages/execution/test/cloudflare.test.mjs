@@ -119,6 +119,8 @@ test("bootstrap gets only fork read lease, no canonical/account token, revokes b
   assert.deepEqual(f.calls.get, ["fork-1"]);
   assert.deepEqual(f.calls.revoke, [{ name: "fork-1", token: "lease-id" }]);
   assert.equal(f.calls.start[0].image, "registered-tests-image");
+  assert.deepEqual(f.calls.start[0].entrypoint, ["sleep", "600"]);
+  assert.equal(f.calls.start[0].instance, "lite");
   assert.equal(
     f.calls.exec[0].options.env.GIT_CONFIG_VALUE_0,
     "Authorization: Bearer fork-only-token",

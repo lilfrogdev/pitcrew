@@ -4,6 +4,8 @@ Verified on 2026-10-05 from local checkout `7678dbf` and the user's Mac Google C
 
 ## Verified update: 2026-10-05 04:44 UTC
 
+The sections below record earlier inspection. The latest state is in "Paid plan and disabled backend provisioned" at the end; it supersedes earlier pending/free-plan statements.
+
 The user approved the exact proposed OAuth grant and a **$100 USD/month total Pitcrew Cloudflare budget**, with subscription details to be confirmed before purchase. The user then requested a separate Cloudflare account.
 
 - Wrangler OAuth callback completed successfully. `wrangler whoami` confirms OAuth authentication and exactly `user:read`, `offline_access`, `account:read`, `workers_scripts:write`, `artifacts:write`, `containers:write`, `cloudchamber:write`, `ai:write`. No raw credential values were read or transmitted manually.
@@ -118,3 +120,45 @@ Checkout: https://dash.cloudflare.com/004227d2029c56b084ce15356768def3/workers/c
 - Browser tab `2120546198` in the user's Mac Google Chrome is kept open for secure handoff. Visual evidence: `/Users/lilfrogdev/Documents/Codex/2026-10-04/task-19/evidence/pitcrew-workers-checkout.png`. Account creation evidence: `/Users/lilfrogdev/Documents/Codex/2026-10-04/task-19/evidence/pitcrew-account-created.png`.
 
 Authentication is live and verified, account creation is verified, but backend execution is not connected: no Worker, DO migration, Artifacts repository, sandbox image/application, model call or local authenticated API ingress has been provisioned or exercised.
+
+## Paid plan and disabled backend provisioned
+
+The user completed the Workers checkout themselves. Read-only inspection in Mac Chrome verifies Pitcrew's **Paid** card marked **Current plan**, at $5/month plus usage. Payment details were not read. Tax or actual invoice total has not been verified.
+
+Cloudflare accepted `pitcrew-backend`, deployed at 2026-10-05T04:53:28.850Z, version `8504fc89-9a3f-4d7c-8a4c-56430cba15d2`, serving 100% in `wrangler deployments list`. It has three SQLite Durable Object bindings and `ARTIFACTS` bound to namespace `pitcrew`. **No targets deployed**: no workers.dev, preview URL, custom route, or frontend. `EXECUTION_MODE=disabled`. Worker limits are CPU 1000ms/invocation and 20 subrequests. This verifies the control plane deployment, not the functional execution path.
+
+The binding alone did not create a namespace: `namespaces get pitcrew` initially returned 10200, and list returned empty. Namespace was subsequently created through the official dashboard without any credential or agreement form. Repository import remains pending. Do not run `wrangler artifacts repos create` casually: installed CLI prints the returned repo token, and the create API cannot select its expiry. Repo creation/import/fork mint a repo token. Before this step, obtain approval for its exact scope/lifetime/revocation design and use a secret-safe official flow. No repo token was minted in this task.
+
+Docker is installed but its configured Colima engine socket is absent. No VM was started, image built/pushed, or container application created. An approved digest-pinned Node image, linux/amd64 build, registry digest, and container configuration are still required.
+
+### Verified limits and local safeguards
+
+- Worker `limits.cpu_ms` limits CPU work, not HTTP wall time, DO duration, model calls, or total requests. HTTP wall time has no hard platform duration limit while connected. `subrequests` is per invocation, not monthly admission.
+- Containers Wrangler supports `max_instances` per application. Initial target is one for each of ChangeAgent and ReviewAgent; this can still mean two simultaneous instances. It does not bound total lifetime or restart count. With `durable_object` scheduling, instance size belongs in `ctx.container.start`, not `instance_type`.
+- Local transport now explicitly starts `lite` and uses main process `sleep 600`; Dockerfile default matches it. Main-process exit stops an instance independently of a lost JS timer. This is a bounded normal lifecycle, **not a proven hard ceiling against sandbox code able to interfere with its main process**. An independent durable deadline and verified destruction are still required. Existing command timeouts/output caps and stop/revocation logic remain. The existing 30-minute pipeline deadline is checked between stages and does not interrupt a hung model call.
+- Native `setInactivityTimeout` resets when DO activity resumes, needs resetting after DO restart, and does not bound an active run's wall time. SDK `sleepAfter` is not a configured guarantee in this native API implementation.
+- `config/cloudflare-rollout-policy.json` records rollout targets and missing controls. It is **preparation only**, not consumed by runtime. Offline preflight now fails closed on missing aggregate budget/concurrency/deadline controls. Do not change the blocker until implementation and live verification exist.
+- A conservative smoke should be one attempt, one lite instance, 60-second main-process lifetime, 10-second command, 4KiB output, no Internet, no inference, followed by verified destruction. It has not run. No autonomous workload is enabled.
+
+There is **no verified hard account billing cap**. Budget alerts only notify. Internal admission/stop thresholds ($75/$90) need implementation; delayed usage, other actors, tax, persistent storage and a stuck workload can exceed them. The $100 infrastructure budget includes subscription and tax. Do not enable unbounded runs or describe alerts as a cap.
+
+### OpenRouter coordination
+
+Provider owner `01a10a67-bcd7-7017-bdb5-2d13534510f8` will extend the explicit Pi byok provider contract. No Workers AI binding/model was added, no inference credits purchased, and no provider calls are authorized for this agent.
+
+Proposed user-driven secret lifecycle: same-origin loopback controller requires CSRF/origin checks, bounded input, and action-time explicit disclosure/confirmation that the entered existing OpenRouter key is sent to **Pitcrew account / pitcrew-backend**, stored as persistent encrypted Worker secret `OPENROUTER_API_KEY` until replaced/removed. Controller invokes only fixed `wrangler secret put` with stdin and existing OAuth; never key in args/env/history/logs/localStorage/responses, discard command output, return sanitized configured status, clear field. Runtime owner implements controller; provider owner implements UI/adapter. No local inference fallback. Model variable deployment must happen after merging with this backend configuration and enabling guards; stale clone deployment is unsafe.
+
+`MODEL_CONFIGURATION` target: `{"provider":"byok","providerId":"openrouter","model":"<verified-selected-model>","secretBinding":"OPENROUTER_API_KEY"}`. Existing schema/provider supports only openai/anthropic until that owner's change lands. Authenticated Access ingress and local relay remain unresolved. Dynamic user secret submission is not currently functional.
+
+File ownership: this branch owns backend config/preflight/docs and finite sandbox lifecycle. No Pi model/protocol/UI/controller edits. Other owners control OpenRouter and managed runtime5173.
+
+Validation: execution package 64/64 tests pass and typecheck passes. These are local tests, not live sandbox evidence.
+
+Sources:
+
+- https://developers.cloudflare.com/workers/platform/limits/
+- https://developers.cloudflare.com/containers/configuration/wrangler/
+- https://developers.cloudflare.com/containers/concepts/architecture/
+- https://developers.cloudflare.com/containers/api/durable-object-container/
+- https://developers.cloudflare.com/artifacts/api/rest-api/
+- https://developers.cloudflare.com/billing/manage/budget-alerts/

@@ -8,6 +8,16 @@
   ],
   "workers_dev": false,
   "preview_urls": false,
+  "limits": {
+    "cpu_ms": 1000,
+    "subrequests": 20
+  },
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "pitcrew"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {

@@ -67,7 +67,10 @@ export class CloudflareSandbox implements WorkspaceTransport {
       // Internet is needed for Git/dependency installation. No account credential is supplied.
       container.start({
         image: this.image,
-        entrypoint: ["sleep", "infinity"],
+        // Main-process exit stops the instance even if the DO stops running.
+        // Never use an unbounded idle process for a paid sandbox.
+        entrypoint: ["sleep", "600"],
+        instance: "lite",
         enableInternet: true,
       });
       // Per-process environment avoids storing the short-lived token in .git/config or a URL.
