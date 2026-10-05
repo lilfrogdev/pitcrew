@@ -1,8 +1,8 @@
 # Supply an approved Node >=22.18 Debian bookworm-slim image pinned by digest.
 # Build/registration is a separate authorized cloud setup step.
-ARG BASE_IMAGE
+ARG BASE_IMAGE=node:24-bookworm-slim@sha256:5cbc7caba8c2c0f0bca675d1b61b9f2857e1cf1853c6164ee9dd409501a936e7
 FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install --yes --no-install-recommends git coreutils python3 ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN npm install --global pnpm@11.17.0 && git config --system user.name 'Pitcrew change worker' && git config --system user.email 'pitcrew-worker@localhost'
 WORKDIR /workspace
-ENTRYPOINT ["sleep", "infinity"]
+ENTRYPOINT ["sleep", "600"]

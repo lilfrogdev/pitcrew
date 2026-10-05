@@ -1,6 +1,10 @@
 import { pinPlan, executePlan } from "../../../packages/verification/src/index.ts";
 import { Agent, getAgentByName } from "agents";
-import { LifecycleCapability, type CapabilityStartContext } from "agents/lifecycle";
+import {
+  LifecycleCapability,
+  type CapabilityStartContext,
+  type LifecycleJobContext,
+} from "agents/lifecycle";
 import { PiHarness } from "agents/harness/pi";
 import { createRegistry, defineTool, Harness } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
@@ -45,6 +49,8 @@ interface WorkerKnowledgeReceiver {
 export interface PiEnv {
   ENVIRONMENT: string;
   EXECUTION_MODE: string;
+  INFRASTRUCTURE_ADMISSION_ENABLED?: string;
+  CLOUD_CONVERSATION_ENABLED?: string;
   MODEL_CONFIGURATION?: string;
   MODELS_CONFIGURATION?: string;
   CONFIGURATION_REVISION?: string;
@@ -63,6 +69,7 @@ interface Context {
 export interface TaskAdmission {
   runModels?: ExecutionInput["runModels"];
   role: "implementer" | "reviewer";
+  deadline?: number;
 }
 class TaskModelAdmission extends LifecycleCapability<TaskAdmission> {
   constructor(private readonly bind: (admission: TaskAdmission) => void) {
@@ -72,6 +79,36 @@ class TaskModelAdmission extends LifecycleCapability<TaskAdmission> {
     if (context.props) this.bind(context.props);
   }
 }
+// Lifecycle starts before async native RPCs and before alarm jobs. Denied startup
+// must still let cleanup capabilities run, without reopening Pi's durable tasks.
+export class AdmittedPiHarness extends PiHarness {
+  constructor(
+    options: ConstructorParameters<typeof PiHarness>[0],
+    private allowed: () => boolean,
+  ) {
+    super(options);
+  }
+  async onStart(context: CapabilityStartContext) {
+    if (!this.allowed()) return this.dispose();
+    try {
+      await super.onStart(context);
+    } catch (error) {
+      if (this.allowed() || !(error instanceof Error) || error.message !== "execution_disabled")
+        throw error;
+    }
+    if (!this.allowed()) await this.dispose();
+  }
+  async onJob(context: LifecycleJobContext) {
+    if (!this.allowed()) return this.dispose();
+    try {
+      return await super.onJob(context);
+    } catch (error) {
+      if (this.allowed() || !(error instanceof Error) || error.message !== "execution_disabled")
+        throw error;
+      await this.dispose();
+    }
+  }
+}
 abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
   protected harness: PiHarness;
   protected registry = createRegistry();
@@ -79,79 +116,129 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     super(ctx, env);
     this.lifecycle.use(
       new TaskModelAdmission((admission) =>
-        this.bindModelAdmission(admission.runModels, admission.role),
+        this.bindModelAdmission(admission.runModels, admission.role, admission.deadline),
       ),
     );
-    this.harness = new PiHarness({
-      harness: async ({ storage, context }) => {
-        // Open the frozen run's provider; no active run consults mutable thread preferences.
-        void this
-          .sql`CREATE TABLE IF NOT EXISTS task_context(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
-        void this
-          .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
-        const [modelRow] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
-        const admission = modelRow
-          ? (JSON.parse(modelRow.value) as TaskAdmission | null)
-          : undefined;
-        const admitted = admission?.runModels;
-        const [taskRow] = this.sql<{ value: string }>`SELECT value FROM task_context WHERE id=1`;
-        const task = taskRow ? (JSON.parse(taskRow.value) as Context) : undefined;
-        const selected =
-          (admission?.role === "reviewer" ? admitted?.reviewer : admitted?.implementer) ??
-          task?.input?.runModels?.implementer ??
-          task?.brief?.runModels?.reviewer;
-        const { models, model, selection } = configureSelectedModels(
-          env,
-          selected,
-          admitted?.catalogRevision ?? task?.brief?.runModels?.catalogRevision,
-        );
-        const fingerprint = JSON.stringify({
-          model: selected
-            ? { provider: model.provider, id: model.id, effort: selection.effort }
-            : env.MODEL_CONFIGURATION,
-          revision: env.CONFIGURATION_REVISION,
-          imageName: env.SANDBOX_IMAGE,
-          imageDigest: ctx.container
-            ? sandboxImage(env.SANDBOX_IMAGE, ctx.container.images)
-            : undefined,
-        });
-        void this
-          .sql`CREATE TABLE IF NOT EXISTS runtime_configuration(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
-        const [stored] = this.sql<{
-          value: string;
-        }>`SELECT value FROM runtime_configuration WHERE id=1`;
-        if (stored && stored.value !== fingerprint) throw Error("configuration_mismatch");
-        void this.sql`INSERT OR IGNORE INTO runtime_configuration VALUES(1,${fingerprint})`;
-        this.installTools();
-        const harness = await Harness.open(
-          storage,
-          {
-            models,
-            registry: this.registry,
-            settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
-          },
-          context,
-        );
-        // PiHarness session defaults are persisted via the public session API below.
-        this.model = { provider: model.provider, id: model.id };
-        this.selection = selection;
-        this.piContext = context;
-        return harness;
+    this.harness = new AdmittedPiHarness(
+      {
+        harness: async ({ storage, context }) => {
+          this.assertTaskActive();
+          // Open the frozen run's provider; no active run consults mutable thread preferences.
+          void this
+            .sql`CREATE TABLE IF NOT EXISTS task_context(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
+          void this
+            .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
+          const [modelRow] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
+          const admission = modelRow
+            ? (JSON.parse(modelRow.value) as TaskAdmission | null)
+            : undefined;
+          const admitted = admission?.runModels;
+          const [taskRow] = this.sql<{ value: string }>`SELECT value FROM task_context WHERE id=1`;
+          const task = taskRow ? (JSON.parse(taskRow.value) as Context) : undefined;
+          const selected =
+            (admission?.role === "reviewer" ? admitted?.reviewer : admitted?.implementer) ??
+            task?.input?.runModels?.implementer ??
+            task?.brief?.runModels?.reviewer;
+          const { models, model, selection } = configureSelectedModels(
+            env,
+            selected,
+            admitted?.catalogRevision ?? task?.brief?.runModels?.catalogRevision,
+          );
+          const fingerprint = JSON.stringify({
+            model: selected
+              ? { provider: model.provider, id: model.id, effort: selection.effort }
+              : env.MODEL_CONFIGURATION,
+            revision: env.CONFIGURATION_REVISION,
+            imageName: env.SANDBOX_IMAGE,
+            imageDigest: ctx.container
+              ? sandboxImage(env.SANDBOX_IMAGE, ctx.container.images)
+              : undefined,
+          });
+          void this
+            .sql`CREATE TABLE IF NOT EXISTS runtime_configuration(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
+          const [stored] = this.sql<{
+            value: string;
+          }>`SELECT value FROM runtime_configuration WHERE id=1`;
+          if (stored && stored.value !== fingerprint) throw Error("configuration_mismatch");
+          void this.sql`INSERT OR IGNORE INTO runtime_configuration VALUES(1,${fingerprint})`;
+          this.installTools();
+          const harness = await this.openHarness(
+            storage,
+            {
+              models,
+              registry: this.registry,
+              settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
+            },
+            context,
+          );
+          if (!this.taskActive()) {
+            await harness.close(context);
+            throw Error("execution_disabled");
+          }
+          // PiHarness session defaults are persisted via the public session API below.
+          this.model = { provider: model.provider, id: model.id };
+          this.selection = selection;
+          this.piContext = context;
+          // PiHarness awaits root() after this factory, then calls resume(). Recheck
+          // at that final synchronous boundary if Stop or the deadline crossed the await.
+          const resume = harness.resume.bind(harness);
+          harness.resume = () => {
+            if (this.taskActive()) resume();
+          };
+          return harness;
+        },
       },
-    });
+      () => this.taskActive(),
+    );
     this.lifecycle.use(this.harness);
   }
   private model?: { provider: string; id: string };
   private selection?: import("@pitcrew/protocol").ModelSelection;
   private piContext?: Parameters<Harness["close"]>[0];
+  protected openHarness(...args: Parameters<typeof Harness.open>) {
+    return Harness.open(...args);
+  }
+  protected taskDeadline() {
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
+    const [row] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
+    return row ? (JSON.parse(row.value) as TaskAdmission | null)?.deadline : undefined;
+  }
+  protected taskActive() {
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS task_control(id INTEGER PRIMARY KEY CHECK(id=1),run_id TEXT NOT NULL)`;
+    if (this.sql`SELECT id FROM task_control WHERE id=1`.length) return false;
+    if (this.env.EXECUTION_MODE !== "cloud" || this.env.INFRASTRUCTURE_ADMISSION_ENABLED !== "true")
+      return false;
+    const deadline = this.taskDeadline();
+    return typeof deadline === "number" && Number.isFinite(deadline) && deadline > Date.now();
+  }
+  protected assertTaskActive() {
+    if (!this.taskActive()) throw Error("execution_disabled");
+  }
+  protected recordStop(runId: string) {
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS task_control(id INTEGER PRIMARY KEY CHECK(id=1),run_id TEXT NOT NULL)`;
+    const [previous] = this.sql<{ run_id: string }>`SELECT run_id FROM task_control WHERE id=1`;
+    if (previous && previous.run_id !== runId) throw Error("context_mismatch");
+    void this.sql`INSERT OR IGNORE INTO task_control VALUES(1,${runId})`;
+  }
   protected async prompt() {
+    this.assertTaskActive();
     const pi = await this.harness.pi();
     if (!this.model || !this.selection || !this.piContext) throw Error("model_not_configured");
     await configureConversation(pi, this.model, this.selection, this.piContext);
     return {
-      submit: this.harness.submit.bind(this.harness),
-      wait: this.harness.wait.bind(this.harness),
+      submit: (...args: Parameters<PiHarness["submit"]>) => {
+        this.assertTaskActive();
+        return this.harness.submit(...args);
+      },
+      wait: (...args: Parameters<PiHarness["wait"]>) => {
+        this.assertTaskActive();
+        return this.harness.wait(...args);
+      },
       readAttachment: async (reference: import("@pitcrew/protocol").StoredImageAttachment) => {
+        this.assertTaskActive();
         const task = this.context();
         const context = task.input?.knowledgeContext ?? task.brief?.knowledgeContext;
         if (!context) throw Error("attachment_unavailable");
@@ -177,15 +264,22 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
   protected bindModelAdmission(
     runModels: ExecutionInput["runModels"],
     role: TaskAdmission["role"] = "implementer",
+    deadline?: number,
   ) {
     void this
       .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
-    const serialized = JSON.stringify(runModels ? { runModels, role } : null);
     const [prior] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
+    const admitted = prior ? (JSON.parse(prior.value) as TaskAdmission | null) : undefined;
+    // start() rebinds only models; it must preserve the parent's immutable deadline.
+    deadline ??= admitted?.deadline;
+    const serialized = JSON.stringify(
+      runModels || deadline !== undefined ? { runModels, role, deadline } : null,
+    );
     if (prior && prior.value !== serialized) throw Error("context_conflict");
     void this.sql`INSERT OR IGNORE INTO task_models VALUES(1,${serialized})`;
   }
   protected countTool() {
+    this.assertTaskActive();
     void this
       .sql`CREATE TABLE IF NOT EXISTS tool_budget(id INTEGER PRIMARY KEY CHECK(id=1),calls INTEGER NOT NULL)`;
     void this.sql`INSERT OR IGNORE INTO tool_budget VALUES(1,0)`;
@@ -202,6 +296,7 @@ export class ChangeAgent extends TaskAgent {
     await this.knowledgeJobs.enqueue("delivery", { runId: delivery.context.runId });
   }
   private mutate<T>(callId: string, body: unknown, action: () => Promise<T>) {
+    this.assertTaskActive();
     void this
       .sql`CREATE TABLE IF NOT EXISTS tool_mutations(id TEXT PRIMARY KEY,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT)`;
     return guardedMutation(
@@ -228,7 +323,10 @@ export class ChangeAgent extends TaskAgent {
       },
       callId,
       JSON.stringify(body),
-      action,
+      () => {
+        this.assertTaskActive();
+        return action();
+      },
     );
   }
   private transport() {
@@ -395,14 +493,32 @@ export class ChangeAgent extends TaskAgent {
       "change-pipeline",
       async (jobs) => {
         const state = this.pipeline.status();
-        if (state && (state.cleanupPending || !["done", "blocked"].includes(state.stage)))
+        if (
+          state &&
+          ((state.cleanupPending && !state.cleanupParked) ||
+            !["done", "blocked"].includes(state.stage))
+        )
           await jobs.enqueue("pipeline", { runId: state.input.runId });
       },
       async () => {
+        const saved = this.pipeline.status();
+        if (!saved || saved.stage === "done") return;
+        if (!this.taskActive()) {
+          this.recordStop(saved.input.runId);
+          // A pinned successful result still needs its owned cleanup after a crash.
+          // Explicit Stop has already moved the pipeline to blocked instead.
+          if (saved.stage !== "stop") this.pipeline.requestStop(saved.input.runId);
+        }
+        const stopped = this.pipeline.status()!;
+        if (stopped.stage === "blocked" && !stopped.cleanupPending) return;
         const { coordinator, transport } = this.coordinator();
         await this.pipeline.advance({
-          prepare: (input) => coordinator.prepare(input),
+          prepare: (input) => {
+            this.assertTaskActive();
+            return coordinator.prepare(input);
+          },
           change: async (workspace, input) => {
+            this.assertTaskActive();
             await this.mutate("dependencies", workspace, () =>
               bootstrapDependencies(transport, workspace),
             );
@@ -418,25 +534,37 @@ export class ChangeAgent extends TaskAgent {
               throw error;
             }
           },
-          publish: (workspace, candidate) => coordinator.publish(workspace, candidate),
-          test: (workspace, candidate) =>
-            coordinator.test(workspace, candidate, {
+          publish: (workspace, candidate) => {
+            this.assertTaskActive();
+            return coordinator.publish(workspace, candidate);
+          },
+          test: (workspace, candidate) => {
+            this.assertTaskActive();
+            return coordinator.test(workspace, candidate, {
               commandId: "candidate-tests",
               argv: ["pnpm", "test"],
               timeoutMs: 60000,
               maxOutputBytes: 16384,
-            }),
+            });
+          },
           verify: async (workspace, candidate) => {
+            this.assertTaskActive();
             const initial = this.pipeline.status()!.input.verificationPlan;
             if (!initial) return;
             const { fingerprint: _fingerprint, ...spec } = initial;
             const plan = await pinPlan({ ...spec, candidateSha: candidate });
+            this.assertTaskActive();
             return { plan, outcomes: await executePlan(plan, "candidate", workspace, transport) };
           },
           review: async (workspace, evidence) => {
+            this.assertTaskActive();
             const input = this.pipeline.status()!.input;
             const reviewer = await getAgentByName(this.env.REVIEW, `review:${workspace.runId}`, {
-              props: { runModels: input.runModels, role: "reviewer" },
+              props: {
+                runModels: input.runModels,
+                role: "reviewer",
+                deadline: this.taskDeadline(),
+              },
             });
             return reviewer.evaluate(workspace, evidence, 500, {
               verification: this.pipeline.status()!.verification,
@@ -451,7 +579,9 @@ export class ChangeAgent extends TaskAgent {
           stop: (workspace) => this.stopOwners(workspace),
         });
         const state = this.pipeline.status();
-        return state && (state.cleanupPending || !["done", "blocked"].includes(state.stage))
+        return state &&
+          ((state.cleanupPending && !state.cleanupParked) ||
+            !["done", "blocked"].includes(state.stage))
           ? { rescheduleAt: Date.now() + 1000 }
           : undefined;
       },
@@ -494,6 +624,16 @@ export class ChangeAgent extends TaskAgent {
     return { coordinator, transport };
   }
   async start(input: ExecutionInput) {
+    if (this.pipeline.status()) {
+      this.bindModelAdmission(input.runModels);
+      const existing = this.pipeline.start(input); // Validate the immutable request identity.
+      if (
+        existing.stage === "stop" ||
+        (this.taskActive() && !["done", "blocked"].includes(existing.stage))
+      )
+        await this.jobs.enqueue("pipeline", { runId: input.runId });
+      return { runId: input.runId, stage: existing.stage };
+    }
     const rejected = {
       runId: input.runId,
       stage: "blocked" as const,
@@ -521,6 +661,7 @@ export class ChangeAgent extends TaskAgent {
     // The harness lifecycle starts before sandbox preparation. Store the immutable model
     // admission independently; bind the full context when the workspace exists.
     this.bindModelAdmission(input.runModels);
+    if (!this.taskActive()) return rejected;
     await this.lifecycle.start();
     const state = this.pipeline.start(input);
     if (!["done", "blocked"].includes(state.stage))
@@ -528,9 +669,11 @@ export class ChangeAgent extends TaskAgent {
     return { runId: input.runId, stage: state.stage };
   }
   private async stopOwners(workspace: Workspace) {
+    this.recordStop(workspace.runId);
     const results = await Promise.allSettled([
       Promise.resolve().then(() => this.coordinator().coordinator.stop(workspace)),
-      Promise.resolve().then(() => this.harness.session().abort()),
+      // dispose closes only an already-open Pi; session().abort() would open and resume it.
+      Promise.resolve().then(() => this.harness.dispose()),
       Promise.resolve().then(() =>
         this.env.REVIEW.get(this.env.REVIEW.idFromName(`review:${workspace.runId}`)).abortReview(
           workspace.runId,
@@ -539,19 +682,32 @@ export class ChangeAgent extends TaskAgent {
     ]);
     if (results.some((result) => result.status === "rejected")) throw Error("cleanup_failed");
   }
-  async stop(runId: string) {
+  // Plain native RPCs bypass Agents' automatic async-RPC lifecycle startup.
+  stop(runId: string) {
+    const prior = this.pipeline.status();
+    if (prior && prior.input.runId !== runId) throw Error("not_found");
+    this.recordStop(runId);
+    if (!prior)
+      return this.harness.dispose().then(() => {
+        throw Error("not_found");
+      });
     this.pipeline.requestStop(runId);
+    return this.finishStop(runId);
+  }
+  private async finishStop(runId: string) {
     const state = this.pipeline.status()!;
     // Interrupt owned resources promptly even while the singleflight stage is still awaiting.
     // The pipeline retains cleanup intent until the queued recovery observes successful cleanup.
     if (state.cleanupPending && state.workspace)
       await this.stopOwners(state.workspace).catch(() => {});
+    await this.harness.dispose();
+    await this.lifecycle.start();
     await this.jobs.enqueue("pipeline", { runId });
   }
-  async acknowledge(runId: string) {
+  acknowledge(runId: string) {
     this.pipeline.acknowledge(runId);
   }
-  async result(runId: string) {
+  result(runId: string) {
     const state = this.pipeline.status();
     if (!state || state.input.runId !== runId) throw Error("not_found");
     return {
@@ -559,6 +715,11 @@ export class ChangeAgent extends TaskAgent {
       result: state.result,
       error: state.error,
       acknowledged: !!state.resultAcknowledged,
+      cleanupVerified:
+        !state.cleanupPending &&
+        !state.preparePending &&
+        (state.stage === "done" ||
+          (state.stage === "blocked" && state.error !== "reconciliation_required")),
     };
   }
 }
@@ -657,14 +818,17 @@ export class ReviewAgent extends TaskAgent {
       ],
     });
   }
-  async abortReview(runId: string) {
+  abortReview(runId: string) {
     const [table] = this.sql`SELECT name FROM sqlite_master WHERE name='task_context'`;
-    if (!table) return;
-    const context = this.context();
-    if (context.workspace.runId !== runId) throw Error("context_mismatch");
-    await this.harness.session().abort();
+    if (table) {
+      const [row] = this.sql`SELECT id FROM task_context WHERE id=1`;
+      if (row && this.context().workspace.runId !== runId) throw Error("context_mismatch");
+    }
+    this.recordStop(runId);
+    return this.harness.dispose();
   }
   async evaluate(workspace: Workspace, evidence: TestEvidence, waitMs = 500, brief?: ReviewBrief) {
+    this.assertTaskActive();
     if (this.env.EXECUTION_MODE !== "cloud") throw Error("execution_disabled");
     if (this.env.CONFIGURATION_REVISION !== workspace.configurationRevision)
       throw Error("configuration_mismatch");

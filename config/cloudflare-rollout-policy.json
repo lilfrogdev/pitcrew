@@ -1,0 +1,31 @@
+{
+  "status": "preparation_only_not_consumed_by_runtime",
+  "accountId": "004227d2029c56b084ce15356768def3",
+  "monthlyInfrastructureBudgetUsd": 100,
+  "hardAccountBillingCapVerified": false,
+  "autonomousExecutionAllowed": false,
+  "initialSmoke": {
+    "maxAttempts": 1,
+    "maxConcurrentContainers": 1,
+    "instance": "lite",
+    "mainProcessLifetimeSeconds": 60,
+    "commandTimeoutMs": 10000,
+    "maxOutputBytes": 4096,
+    "enableInternet": false,
+    "paidModelCallsAllowed": false
+  },
+  "rolloutTargets": {
+    "maxActiveRuns": 1,
+    "maxInstancesPerContainerClass": 1,
+    "sandboxMainProcessLifetimeSeconds": 600,
+    "admissionPauseEstimateUsd": 75,
+    "activeWorkStopEstimateUsd": 90,
+    "budgetAlertThresholdsUsd": [50, 75, 90]
+  },
+  "missingRuntimeControls": [
+    "Live verification of atomic admission, single-run concurrency and bounded cleanup",
+    "Reconciliation/administrative recovery of quarantined owned resources",
+    "Outbound byte limits and bounded artifact/log retention",
+    "Provider token, turn, retry and timeout ceilings in the OpenRouter integration"
+  ]
+}

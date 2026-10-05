@@ -1,5 +1,6 @@
 import { readRepositoryState } from "../src/repository-state";
 import { Agent } from "agents";
+import { LifecycleCapability } from "agents/lifecycle";
 import { ChangeAgent, type PiEnv } from "../src/pi-agents";
 import worker, { RepositoryAgent } from "../src/index";
 import type { State } from "../src/coordinator";
@@ -11,6 +12,24 @@ interface Env {
   CHANGE: DurableObjectNamespace<DeliveryChangeAgent>;
 }
 export class DeliveryRepositoryAgent extends RepositoryAgent {
+  async recordActivation() {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS activations(id INTEGER PRIMARY KEY,calls INTEGER NOT NULL)",
+    );
+    this.ctx.storage.sql.exec(
+      "INSERT INTO activations VALUES(1,1) ON CONFLICT(id) DO UPDATE SET calls=calls+1",
+    );
+  }
+  async activations() {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS activations(id INTEGER PRIMARY KEY,calls INTEGER NOT NULL)",
+    );
+    return (
+      this.ctx.storage.sql
+        .exec<{ calls: number }>("SELECT calls FROM activations WHERE id=1")
+        .toArray()[0]?.calls ?? 0
+    );
+  }
   async persisted(runId: string) {
     const stored = readRepositoryState(this.ctx.storage.sql);
     if (!stored) throw Error("fixture_state_missing");
@@ -22,9 +41,22 @@ export class DeliveryRepositoryAgent extends RepositoryAgent {
     };
   }
 }
+class FixtureActivation extends LifecycleCapability {
+  constructor(private readonly activate: () => Promise<void>) {
+    super("fixture-activation");
+  }
+  async onStart() {
+    await this.activate();
+  }
+}
 export class DeliveryChangeAgent extends Agent<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.lifecycle.use(
+      new FixtureActivation(() =>
+        env.REPOSITORY.get(env.REPOSITORY.idFromName("pitcrew")).recordActivation(),
+      ),
+    );
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS delivery(id INTEGER PRIMARY KEY,input TEXT NOT NULL,result TEXT NOT NULL,effects INTEGER NOT NULL,ack_attempts INTEGER NOT NULL,acknowledged INTEGER NOT NULL,observed_commit INTEGER NOT NULL)",
     );
@@ -87,7 +119,12 @@ export class DeliveryChangeAgent extends Agent<Env> {
       .exec<{ input: string; result: string }>("SELECT input,result FROM delivery WHERE id=1")
       .toArray();
     if (JSON.parse(row.input).runId !== runId) throw Error("context_mismatch");
-    return { stage: "done", result: JSON.parse(row.result) as ExecutionResult };
+    // This fixture runs no container; its synchronous owned work is already complete.
+    return {
+      stage: "done",
+      result: JSON.parse(row.result) as ExecutionResult,
+      cleanupVerified: true,
+    };
   }
   async acknowledge(runId: string) {
     const persisted = await this.env.REPOSITORY.get(
@@ -161,6 +198,11 @@ export class PreflightChangeAgent extends ChangeAgent {
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
+    if (url.pathname === "/fixture/activations") {
+      return Response.json(
+        await env.REPOSITORY.get(env.REPOSITORY.idFromName("pitcrew")).activations(),
+      );
+    }
     if (url.pathname === "/fixture/delivery") {
       const runId = url.searchParams.get("runId");
       const child = env.CHANGE.get(env.CHANGE.idFromName(`change:pitcrew:${runId}`));

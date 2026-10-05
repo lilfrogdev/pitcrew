@@ -38,6 +38,7 @@ async function fixtureOptions() {
     bindings: {
       ENVIRONMENT: "development",
       EXECUTION_MODE: "cloud",
+      INFRASTRUCTURE_ADMISSION_ENABLED: "true",
       FIXTURE_IDENTITY: "lilfrogdev",
       MODEL_CONFIGURATION: '{"provider":"fake"}',
       PROJECT_BASE_SHA: "a".repeat(40),
@@ -52,6 +53,45 @@ async function fixtureOptions() {
     resourcePersistencePath: `/tmp/pitcrew-delivery-${crypto.randomUUID()}`,
   };
 }
+it("denies disabled infrastructure before activating the child lifecycle", async () => {
+  const base = await fixtureOptions();
+  const mf = new Miniflare(
+    convertV4MiniflareOptions({
+      ...base,
+      bindings: { ...base.bindings, INFRASTRUCTURE_ADMISSION_ENABLED: "false" },
+    }),
+  );
+  const post = async (path: string, body: unknown) =>
+    mf.dispatchFetch(`http://localhost/api${path}`, {
+      method: "POST",
+      headers: await localHeaders(mf),
+      body: JSON.stringify(body),
+    });
+  try {
+    const thread = (await (
+      await post("/projects/pitcrew/threads", { title: "Denied", idempotencyKey: "denied-thread" })
+    ).json()) as { id: string };
+    const submission = (await (
+      await post(`/threads/${thread.id}/messages`, {
+        content: "Denied change",
+        idempotencyKey: "denied-message",
+      })
+    ).json()) as SubmitResult;
+    let status: string | undefined;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const evidence = (await (
+        await mf.dispatchFetch(`http://localhost/api/runs/${submission.run.id}/evidence`)
+      ).json()) as RunEvidence;
+      status = evidence.run.status;
+      if (status === "waiting_user") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(status).toBe("waiting_user");
+    expect(await (await mf.dispatchFetch("http://localhost/fixture/activations")).json()).toBe(0);
+  } finally {
+    await mf.dispose();
+  }
+}, 15000);
 it("redelivers a committed RepositoryAgent result after lost child acknowledgement and restart", async () => {
   const options = await fixtureOptions();
   const mf = new Miniflare(convertV4MiniflareOptions(options));

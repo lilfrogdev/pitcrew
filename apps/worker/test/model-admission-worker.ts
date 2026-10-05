@@ -19,6 +19,7 @@ export class ModelReviewFixture extends ReviewAgent {
   }
 }
 interface Env extends PiEnv {
+  TEST_ADMISSION_DEADLINE: string;
   CHANGE: DurableObjectNamespace<ModelChangeFixture>;
   REVIEW: DurableObjectNamespace<ModelReviewFixture>;
 }
@@ -34,7 +35,11 @@ export default {
       },
     );
     const role = new URL(request.url).pathname === "/review" ? "reviewer" : "implementer";
-    const props: TaskAdmission = { runModels: models, role };
+    const props: TaskAdmission = {
+      runModels: models,
+      role,
+      deadline: Number(env.TEST_ADMISSION_DEADLINE),
+    };
     const worker =
       role === "reviewer"
         ? await getAgentByName(env.REVIEW, "selected-review", { props })

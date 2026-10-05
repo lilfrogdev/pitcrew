@@ -1,3 +1,8 @@
+import {
+  RepositoryLifecycle,
+  lifecycleRequest,
+  type LifecycleRecord,
+} from "./repository-lifecycle";
 import { readRepositoryState, writeRepositoryState } from "./repository-state";
 import { sameKnowledgeContext } from "./knowledge";
 import { RepoConversationAgent } from "./repo-conversation-agent";
@@ -18,6 +23,11 @@ import { Agent, getAgentByName } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
 export { ChangeAgent, ReviewAgent };
 import { DurableJobs } from "./durable-jobs";
+import {
+  InfrastructureAdmission,
+  sqliteAdmission,
+  boundedCleanupRpc,
+} from "./infrastructure-admission";
 import { api } from "./api";
 import { Coordinator, fakeExecution, initialState, type State } from "./coordinator";
 interface Env extends PiEnv, AccessEnv {
@@ -31,9 +41,63 @@ interface Env extends PiEnv, AccessEnv {
   FIXTURE_IDENTITY?: string;
   LANDING_MODE?: string;
   EXECUTION_MODE: string;
+  REPOSITORY_LIFECYCLE?: string;
+  INFRASTRUCTURE_ADMISSION_ENABLED?: string;
+  CLOUD_CONVERSATION_ENABLED?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
+  private repositoryLifecycle?: RepositoryLifecycle;
+  private getRepositoryLifecycle() {
+    if (
+      this.env.REPOSITORY_LIFECYCLE !== "enabled" ||
+      !this.env.ARTIFACTS ||
+      this.env.ENVIRONMENT !== "production"
+    )
+      return;
+    if (!this.repositoryLifecycle) {
+      const sql = this.ctx.storage.sql;
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS repository_lifecycle(name TEXT PRIMARY KEY,value TEXT NOT NULL)",
+      );
+      this.repositoryLifecycle = new RepositoryLifecycle(
+        this.env.ARTIFACTS,
+        {
+          get: (name) => {
+            const row = [
+              ...sql.exec<{ value: string }>(
+                "SELECT value FROM repository_lifecycle WHERE name=?",
+                name,
+              ),
+            ][0];
+            return row ? (JSON.parse(row.value) as LifecycleRecord) : undefined;
+          },
+          list: () =>
+            [
+              ...sql.exec<{ value: string }>("SELECT value FROM repository_lifecycle LIMIT 200"),
+            ].map((row) => JSON.parse(row.value) as LifecycleRecord),
+          put: (record) => {
+            sql.exec(
+              "INSERT OR REPLACE INTO repository_lifecycle VALUES(?,?)",
+              record.name,
+              JSON.stringify(record),
+            );
+          },
+        },
+        (name) =>
+          name === this.env.ARTIFACT_REPOSITORY || name === "pitcrew" || name === "pitcrew-test",
+      );
+    }
+    return this.repositoryLifecycle;
+  }
+  private conversationsEnabled() {
+    return (
+      this.env.EXECUTION_MODE === "fake" ||
+      (this.env.EXECUTION_MODE === "cloud" &&
+        this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
+        this.env.CLOUD_CONVERSATION_ENABLED === "true")
+    );
+  }
   private landingStore?: SqliteLandingStore;
   private getLandingStore() {
     return (this.landingStore ??= new SqliteLandingStore(this.ctx.storage));
@@ -122,8 +186,50 @@ export class RepositoryAgent extends Agent<Env> {
     return this.getImages().get(reference);
   }
   private readonly jobs: DurableJobs;
+  private readonly budgetJobs: DurableJobs;
+  private admission?: InfrastructureAdmission;
+  private getAdmission() {
+    if (this.admission) return this.admission;
+    return (this.admission = sqliteAdmission(this.ctx.storage));
+  }
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.budgetJobs = new DurableJobs(
+      "infrastructure-cleanup",
+      async (jobs) => {
+        if (this.getAdmission().monitored().length) await jobs.enqueue("watchdog", {});
+      },
+      async () => {
+        const gate = this.getAdmission();
+        for (const reservation of gate.monitored()) {
+          if (
+            !gate.stopRequired(
+              reservation.runId,
+              this.env.EXECUTION_MODE === "cloud" &&
+                this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true",
+            )
+          )
+            continue;
+          if (!gate.beginCleanupAttempt(reservation.runId)) continue;
+          // The singleton coordinator derives worker identity; no client controls the target.
+          const core = this.getCoordinator();
+          const run = core.state.runs.find((item) => item.id === reservation.runId);
+          if (!run) continue; // Uncertain ownership retains its slot for reconciliation.
+          const worker = this.env.CHANGE.get(
+            this.env.CHANGE.idFromName(`change:${core.state.project.id}:${run.id}`),
+          );
+          try {
+            await boundedCleanupRpc(worker.stop(run.id));
+            const receipt = await boundedCleanupRpc(worker.result(run.id));
+            if (receipt.cleanupVerified) gate.release(run.id, true);
+          } catch {
+            /* Durable slot and cleanup job remain; never release on transport failure. */
+          }
+        }
+        return gate.monitored().length ? { rescheduleAt: Date.now() + 5000 } : undefined;
+      },
+    );
+    this.lifecycle.use(this.budgetJobs);
     this.jobs = new DurableJobs(
       "repository-results",
       async (jobs) => {
@@ -152,15 +258,63 @@ export class RepositoryAgent extends Agent<Env> {
           return;
         }
         try {
-          const worker = await getAgentByName(
-            this.env.CHANGE,
-            `change:${input.projectId}:${input.runId}`,
-            { props: { runModels: input.runModels, role: "implementer" } },
-          );
-          const admission = await worker.start({
-            ...input,
-            repository: this.env.ARTIFACT_REPOSITORY,
-          });
+          const request = { ...input, repository: this.env.ARTIFACT_REPOSITORY };
+          const fingerprint = Array.from(
+            new Uint8Array(
+              await crypto.subtle.digest(
+                "SHA-256",
+                new TextEncoder().encode(JSON.stringify(request)),
+              ),
+            ),
+            (byte) => byte.toString(16).padStart(2, "0"),
+          ).join("");
+          const gate = this.getAdmission();
+          if (gate.active().some((item) => item.runId === runId && item.state === "quarantined")) {
+            core.fail(runId, true);
+            return;
+          }
+          let admitted: ReturnType<InfrastructureAdmission["reserve"]>;
+          try {
+            admitted = gate.reserve(
+              runId,
+              fingerprint,
+              this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true",
+            );
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              ["admission_identity_conflict", "invalid_admission_identity"].includes(error.message)
+            ) {
+              core.fail(runId, true);
+              return;
+            }
+            throw error;
+          }
+          if (!admitted.allowed && admitted.reason === "busy")
+            return { rescheduleAt: Date.now() + 5000 };
+          if (
+            !admitted.allowed &&
+            !["stop_required", "already_finished"].includes(admitted.reason)
+          ) {
+            core.fail(runId, true);
+            return;
+          }
+          await this.budgetJobs.enqueue("watchdog", {}, Date.now() + 5000);
+          // getAgentByName activates lifecycle capabilities, including the harness.
+          // Reserve first. Only synchronous control/observation RPCs may be used on denial.
+          const worker = admitted.allowed
+            ? await getAgentByName(this.env.CHANGE, `change:${input.projectId}:${input.runId}`, {
+                props: {
+                  runModels: input.runModels,
+                  role: "implementer",
+                  deadline: admitted.reservation.deadline,
+                },
+              })
+            : this.env.CHANGE.get(
+                this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
+              );
+          // Dedicated cleanup job owns bounded stop retries; the result job only observes.
+          const admission = admitted.allowed ? await worker.start(request) : { stage: "existing" };
           if (
             admission.stage === "blocked" &&
             "error" in admission &&
@@ -173,9 +327,12 @@ export class RepositoryAgent extends Agent<Env> {
           if (receipt.stage === "done" && receipt.result) {
             await core.completeVerified(runId, receipt.result);
             await worker.acknowledge(runId);
+            if (receipt.cleanupVerified) gate.release(runId, true);
             return;
           }
           if (receipt.stage === "blocked") {
+            if (!receipt.cleanupVerified) return { rescheduleAt: Date.now() + 5000 };
+            gate.release(runId, true);
             core.fail(runId, receipt.error === "reconciliation_required");
             return;
           }
@@ -200,7 +357,7 @@ export class RepositoryAgent extends Agent<Env> {
         const core = this.getCoordinator();
         const turn = core.conversationTurn(id);
         if (["completed", "failed"].includes(turn.status)) return;
-        if (!["cloud", "fake"].includes(this.env.EXECUTION_MODE)) {
+        if (!this.conversationsEnabled()) {
           core.completeConversation(id, undefined, "execution_unavailable");
           return;
         }
@@ -287,6 +444,10 @@ export class RepositoryAgent extends Agent<Env> {
   async onRequest(request: Request) {
     if (!(await principal(request, this.env)))
       return Response.json({ error: "access_not_configured" }, { status: 403 });
+    if (/^\/api\/repositories(?:\/|$)/.test(new URL(request.url).pathname))
+      return lifecycleRequest(request, this.getRepositoryLifecycle(), (task) =>
+        this.ctx.waitUntil(task),
+      );
     const bodyLimit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
       ? ATTACHMENT_LIMITS.requestBytes
       : 16384;
@@ -299,7 +460,7 @@ export class RepositoryAgent extends Agent<Env> {
       this.landing(coordinator),
       (await principal(request, this.env))!,
       this.env.CONVERSATION &&
-        ["fake", "cloud"].includes(this.env.EXECUTION_MODE) &&
+        this.conversationsEnabled() &&
         (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
         ? {
             catalog: resolveCatalog(this.env),
