@@ -1,6 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, httpApi } from "./api";
 afterEach(() => vi.unstubAllGlobals());
+it("uses a separate secure connection session and returns public status only", async () => {
+  const fetch = vi.fn(async (path: string) =>
+    path.endsWith("/session")
+      ? Response.json({ nonce: "a".repeat(64) })
+      : Response.json({
+          available: true,
+          configured: true,
+          executionEnabled: false,
+          key: "never-returned",
+        }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect(await httpApi.openrouter!.store("synthetic-not-a-credential")).toEqual({
+    available: true,
+    configured: true,
+    executionEnabled: false,
+  });
+  expect(fetch.mock.calls[0][0]).toBe("/api/provider-connection/openrouter/session");
+  const init = (fetch.mock.calls as unknown as [string, RequestInit][])[1][1];
+  expect(init.headers).toEqual({
+    "Content-Type": "application/json",
+    "X-Pitcrew-Connection-Nonce": "a".repeat(64),
+  });
+  expect(init.body).toBe(JSON.stringify({ action: "store", key: "synthetic-not-a-credential" }));
+  expect(init.cache).toBe("no-store");
+});
 function withSession(fetch: (path: string, init?: RequestInit) => Promise<Response>) {
   vi.stubGlobal("fetch", (path: string, init?: RequestInit) =>
     path === "/api/local-session"

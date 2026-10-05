@@ -12,6 +12,8 @@ export interface ModelPickerProps {
 }
 
 function preferredEffort(model: ModelChoice): ModelSelection["effort"] | undefined {
+  if (model.defaultEffort && model.efforts.includes(model.defaultEffort))
+    return model.defaultEffort;
   return model.efforts.includes("medium") ? "medium" : model.efforts[0];
 }
 

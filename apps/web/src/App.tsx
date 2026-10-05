@@ -15,6 +15,7 @@ import {
   type ModelSelection,
 } from "@pitcrew/protocol";
 import { ModelPicker } from "./ModelPicker";
+import { OpenRouterConnection } from "./OpenRouterConnection";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -665,6 +666,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           <p className="sr-only" role="status">
             {announcement}
           </p>
+          {api.openrouter && <OpenRouterConnection api={api.openrouter} />}
         </main>
         {!workspaceCollapsed && (
           <WorkspaceResize width={workspaceWidth} onWidth={setWorkspaceWidth} />
