@@ -36,6 +36,8 @@ it("native worker/reviewer DO startup and restart honor admitted alternate model
     bindings: {
       ENVIRONMENT: "development",
       EXECUTION_MODE: "cloud",
+      INFRASTRUCTURE_ADMISSION_ENABLED: "true",
+      TEST_ADMISSION_DEADLINE: String(Date.now() + 120000),
       MODEL_CONFIGURATION: '{"provider":"fake"}',
       MODELS_CONFIGURATION:
         '[{"id":"alternate","configuration":{"provider":"byok","providerId":"openai","model":"gpt-6-sol","secretBinding":"SYNTHETIC_KEY"}}]',

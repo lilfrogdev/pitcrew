@@ -301,10 +301,14 @@ export class RepositoryAgent extends Agent<Env> {
           }
           await this.budgetJobs.enqueue("watchdog", {}, Date.now() + 5000);
           // getAgentByName activates lifecycle capabilities, including the harness.
-          // Reserve first; denied/reconciliation work only observes its existing stub.
+          // Reserve first. Only synchronous control/observation RPCs may be used on denial.
           const worker = admitted.allowed
             ? await getAgentByName(this.env.CHANGE, `change:${input.projectId}:${input.runId}`, {
-                props: { runModels: input.runModels, role: "implementer" },
+                props: {
+                  runModels: input.runModels,
+                  role: "implementer",
+                  deadline: admitted.reservation.deadline,
+                },
               })
             : this.env.CHANGE.get(
                 this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
