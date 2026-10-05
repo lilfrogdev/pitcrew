@@ -26,8 +26,6 @@ export function attachmentError(error: unknown): string {
     return "Use a static PNG, JPEG or WebP image with valid bytes, at most 4096 pixels per edge. Animated images are not supported.";
   return "Use a supported UTF-8 text/source file or static PNG/JPEG/WebP image. Invalid binary data, PDFs and control characters are not supported.";
 }
-const extensions = [...ATTACHMENT_LIMITS.extensions, ".png", ".jpg", ".jpeg", ".webp"].join(",");
-
 export function Composer({
   draft,
   onDraft,
@@ -61,7 +59,12 @@ export function Composer({
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [dragging, setDragging] = useState(false);
   const dictation = useDictation(draft, onDraft, dictationEnabled && !disabled, sessionKey);
-  const support = `4 files · UTF-8 text/source: 64 KiB each, ${Math.floor((capabilities?.textTotalBytes ?? ATTACHMENT_LIMITS.totalBytes) / 1024)} KiB total. Static PNG/JPEG/WebP: ${Math.floor((capabilities?.imageFileBytes ?? ATTACHMENT_LIMITS.imageFileBytes) / 1024)} KiB each, ${Math.floor((capabilities?.imageTotalBytes ?? ATTACHMENT_LIMITS.imageTotalBytes) / 1024)} KiB total, 4096 pixels per edge. PDFs and other binary files are not supported.`;
+  const imagesSupported = capabilities?.images === true;
+  const extensions = [
+    ...ATTACHMENT_LIMITS.extensions,
+    ...(imagesSupported ? [".png", ".jpg", ".jpeg", ".webp"] : []),
+  ].join(",");
+  const support = `4 files · UTF-8 text/source: 64 KiB each, ${Math.floor((capabilities?.textTotalBytes ?? ATTACHMENT_LIMITS.totalBytes) / 1024)} KiB total. ${imagesSupported ? `Static PNG/JPEG/WebP: ${Math.floor(capabilities.imageFileBytes / 1024)} KiB each, ${Math.floor(capabilities.imageTotalBytes / 1024)} KiB total, 4096 pixels per edge.` : "Images are unavailable for this connection."} PDFs and other binary files are not supported.`;
   useEffect(() => {
     if (textarea.current) {
       textarea.current.style.height = "auto";

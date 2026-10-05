@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { App } from "./App";
 import { createFixtureApi } from "./fixtures";
+import type { LandingCapabilities } from "./api";
 
 afterEach(() => {
   cleanup();
@@ -156,4 +157,78 @@ it("does not leak a delayed model preference failure into another thread", async
   });
   expect(screen.queryByText(/Model preference was not saved/)).toBeNull();
   expect(screen.queryByText(/delayed preference failure/)).toBeNull();
+});
+
+it.each(["missing", "failed", "no-conversation"] as const)(
+  "keeps %s composer capabilities text-only and blocks dropped images before submission",
+  async (mode) => {
+    const api = createFixtureApi();
+    const capabilities = await api.capabilities();
+    api.capabilities = vi.fn(async () => {
+      if (mode === "failed") throw new Error("Capabilities unavailable");
+      return {
+        ...capabilities,
+        composer:
+          mode === "missing" ? undefined : { ...capabilities.composer!, conversation: false },
+      };
+    });
+    api.send = vi.fn(api.send);
+    render(<App api={api} demo />);
+    await screen.findByText("Show the work behind a change, from delegation to review.");
+    const input = screen.getByLabelText("Choose attachments");
+    expect(input.getAttribute("accept")).toContain(".md");
+    expect(input.getAttribute("accept")).not.toContain(".png");
+    expect(screen.getByRole("button", { name: "Attach files" }).title).toContain(
+      "Images are unavailable",
+    );
+    fireEvent.change(screen.getByLabelText("Message your crew"), {
+      target: { value: "Preserve this draft" },
+    });
+    const data =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    const image = new File(
+      [Uint8Array.from(atob(data), (char) => char.charCodeAt(0))],
+      "drop.png",
+      {
+        type: "image/png",
+      },
+    );
+    fireEvent.drop(screen.getByLabelText("Message your crew").closest("form")!, {
+      dataTransfer: { files: [image] },
+    });
+    await screen.findByText(/Images are not supported by all selected agents/);
+    expect(screen.getByRole("button", { name: "Send message" }).hasAttribute("disabled")).toBe(
+      true,
+    );
+    fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
+    expect(api.send).not.toHaveBeenCalled();
+    expect((screen.getByLabelText("Message your crew") as HTMLTextAreaElement).value).toBe(
+      "Preserve this draft",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove drop.png" }));
+    const user = userEvent.setup();
+    await user.upload(input, new File(["Text reference"], "reference.md", { type: "text/plain" }));
+    await waitFor(() =>
+      expect(screen.getByText("Text reference").textContent).toBe("Text reference"),
+    );
+    fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
+    await waitFor(() => expect(api.send).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.send).mock.calls[0][3]?.[0]).toMatchObject({
+      mediaType: "text/plain",
+      text: "Text reference",
+    });
+  },
+);
+
+it("offers images only after conversation capabilities are confirmed", async () => {
+  const api = createFixtureApi();
+  const capabilities = await api.capabilities();
+  let resolve!: (capabilities: LandingCapabilities) => void;
+  api.capabilities = vi.fn(() => new Promise<LandingCapabilities>((ready) => (resolve = ready)));
+  render(<App api={api} demo />);
+  await screen.findByText("Show the work behind a change, from delegation to review.");
+  expect(screen.getByLabelText("Choose attachments").getAttribute("accept")).not.toContain(".png");
+  await act(async () => resolve(capabilities));
+  expect(screen.getByLabelText("Choose attachments").getAttribute("accept")).toContain(".png");
+  expect(screen.getByRole("button", { name: "Attach files" }).title).toContain("Static PNG/JPEG");
 });

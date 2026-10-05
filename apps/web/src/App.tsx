@@ -11,6 +11,7 @@ import { Composer, readAttachment, attachmentError, type AttachmentDraft } from 
 import {
   validateMessageAttachments,
   selectionAttachmentCapabilities,
+  TEXT_ATTACHMENT_CAPABILITIES,
   type SubmittedAttachment,
   type ModelSelection,
 } from "@pitcrew/protocol";
@@ -226,13 +227,13 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         (model) => model.id === selection.modelId && model.efforts.includes(selection.effort),
       ));
   const attachmentCapabilities =
-    composerCapabilities && selection
+    composerCapabilities?.conversation && selection
       ? selectionAttachmentCapabilities(composerCapabilities.models, {
           repoAgent: selection,
           implementer: composerCapabilities.settings.roles?.implementer ?? selection,
           reviewer: composerCapabilities.settings.roles?.reviewer ?? selection,
         })
-      : composerCapabilities?.attachments;
+      : TEXT_ATTACHMENT_CAPABILITIES;
   let attachmentCompatibilityError = "";
   try {
     validateMessageAttachments(
