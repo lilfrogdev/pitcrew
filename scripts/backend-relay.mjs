@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { normalizePublicRepositoryImportUrl } from "../packages/protocol/src/repository-import-url.mjs";
 
 const workerRequire = createRequire(new URL("../apps/worker/package.json", import.meta.url));
 const { createRemoteJWKSet, jwtVerify } = await import(workerRequire.resolve("jose"));
@@ -184,7 +185,7 @@ async function body(req) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw Error();
   return parsed;
 }
-function validMutation(path, value) {
+function normalizeMutation(path, value) {
   const action = path.slice(path.lastIndexOf("/") + 1);
   const allowed =
     action === "import"
@@ -202,12 +203,13 @@ function validMutation(path, value) {
     return false;
   if (action === "create" || action === "import") {
     if (value.credentialConsent !== true) return false;
-    if (
-      action === "import" &&
-      (typeof value.url !== "string" ||
-        !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/?$/.test(value.url))
-    )
-      return false;
+    if (action === "import") {
+      try {
+        value.url = normalizePublicRepositoryImportUrl(value.url);
+      } catch {
+        return false;
+      }
+    }
   }
   return action !== "delete" || value.confirmation === value.name;
 }
@@ -400,7 +402,7 @@ export function createBackendRelayMiddleware({
         return reply(res, 403, { error: "backend_session_required" });
       try {
         content = await body(req);
-        if (!validMutation(url.pathname, content)) throw Error();
+        if (!normalizeMutation(url.pathname, content)) throw Error();
       } catch (error) {
         return reply(res, error.status ?? 400, { error: "invalid_repository_request" });
       }

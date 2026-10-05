@@ -83,3 +83,64 @@ it("never automatically retries repository mutations after Access or admission r
     fetcher.mock.calls.filter(([path]) => path === "/api/threads/thread/messages"),
   ).toHaveLength(2);
 });
+it("normalizes equivalent public GitHub import forms before requesting the backend session", async () => {
+  const fetcher = vi.fn(async (path: string, _init?: RequestInit) =>
+    path === "/api/backend-session"
+      ? Response.json({ nonce: "a".repeat(64) })
+      : Response.json({ name: "sandbox", status: "ready" }),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  for (const [url, canonical] of [
+    ["https://github.com/example/repo", "https://github.com/example/repo"],
+    ["https://github.com/example/repo/", "https://github.com/example/repo"],
+    ["https://github.com/example/repo.git/", "https://github.com/example/repo.git"],
+    ["HTTPS://GITHUB.COM:443/Example/repo.name/", "https://github.com/Example/repo.name"],
+  ]) {
+    fetcher.mockClear();
+    await createRepositoryApi().provision({
+      name: "sandbox",
+      operation: "import",
+      url,
+      credentialConsent: true,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0][0]).toBe("/api/backend-session");
+    const [path, init] = fetcher.mock.calls[1];
+    expect(path).toBe("/api/repositories/import");
+    expect(JSON.parse(init!.body as string)).toEqual({
+      name: "sandbox",
+      url: canonical,
+      credentialConsent: true,
+    });
+  }
+});
+it("rejects unsafe or ambiguous import URLs locally without session or mutation requests", async () => {
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
+  for (const url of [
+    "http://github.com/a/b",
+    "https://user:password@github.com/a/b",
+    "https://github.com/a/b?token=synthetic",
+    "https://github.com/a/b#fragment",
+    "https://github.com/a/b/issues",
+    "https://github.com/a/b//",
+    "https://github.com/owner.name/repo",
+    "https://github.com/a/../owner/repo",
+    "https://github.com/a/%62",
+    "https://github.com:444/a/b",
+    "https://github.com.evil.example/a/b",
+    "https://github.com/a/b\n",
+    "https://github.com/a\\b",
+    "not a URL",
+    undefined,
+  ])
+    await expect(
+      createRepositoryApi().provision({
+        name: "sandbox",
+        operation: "import",
+        url,
+        credentialConsent: true,
+      }),
+    ).rejects.toThrow("Enter a public GitHub repository HTTPS URL");
+  expect(fetcher).not.toHaveBeenCalled();
+});

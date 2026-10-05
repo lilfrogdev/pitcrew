@@ -1,3 +1,5 @@
+import { normalizePublicRepositoryImportUrl } from "../../../packages/protocol/src/repository-import-url.mjs";
+
 export type RepositoryEntry = {
   name: string;
   lifecycle: "external" | "pending" | "cleanup_required" | "ready" | "deleting" | "deleted";
@@ -67,7 +69,16 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
 export function createRepositoryApi(): RepositoryApi {
   return {
     list: (cursor) => request(cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
-    provision: ({ operation, ...input }) => request(`/${operation}`, input),
+    provision: async ({ operation, ...input }) => {
+      if (operation === "import") {
+        try {
+          input.url = normalizePublicRepositoryImportUrl(input.url);
+        } catch {
+          throw Error(repositoryIssues.invalid_public_url);
+        }
+      }
+      return request(`/${operation}`, input);
+    },
     reconcile: (name) => request("/reconcile", { name }),
     remove: (name, confirmation) => request("/delete", { name, confirmation }),
   };

@@ -193,6 +193,78 @@ test("unsafe import URLs and unconfirmed deletes never reach the backend", async
   );
   assert.equal(f.calls.length + f.tokens.length, 0);
 });
+test("equivalent GitHub import forms are forwarded once with a canonical source", async () => {
+  for (const [url, canonical] of [
+    ["https://github.com/example/repo", "https://github.com/example/repo"],
+    ["https://github.com/example/repo/", "https://github.com/example/repo"],
+    ["https://github.com/example/repo.git/", "https://github.com/example/repo.git"],
+    ["HTTPS://GITHUB.COM:443/Example/repo.name/", "https://github.com/Example/repo.name"],
+  ]) {
+    const forwarded = [];
+    const f = fixture({
+      fetchImpl: async (target, init) => {
+        if (target.endsWith("/api/local-session"))
+          return new Response(null, {
+            status: 302,
+            headers: { location: `${BACKEND_ACCESS.issuer}/cdn-cgi/access/login/backend` },
+          });
+        forwarded.push({ target, init });
+        return Response.json({ name: "test", status: "ready" });
+      },
+    });
+    const headers = await session(f.handler);
+    const response = await request(f.handler, "/api/repositories/import", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "test", credentialConsent: true, url }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(forwarded.length, 1);
+    assert.equal(forwarded[0].target, `${BACKEND_ACCESS.origin}/api/repositories/import`);
+    assert.deepEqual(JSON.parse(forwarded[0].init.body), {
+      name: "test",
+      credentialConsent: true,
+      url: canonical,
+    });
+  }
+});
+test("unsafe or ambiguous GitHub URL syntax never reads a token or reaches the backend", async () => {
+  const f = fixture(),
+    headers = await session(f.handler);
+  for (const url of [
+    "https://github.com/owner.name/repo",
+    "https://github.com/a/b//",
+    "https://github.com/a/../owner/repo",
+    "https://github.com/a/%2e%2e/owner/repo",
+    "https://github.com/a/%62",
+    "https://github.com/a/.",
+    "https://github.com/a/..",
+    "https://github.com:444/a/b",
+    "https://github.com./a/b",
+    "https://github.com.evil.example/a/b",
+    "https://github.com/a/b?",
+    "https://github.com/a/b#",
+    "https://github.com/a/b\n",
+    " https://github.com/a/b",
+    "https://github.com/a\\b",
+    "https://user@github.com/a/b",
+    "//github.com/a/b",
+    "https://github.com/a/" + "b".repeat(512),
+    "not a URL",
+    null,
+  ])
+    assert.equal(
+      (
+        await request(f.handler, "/api/repositories/import", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ name: "test", credentialConsent: true, url }),
+        })
+      ).status,
+      400,
+    );
+  assert.equal(f.calls.length + f.tokens.length, 0);
+});
 test("only bounded single cursor and allowlisted operations are accepted", async () => {
   const f = fixture();
   for (const path of [

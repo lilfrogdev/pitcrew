@@ -105,6 +105,61 @@ it("imports a public default branch at depth1 and read-only", async () => {
     target: { name: "sandbox", opts: { readOnly: true } },
   });
 });
+it("normalizes equivalent GitHub import forms before the binding and persisted identity", async () => {
+  for (const [url, canonical] of [
+    ["https://github.com/example/repo", "https://github.com/example/repo"],
+    ["https://github.com/example/repo/", "https://github.com/example/repo"],
+    ["https://github.com/example/repo.git/", "https://github.com/example/repo.git"],
+    ["HTTPS://GITHUB.COM:443/Example/repo.name/", "https://github.com/Example/repo.name"],
+  ]) {
+    const f = fixture();
+    expect(
+      (await f.request("import", { name: "sandbox", credentialConsent: true, url })).status,
+    ).toBe(200);
+    expect(
+      (await f.request("import", { name: "sandbox", credentialConsent: true, url: canonical }))
+        .status,
+    ).toBe(200);
+    expect(f.binding.import).toHaveBeenCalledExactlyOnceWith({
+      source: { url: canonical, depth: 1 },
+      target: { name: "sandbox", opts: { readOnly: true } },
+    });
+    expect(f.records.get("sandbox")?.source).toBe(canonical);
+  }
+});
+it("rejects unsafe or ambiguous import syntax without records, credentials or resource effects", async () => {
+  const f = fixture();
+  for (const url of [
+    "https://github.com/owner.name/repo",
+    "https://github.com/a/b//",
+    "https://github.com/a/../owner/repo",
+    "https://github.com/a/%2e%2e/owner/repo",
+    "https://github.com/a/%62",
+    "https://github.com/a/.",
+    "https://github.com/a/..",
+    "https://github.com:444/a/b",
+    "https://github.com./a/b",
+    "https://github.com.evil.example/a/b",
+    "https://github.com/a/b?",
+    "https://github.com/a/b#",
+    "https://github.com/a/b\n",
+    " https://github.com/a/b",
+    "https://github.com/a\\b",
+    "https://user@github.com/a/b",
+    "//github.com/a/b",
+    "https://github.com/a/" + "b".repeat(512),
+    "not a URL",
+    null,
+  ]) {
+    expect(() => publicImportUrl(url)).toThrow("invalid_public_url");
+    const response = await f.request("import", { name: "sandbox", credentialConsent: true, url });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_public_url" });
+  }
+  expect(f.records.size).toBe(0);
+  expect(f.binding.import).not.toHaveBeenCalled();
+  expect(f.repo.revokeToken).not.toHaveBeenCalled();
+});
 it("serializes repeated creation and never replaces an existing or deleted name", async () => {
   const f = fixture();
   await Promise.all([
