@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ATTACHMENT_LIMITS,
   validateMessageAttachments,
@@ -6,6 +6,7 @@ import {
   type AttachmentCapabilities,
 } from "@pitcrew/protocol";
 import { Icon } from "./icons";
+import { useDictation } from "./useDictation";
 
 export interface AttachmentDraft {
   id: string;
@@ -37,10 +38,10 @@ export function Composer({
   disabled,
   sending,
   canSend,
-  active,
   capabilities,
   modelControls,
-  conversation = false,
+  sessionKey = "composer",
+  dictationEnabled = true,
 }: {
   draft: string;
   onDraft: (text: string) => void;
@@ -51,17 +52,15 @@ export function Composer({
   disabled: boolean;
   sending: boolean;
   canSend: boolean;
-  active: boolean;
   capabilities?: AttachmentCapabilities;
   modelControls?: React.ReactNode;
-  conversation?: boolean;
+  sessionKey?: string;
+  dictationEnabled?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [showLimits, setShowLimits] = useState(false);
-  const hint = useId();
-  const modelInfo = useId();
+  const dictation = useDictation(draft, onDraft, dictationEnabled && !disabled, sessionKey);
   const support = `4 files · UTF-8 text/source: 64 KiB each, ${Math.floor((capabilities?.textTotalBytes ?? ATTACHMENT_LIMITS.totalBytes) / 1024)} KiB total. Static PNG/JPEG/WebP: ${Math.floor((capabilities?.imageFileBytes ?? ATTACHMENT_LIMITS.imageFileBytes) / 1024)} KiB each, ${Math.floor((capabilities?.imageTotalBytes ?? ATTACHMENT_LIMITS.imageTotalBytes) / 1024)} KiB total, 4096 pixels per edge. PDFs and other binary files are not supported.`;
   useEffect(() => {
     if (textarea.current) {
@@ -72,7 +71,10 @@ export function Composer({
   return (
     <form
       className={`composer${dragging ? " composer-dragging" : ""}`}
-      onSubmit={onSend}
+      onSubmit={(event) => {
+        if (dictation.active) event.preventDefault();
+        else onSend(event);
+      }}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes("Files")) {
           event.preventDefault();
@@ -88,6 +90,42 @@ export function Composer({
         if (!disabled) onFiles(Array.from(event.dataTransfer.files));
       }}
     >
+      {attachments.length > 0 && (
+        <ul className="attachment-previews" aria-label="Attached files">
+          {attachments.map((item) => (
+            <li key={item.id} className={`attachment-preview ${item.status}`} title={item.name}>
+              <button
+                type="button"
+                className="attachment-remove"
+                aria-label={`Remove ${item.name}`}
+                disabled={disabled}
+                onClick={() => onRemove(item.id)}
+              >
+                <Icon kind="close" />
+              </button>
+              {item.status === "reading" ? (
+                <span role="status">Reading…</span>
+              ) : item.status === "error" ? (
+                <span role="alert">{item.error}</span>
+              ) : item.attachment!.mediaType === "text/plain" ? (
+                <details className="attachment-text">
+                  <summary title={item.name}>
+                    <Icon kind="file" />
+                    <span>{item.name}</span>
+                  </summary>
+                  <pre>{item.attachment!.text}</pre>
+                </details>
+              ) : (
+                <img
+                  className="attachment-image"
+                  alt={`Preview of ${item.name}`}
+                  src={`data:${item.attachment!.mediaType};base64,${item.attachment!.data}`}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       <label className="sr-only" htmlFor="message">
         Message your crew
       </label>
@@ -98,7 +136,6 @@ export function Composer({
         rows={2}
         value={draft}
         disabled={disabled}
-        aria-describedby={hint}
         onChange={(event) => onDraft(event.target.value)}
         onPaste={(event) => {
           if (event.clipboardData.files.length) {
@@ -114,48 +151,10 @@ export function Composer({
             event.keyCode !== 229
           ) {
             event.preventDefault();
-            if (canSend) event.currentTarget.form?.requestSubmit();
+            if (canSend && !dictation.active) event.currentTarget.form?.requestSubmit();
           }
         }}
       />
-      {attachments.length > 0 && (
-        <ul className="attachment-previews" aria-label="Attached files">
-          {attachments.map((item) => (
-            <li key={item.id} className={`attachment-preview ${item.status}`}>
-              <div className="attachment-heading">
-                <Icon kind="file" />
-                <strong>{item.name}</strong>
-                <button
-                  type="button"
-                  aria-label={`Remove ${item.name}`}
-                  disabled={disabled}
-                  onClick={() => onRemove(item.id)}
-                >
-                  <Icon kind="close" />
-                </button>
-              </div>
-              {item.status === "reading" ? (
-                <span role="status">Reading file…</span>
-              ) : item.status === "error" ? (
-                <span role="alert">{item.error}</span>
-              ) : item.attachment!.mediaType === "text/plain" ? (
-                <details>
-                  <summary>
-                    {new TextEncoder().encode(item.attachment!.text).byteLength} bytes · Preview
-                  </summary>
-                  <pre>{item.attachment!.text}</pre>
-                </details>
-              ) : (
-                <img
-                  className="attachment-image"
-                  alt={`Preview of ${item.name}`}
-                  src={`data:${item.attachment!.mediaType};base64,${item.attachment!.data}`}
-                />
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
       {draft.length > 8000 && (
         <p role="alert" className="composer-error">
           The prompt exceeds 8,000 characters. Shorten it before sending; nothing has been
@@ -183,60 +182,63 @@ export function Composer({
           title={support}
           aria-label="Attach files"
           disabled={disabled}
-          onClick={() => {
-            setShowLimits(true);
-            input.current?.click();
-          }}
+          onClick={() => input.current?.click()}
         >
           <Icon kind="plus" />
         </button>
-        <button
-          type="button"
-          className="composer-limits"
-          aria-expanded={showLimits}
-          onClick={() => setShowLimits(!showLimits)}
-        >
-          Attachments
-        </button>
         <div className="composer-actions">
-          {modelControls ?? (
-            <details className="composer-model">
-              <summary aria-describedby={modelInfo}>Model unavailable</summary>
-              <p id={modelInfo}>
-                The repository coordinator has no conversational model yet. Workers use deployment
-                configuration. Model and effort selection will become available when the runtime can
-                honor them.
-              </p>
-            </details>
-          )}
+          {modelControls}
+          <button
+            type="button"
+            className={`composer-mic${dictation.active ? " recording" : ""}`}
+            aria-label={dictation.active ? "Stop dictation" : "Dictate message"}
+            aria-pressed={dictation.active}
+            title={
+              dictation.supported
+                ? dictation.active
+                  ? "Stop dictation"
+                  : "Dictate message"
+                : "On-device dictation unavailable in this browser"
+            }
+            disabled={disabled || !dictationEnabled}
+            onClick={() => void dictation.toggle()}
+          >
+            <Icon kind={dictation.active ? "stopped" : "microphone"} />
+          </button>
           <button
             type="submit"
             className="composer-send"
             aria-label={sending ? "Sending message" : "Send message"}
-            title={conversation ? "Queue repository agent reply" : "Queue a new change"}
-            disabled={!canSend}
+            title="Send message"
+            disabled={!canSend || dictation.active}
           >
             <Icon kind={sending ? "working" : "send"} />
           </button>
         </div>
       </div>
-      <p id={hint} className="composer-hint">
-        {conversation
-          ? "Send queues a repository agent reply; it does not steer active workers. "
-          : active
-            ? "Send creates a separate change; it does not steer active workers. "
-            : "Send queues a new change. "}
-        Enter to send · Shift+Enter for a new line.
-      </p>
-      {showLimits && (
-        <p className="composer-support">
-          {support}{" "}
-          {capabilities && !capabilities.images
-            ? (capabilities.reason ?? "Images are unavailable for selected agents.")
-            : ""}{" "}
-          Content is shared with configured agents on send. Never attach secrets. No files are
-          uploaded until you send.
+      {dictation.phase !== "idle" && (
+        <span className="sr-only" role="status">
+          {dictation.phase === "installing"
+            ? "Downloading dictation language"
+            : dictation.phase === "checking"
+              ? "Checking on-device dictation"
+              : "Listening"}
+        </span>
+      )}
+      {dictation.error && (
+        <p className="dictation-error" role="alert">
+          {dictation.error}
         </p>
+      )}
+      {dictation.downloadable && (
+        <button
+          type="button"
+          className="dictation-download"
+          disabled={dictation.active}
+          onClick={() => void dictation.install()}
+        >
+          Download dictation language
+        </button>
       )}
     </form>
   );

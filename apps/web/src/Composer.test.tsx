@@ -43,7 +43,7 @@ it("preserves removable attachment previews across threads and sends exact text"
     type: "text/plain",
   });
   await user.upload(screen.getByLabelText("Choose attachments"), file);
-  await screen.findByText(/bytes · Preview/);
+  await screen.findByRole("button", { name: "Remove design.md" });
   await user.click(screen.getByRole("button", { name: "Recover interrupted work" }));
   await screen.findByText(/Worker execution stopped/);
   expect(screen.queryByRole("button", { name: "Remove design.md" })).toBeNull();
@@ -70,7 +70,7 @@ it("retains failed attachments and retry identity until bytes change", async () 
     screen.getByLabelText("Choose attachments"),
     new File(["Original"], "notes.txt"),
   );
-  await screen.findByText(/bytes · Preview/);
+  await screen.findByRole("button", { name: "Remove notes.txt" });
   fireEvent.change(screen.getByLabelText("Message your crew"), {
     target: { value: "Submit files" },
   });

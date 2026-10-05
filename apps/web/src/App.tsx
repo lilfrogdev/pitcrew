@@ -13,7 +13,7 @@ import {
   type SubmittedAttachment,
   type ModelSelection,
 } from "@pitcrew/protocol";
-import { ModelPicker, WorkerModelSettings } from "./ModelPicker";
+import { ModelPicker } from "./ModelPicker";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -618,21 +618,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               {attachmentCompatibilityError}
             </p>
           )}
-          {composerCapabilities && api.setModelSettings && (
-            <WorkerModelSettings
-              key={projectId}
-              models={composerCapabilities.models}
-              settings={composerCapabilities.settings}
-              disabled={busy || !!selectionSaving[threadId]}
-              onSave={async (settings) => {
-                const next = await api.setModelSettings!(projectId, settings);
-                setComposerCapabilities((previous) =>
-                  previous ? { ...previous, settings: next } : previous,
-                );
-              }}
-            />
-          )}
           <Composer
+            sessionKey={threadId}
+            dictationEnabled={section === "work"}
             draft={drafts[threadId] ?? ""}
             onDraft={(text) => setDrafts((all) => ({ ...all, [threadId]: text }))}
             attachments={attachments[threadId] ?? []}
@@ -655,7 +643,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               (drafts[threadId] ?? "").length <= 8000 &&
               (attachments[threadId] ?? []).every((item) => item.status === "ready")
             }
-            conversation={composerCapabilities?.conversation}
             capabilities={attachmentCapabilities}
             modelControls={
               composerCapabilities && selection ? (
@@ -667,9 +654,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                 />
               ) : undefined
             }
-            active={snapshot.runs.some((run) =>
-              ["queued", "running", "awaiting_review"].includes(run.status),
-            )}
           />
           <p className="sr-only" role="status">
             {announcement}
