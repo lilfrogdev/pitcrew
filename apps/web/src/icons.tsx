@@ -18,6 +18,8 @@ import {
   IconDots,
   IconArchive,
   IconArchiveOff,
+  IconArrowUp,
+  IconFileText,
 } from "@tabler/icons-react";
 const icons = {
   work: IconHome,
@@ -40,6 +42,8 @@ const icons = {
   more: IconDots,
   archive: IconArchive,
   restore: IconArchiveOff,
+  send: IconArrowUp,
+  file: IconFileText,
 } as const;
 export type IconKind = keyof typeof icons;
 export function Icon({ kind }: { kind: IconKind }) {

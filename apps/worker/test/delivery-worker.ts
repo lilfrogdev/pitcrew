@@ -1,4 +1,5 @@
-import { DurableObject } from "cloudflare:workers";
+import { readRepositoryState } from "../src/repository-state";
+import { Agent } from "agents";
 import { ChangeAgent, type PiEnv } from "../src/pi-agents";
 import worker, { RepositoryAgent } from "../src/index";
 import type { State } from "../src/coordinator";
@@ -11,10 +12,9 @@ interface Env {
 }
 export class DeliveryRepositoryAgent extends RepositoryAgent {
   async persisted(runId: string) {
-    const rows = this.ctx.storage.sql
-      .exec<{ value: string }>("SELECT value FROM repository_state WHERE id=1")
-      .toArray();
-    const state = JSON.parse(rows[0].value) as State;
+    const stored = readRepositoryState(this.ctx.storage.sql);
+    if (!stored) throw Error("fixture_state_missing");
+    const state = JSON.parse(stored) as State;
     return {
       status: state.runs.find((run) => run.id === runId)?.status ?? null,
       testsPresent: !!state.evidence[runId],
@@ -22,7 +22,7 @@ export class DeliveryRepositoryAgent extends RepositoryAgent {
     };
   }
 }
-export class DeliveryChangeAgent extends DurableObject<Env> {
+export class DeliveryChangeAgent extends Agent<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec(

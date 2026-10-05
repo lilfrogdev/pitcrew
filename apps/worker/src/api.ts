@@ -1,3 +1,10 @@
+import {
+  selectionAttachmentCapabilities,
+  ATTACHMENT_LIMITS,
+  AttachmentValidationError,
+} from "@pitcrew/protocol";
+import type { ModelCatalog } from "./model-selection";
+import { resolveRunModels } from "./model-selection";
 import { Hono } from "hono";
 import { ExecutionError } from "../../../packages/execution/src/contracts";
 import type { LandingApi } from "./landing-api";
@@ -18,6 +25,7 @@ export function api(
   dispatch: (id: string) => void | Promise<void>,
   landing?: LandingApi,
   identity: { actor: string } = { actor: "local-fixture" },
+  conversation?: { catalog: ModelCatalog; dispatch: (id: string) => void | Promise<void> },
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
@@ -34,7 +42,10 @@ export function api(
           const result = await reader.read();
           if (result.done) break;
           size += result.value.byteLength;
-          if (size > 16384) {
+          const limit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(c.req.url).pathname)
+            ? ATTACHMENT_LIMITS.requestBytes
+            : 16384;
+          if (size > limit) {
             await reader.cancel();
             throw new AdmissionError("body_too_large", 413);
           }
@@ -48,7 +59,7 @@ export function api(
         offset += chunk.length;
       }
       try {
-        const parsed = JSON.parse(new TextDecoder().decode(bytes));
+        const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
           throw Error("invalid_json");
         c.set("body", parsed);
@@ -62,15 +73,22 @@ export function api(
     c.json(
       {
         error:
-          error instanceof AdmissionError || error instanceof ExecutionError
+          error instanceof AdmissionError ||
+          error instanceof ExecutionError ||
+          error instanceof AttachmentValidationError
             ? error.code
-            : "internal_error",
+            : error instanceof Error && error.message === "invalid_model_selection"
+              ? error.message
+              : "internal_error",
       },
       error instanceof AdmissionError
         ? (error.status as 400)
-        : error instanceof ExecutionError
-          ? 409
-          : 500,
+        : error instanceof AttachmentValidationError ||
+            (error instanceof Error && error.message === "invalid_model_selection")
+          ? 400
+          : error instanceof ExecutionError
+            ? 409
+            : 500,
     ),
   );
   app.get("/api/projects/:projectId/context", (c) => {
@@ -145,6 +163,7 @@ export function api(
       body as unknown as Parameters<Coordinator["dispatchGroup"]>[2],
       body.acceptance as Parameters<Coordinator["dispatchGroup"]>[3],
       body.profileRevision as string,
+      conversation?.catalog,
     );
     await dispatch(result.runId);
     return c.json(result, 201);
@@ -169,17 +188,72 @@ export function api(
       throw new AdmissionError("not_found", 404);
     return c.json(coordinator.setThreadArchived(c.req.param("threadId"), c.get("body").archived));
   });
+  app.post("/api/projects/:projectId/model-settings", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    if (!conversation) throw new AdmissionError("conversation_unavailable", 503);
+    return c.json(coordinator.updateModelSettings(conversation.catalog, c.get("body").settings));
+  });
+  app.post("/api/projects/:projectId/threads/:threadId/model-selection", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    if (!conversation) throw new AdmissionError("conversation_unavailable", 503);
+    return c.json(
+      coordinator.setThreadModelSelection(
+        c.req.param("threadId"),
+        conversation.catalog,
+        c.get("body").modelSelection,
+      ),
+    );
+  });
+  app.get("/api/threads/:threadId/attachments/:attachmentId", (c) => {
+    const image = coordinator.readThreadAttachment(
+      c.req.param("threadId"),
+      c.req.param("attachmentId"),
+    );
+    const bytes = Uint8Array.from(atob(image.data), (character) => character.charCodeAt(0));
+    return new Response(bytes, {
+      headers: {
+        "content-type": image.mediaType,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+        "content-security-policy": "default-src 'none'; sandbox",
+      },
+    });
+  });
+  app.get("/api/threads/:threadId/turns", (c) => {
+    coordinator.thread(c.req.param("threadId"));
+    return c.json(
+      (coordinator.state.conversationTurns ?? [])
+        .filter((turn) => turn.threadId === c.req.param("threadId"))
+        .map(({ input: _input, actor: _actor, ...publicTurn }) => publicTurn),
+    );
+  });
   app.get("/api/threads/:threadId/messages", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(coordinator.state.messages.filter((m) => m.threadId === c.req.param("threadId")));
   });
   app.post("/api/threads/:threadId/messages", async (c) => {
     const body = c.get("body");
+    if (conversation) {
+      const result = coordinator.queueTurn(
+        c.req.param("threadId"),
+        body.content as string,
+        body.idempotencyKey as string,
+        identity.actor,
+        conversation.catalog,
+        body.modelSelection,
+        body.attachments,
+      );
+      await conversation.dispatch(result.turn.id);
+      return c.json(result, 201);
+    }
     const result = coordinator.submit(
       c.req.param("threadId"),
       body.content as string,
       body.idempotencyKey as string,
       identity.actor,
+      body.attachments,
     );
     await dispatch(result.run.id);
     return c.json(result, 201);
@@ -199,6 +273,7 @@ export function api(
     const run = coordinator.retryChange(
       c.req.param("changeId"),
       c.get("body").idempotencyKey as string,
+      conversation?.catalog,
     );
     await dispatch(run.id);
     return c.json(run, 201);
@@ -222,7 +297,28 @@ export function api(
     return c.json(page);
   });
   app.get("/api/capabilities", (c) =>
-    c.json({ landing: { enabled: !!landing, backend: landing?.backend ?? null } }),
+    c.json({
+      landing: { enabled: !!landing, backend: landing?.backend ?? null },
+      ...(conversation
+        ? {
+            composer: {
+              conversation: true,
+              models: conversation.catalog.choices,
+              settings: coordinator.state.project.modelSettings ?? {
+                default: conversation.catalog.defaultSelection,
+              },
+              attachments: selectionAttachmentCapabilities(
+                conversation.catalog.choices,
+                resolveRunModels(
+                  conversation.catalog,
+                  undefined,
+                  coordinator.state.project.modelSettings,
+                ),
+              ),
+            },
+          }
+        : {}),
+    }),
   );
   const configured = () => {
     if (!landing) throw new AdmissionError("landing_unconfigured", 503);

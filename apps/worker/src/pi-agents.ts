@@ -1,11 +1,11 @@
 import { pinPlan, executePlan } from "../../../packages/verification/src/index.ts";
-import { Agent } from "agents";
+import { Agent, getAgentByName } from "agents";
+import { LifecycleCapability, type CapabilityStartContext } from "agents/lifecycle";
 import { PiHarness } from "agents/harness/pi";
 import { createRegistry, defineTool, Harness } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 import type {
   ExecutionInput,
-  ModelConfiguration,
   KnowledgeAck,
   KnowledgeReport,
   WorkerKnowledgeContext,
@@ -19,7 +19,7 @@ import {
   type TestEvidence,
 } from "../../../packages/execution/src/index";
 import { sandboxImage } from "./cloud-configuration";
-import { configureModels } from "./pi-models";
+import { configureSelectedModels, configureConversation } from "./model-selection";
 import {
   applyChange,
   bootstrapDependencies,
@@ -46,6 +46,7 @@ export interface PiEnv {
   ENVIRONMENT: string;
   EXECUTION_MODE: string;
   MODEL_CONFIGURATION?: string;
+  MODELS_CONFIGURATION?: string;
   CONFIGURATION_REVISION?: string;
   AI?: Ai;
   ARTIFACTS?: Artifacts;
@@ -59,34 +60,55 @@ interface Context {
   evidence?: TestEvidence;
   brief?: ReviewBrief;
 }
-abstract class TaskAgent extends Agent<PiEnv> {
+export interface TaskAdmission {
+  runModels?: ExecutionInput["runModels"];
+  role: "implementer" | "reviewer";
+}
+class TaskModelAdmission extends LifecycleCapability<TaskAdmission> {
+  constructor(private readonly bind: (admission: TaskAdmission) => void) {
+    super("task-model-admission");
+  }
+  onStart(context: CapabilityStartContext<TaskAdmission>) {
+    if (context.props) this.bind(context.props);
+  }
+}
+abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
   protected harness: PiHarness;
   protected registry = createRegistry();
   constructor(ctx: DurableObjectState, env: PiEnv) {
     super(ctx, env);
+    this.lifecycle.use(
+      new TaskModelAdmission((admission) =>
+        this.bindModelAdmission(admission.runModels, admission.role),
+      ),
+    );
     this.harness = new PiHarness({
       harness: async ({ storage, context }) => {
-        const configuration = JSON.parse(
-          env.MODEL_CONFIGURATION ?? '{"provider":"fake"}',
-        ) as ModelConfiguration;
-        if (configuration.provider !== "fake" && env.EXECUTION_MODE !== "cloud")
-          throw Error("model_not_enabled");
-        const { models, model } = configureModels(configuration, {
-          AI: env.AI,
-          secrets:
-            configuration.provider === "byok"
-              ? {
-                  [configuration.secretBinding]:
-                    typeof (env as unknown as Record<string, unknown>)[
-                      configuration.secretBinding
-                    ] === "string"
-                      ? (env as unknown as Record<string, string>)[configuration.secretBinding]
-                      : "",
-                }
-              : undefined,
-        });
+        // Open the frozen run's provider; no active run consults mutable thread preferences.
+        void this
+          .sql`CREATE TABLE IF NOT EXISTS task_context(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
+        void this
+          .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
+        const [modelRow] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
+        const admission = modelRow
+          ? (JSON.parse(modelRow.value) as TaskAdmission | null)
+          : undefined;
+        const admitted = admission?.runModels;
+        const [taskRow] = this.sql<{ value: string }>`SELECT value FROM task_context WHERE id=1`;
+        const task = taskRow ? (JSON.parse(taskRow.value) as Context) : undefined;
+        const selected =
+          (admission?.role === "reviewer" ? admitted?.reviewer : admitted?.implementer) ??
+          task?.input?.runModels?.implementer ??
+          task?.brief?.runModels?.reviewer;
+        const { models, model, selection } = configureSelectedModels(
+          env,
+          selected,
+          admitted?.catalogRevision ?? task?.brief?.runModels?.catalogRevision,
+        );
         const fingerprint = JSON.stringify({
-          model: env.MODEL_CONFIGURATION,
+          model: selected
+            ? { provider: model.provider, id: model.id, effort: selection.effort }
+            : env.MODEL_CONFIGURATION,
           revision: env.CONFIGURATION_REVISION,
           imageName: env.SANDBOX_IMAGE,
           imageDigest: ctx.container
@@ -112,17 +134,31 @@ abstract class TaskAgent extends Agent<PiEnv> {
         );
         // PiHarness session defaults are persisted via the public session API below.
         this.model = { provider: model.provider, id: model.id };
+        this.selection = selection;
+        this.piContext = context;
         return harness;
       },
     });
     this.lifecycle.use(this.harness);
   }
   private model?: { provider: string; id: string };
+  private selection?: import("@pitcrew/protocol").ModelSelection;
+  private piContext?: Parameters<Harness["close"]>[0];
   protected async prompt() {
-    await this.harness.pi();
-    if (!this.model) throw Error("model_not_configured");
-    await this.harness.session().setModel(this.model);
-    return this.harness;
+    const pi = await this.harness.pi();
+    if (!this.model || !this.selection || !this.piContext) throw Error("model_not_configured");
+    await configureConversation(pi, this.model, this.selection, this.piContext);
+    return {
+      submit: this.harness.submit.bind(this.harness),
+      wait: this.harness.wait.bind(this.harness),
+      readAttachment: async (reference: import("@pitcrew/protocol").StoredImageAttachment) => {
+        const task = this.context();
+        const context = task.input?.knowledgeContext ?? task.brief?.knowledgeContext;
+        if (!context) throw Error("attachment_unavailable");
+        const repository = this.env.REPOSITORY.get(this.env.REPOSITORY.idFromName("pitcrew"));
+        return repository.readWorkerAttachment(context, reference);
+      },
+    };
   }
   protected abstract installTools(): void;
   protected context(): Context {
@@ -137,6 +173,17 @@ abstract class TaskAgent extends Agent<PiEnv> {
     const [previous] = this.sql<{ value: string }>`SELECT value FROM task_context WHERE id=1`;
     if (previous && previous.value !== serialized) throw Error("context_conflict");
     void this.sql`INSERT OR IGNORE INTO task_context(id,value) VALUES(1,${serialized})`;
+  }
+  protected bindModelAdmission(
+    runModels: ExecutionInput["runModels"],
+    role: TaskAdmission["role"] = "implementer",
+  ) {
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
+    const serialized = JSON.stringify(runModels ? { runModels, role } : null);
+    const [prior] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
+    if (prior && prior.value !== serialized) throw Error("context_conflict");
+    void this.sql`INSERT OR IGNORE INTO task_models VALUES(1,${serialized})`;
   }
   protected countTool() {
     void this
@@ -386,18 +433,21 @@ export class ChangeAgent extends TaskAgent {
             const plan = await pinPlan({ ...spec, candidateSha: candidate });
             return { plan, outcomes: await executePlan(plan, "candidate", workspace, transport) };
           },
-          review: (workspace, evidence) =>
-            this.env.REVIEW.get(this.env.REVIEW.idFromName(`review:${workspace.runId}`)).evaluate(
-              workspace,
-              evidence,
-              500,
-              {
-                verification: this.pipeline.status()!.verification,
-                messages: this.pipeline.status()!.input.messages,
-                repositoryContext: this.pipeline.status()!.input.repositoryContext,
-                implementationSummary: this.pipeline.status()!.change!.summary,
-              },
-            ),
+          review: async (workspace, evidence) => {
+            const input = this.pipeline.status()!.input;
+            const reviewer = await getAgentByName(this.env.REVIEW, `review:${workspace.runId}`, {
+              props: { runModels: input.runModels, role: "reviewer" },
+            });
+            return reviewer.evaluate(workspace, evidence, 500, {
+              verification: this.pipeline.status()!.verification,
+              messages: input.messages,
+              conversationContext: input.conversationContext,
+              repositoryContext: input.repositoryContext,
+              implementationSummary: this.pipeline.status()!.change!.summary,
+              runModels: input.runModels,
+              knowledgeContext: input.knowledgeContext,
+            });
+          },
           stop: (workspace) => this.stopOwners(workspace),
         });
         const state = this.pipeline.status();
@@ -468,6 +518,9 @@ export class ChangeAgent extends TaskAgent {
         return rejected;
       throw error;
     }
+    // The harness lifecycle starts before sandbox preparation. Store the immutable model
+    // admission independently; bind the full context when the workspace exists.
+    this.bindModelAdmission(input.runModels);
     await this.lifecycle.start();
     const state = this.pipeline.start(input);
     if (!["done", "blocked"].includes(state.stage))

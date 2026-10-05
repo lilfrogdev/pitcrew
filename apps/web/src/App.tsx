@@ -3,9 +3,17 @@ import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, Project, Run, Snapshot, Thread } from "./api";
+import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities } from "./api";
 import "./styles.css";
 import { LandingControl, type LandingState } from "./LandingControl";
+import { Composer, readAttachment, attachmentError, type AttachmentDraft } from "./Composer";
+import {
+  validateMessageAttachments,
+  selectionAttachmentCapabilities,
+  type SubmittedAttachment,
+  type ModelSelection,
+} from "@pitcrew/protocol";
+import { ModelPicker, WorkerModelSettings } from "./ModelPicker";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -21,6 +29,10 @@ const errorText = (error: unknown) =>
 export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
+  const [composerCapabilities, setComposerCapabilities] =
+    useState<LandingCapabilities["composer"]>();
+  const [selections, setSelections] = useState<Record<string, ModelSelection>>({});
+  const [selectionSaving, setSelectionSaving] = useState<Record<string, boolean>>({});
   const [landingStates, setLandingStates] = useState<Record<string, LandingState>>({});
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
@@ -28,6 +40,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [threadId, setThreadId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [attachments, setAttachments] = useState<Record<string, AttachmentDraft[]>>({});
+  const attachmentDrafts = useRef<Record<string, AttachmentDraft[]>>({});
+  const [attachmentErrors, setAttachmentErrors] = useState<Record<string, string>>({});
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,7 +61,13 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const requestedThread = useRef<string | undefined>(undefined);
   const generation = useRef(0);
   const snapshotSequence = useRef(0);
-  const pending = useRef<{ threadId: string; content: string; key: string } | null>(null);
+  const pending = useRef<{
+    threadId: string;
+    content: string;
+    attachments: string;
+    selection: string;
+    key: string;
+  } | null>(null);
   const createKey = useRef<{ projectId: string; title: string; key: string } | null>(null);
   const mutation = useRef(false);
   const refresh = useCallback(() => {
@@ -60,13 +81,18 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     api
       .capabilities()
       .then((capabilities) => {
-        if (!cancelled)
+        if (!cancelled) {
+          setComposerCapabilities(capabilities.composer);
           setLandingEnabled(
             capabilities.landing.enabled && capabilities.landing.backend === "fixture",
           );
+        }
       })
       .catch(() => {
-        if (!cancelled) setLandingEnabled(false);
+        if (!cancelled) {
+          setLandingEnabled(false);
+          setComposerCapabilities(undefined);
+        }
       });
     return () => {
       cancelled = true;
@@ -185,10 +211,125 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     };
   }, [api, threadId, revision]);
 
+  const selection =
+    selections[threadId] ??
+    threads.find((thread) => thread.id === threadId)?.modelSelection ??
+    composerCapabilities?.settings.default;
+  const modelValid =
+    !composerCapabilities ||
+    (!!selection &&
+      composerCapabilities.models.some(
+        (model) => model.id === selection.modelId && model.efforts.includes(selection.effort),
+      ));
+  const attachmentCapabilities =
+    composerCapabilities && selection
+      ? selectionAttachmentCapabilities(composerCapabilities.models, {
+          repoAgent: selection,
+          implementer: composerCapabilities.settings.roles?.implementer ?? selection,
+          reviewer: composerCapabilities.settings.roles?.reviewer ?? selection,
+        })
+      : composerCapabilities?.attachments;
+  let attachmentCompatibilityError = "";
+  try {
+    validateMessageAttachments(
+      (attachments[threadId] ?? [])
+        .filter((item) => item.status === "ready")
+        .map((item) => item.attachment!),
+      attachmentCapabilities,
+    );
+  } catch (cause) {
+    attachmentCompatibilityError = attachmentError(cause);
+  }
+  async function chooseModel(next: ModelSelection) {
+    const selected = threadId,
+      selectedProject = projectId,
+      selectedGeneration = generation.current;
+    setSelections((all) => ({ ...all, [selected]: next }));
+    if (!api.setThreadModelSelection) return;
+    setSelectionSaving((all) => ({ ...all, [selected]: true }));
+    try {
+      const thread = await api.setThreadModelSelection(selectedProject, selected, next);
+      setThreads((all) => all.map((item) => (item.id === selected ? thread : item)));
+    } catch (cause) {
+      if (selectedGeneration === generation.current)
+        setMutationError(
+          `Model preference was not saved. Your next send will apply the displayed choice. ${errorText(cause)}`,
+        );
+    } finally {
+      setSelectionSaving((all) => ({ ...all, [selected]: false }));
+    }
+  }
+  function updateAttachments(
+    selected: string,
+    update: (items: AttachmentDraft[]) => AttachmentDraft[],
+  ) {
+    const next = {
+      ...attachmentDrafts.current,
+      [selected]: update(attachmentDrafts.current[selected] ?? []),
+    };
+    attachmentDrafts.current = next;
+    setAttachments(next);
+  }
+  function addFiles(files: File[]) {
+    if (!threadId || mutation.current || !files.length) return;
+    const selected = threadId;
+    if ((attachmentDrafts.current[selected]?.length ?? 0) + files.length > 4) {
+      setAttachmentErrors((all) => ({
+        ...all,
+        [selected]: "Attach at most four files. No new files were added.",
+      }));
+      return;
+    }
+    setAttachmentErrors((all) => ({ ...all, [selected]: "" }));
+    const items = files.map((file) => ({
+      id: crypto.randomUUID(),
+      name: file.name,
+      status: "reading" as const,
+    }));
+    updateAttachments(selected, (previous) => [...previous, ...items]);
+    files.forEach((file, index) => {
+      const id = items[index].id;
+      void readAttachment(file, id)
+        .then((attachment) => {
+          updateAttachments(selected, (previous) =>
+            previous.map((item) =>
+              item.id === id ? { ...item, status: "ready", attachment } : item,
+            ),
+          );
+        })
+        .catch((cause: unknown) => {
+          updateAttachments(selected, (previous) =>
+            previous.map((item) =>
+              item.id === id ? { ...item, status: "error", error: attachmentError(cause) } : item,
+            ),
+          );
+        });
+    });
+  }
   async function send(event: React.FormEvent) {
     event.preventDefault();
     const content = (drafts[threadId] ?? "").trim();
-    if (!content || mutation.current || loading || !threadId) return;
+    const files = attachmentDrafts.current[threadId] ?? [];
+    if (
+      !content ||
+      content.length > 8000 ||
+      mutation.current ||
+      loading ||
+      !threadId ||
+      selectionSaving[threadId] ||
+      !modelValid ||
+      files.some((item) => item.status !== "ready")
+    )
+      return;
+    const submittedAttachments = files.map((item) => item.attachment!) as SubmittedAttachment[];
+    try {
+      validateMessageAttachments(submittedAttachments, attachmentCapabilities);
+    } catch (cause) {
+      setAttachmentErrors((all) => ({ ...all, [threadId]: attachmentError(cause) }));
+      return;
+    }
+    const attachmentFingerprint = JSON.stringify(submittedAttachments);
+    const selectionFingerprint = JSON.stringify(selection);
     const selected = threadId;
     const selectedGeneration = generation.current;
     // Supersede any poll started before this write; it may contain an older transcript.
@@ -196,17 +337,31 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     if (
       !pending.current ||
       pending.current.threadId !== selected ||
-      pending.current.content !== content
+      pending.current.content !== content ||
+      pending.current.attachments !== attachmentFingerprint ||
+      pending.current.selection !== selectionFingerprint
     )
-      pending.current = { threadId: selected, content, key: crypto.randomUUID() };
+      pending.current = {
+        threadId: selected,
+        content,
+        attachments: attachmentFingerprint,
+        selection: selectionFingerprint,
+        key: crypto.randomUUID(),
+      };
     mutation.current = true;
     setBusy(true);
     setMutationError("");
     try {
-      await api.send(selected, content, pending.current.key);
+      await api.send(selected, content, pending.current.key, submittedAttachments, selection);
       pending.current = null;
       setDrafts((all) => ({ ...all, [selected]: "" }));
-      setAnnouncement("Message sent and change queued.");
+      updateAttachments(selected, () => []);
+      setAttachmentErrors((all) => ({ ...all, [selected]: "" }));
+      setAnnouncement(
+        composerCapabilities?.conversation
+          ? "Message sent and repository agent reply queued."
+          : "Message sent and change queued.",
+      );
       try {
         const next = await api.snapshot(selected);
         if (
@@ -413,32 +568,109 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                       </time>
                     </div>
                     <p>{message.content}</p>
+                    {message.attachments?.map((attachment) => (
+                      <details className="message-attachment" key={attachment.id}>
+                        <summary>
+                          {attachment.name} · Attached{" "}
+                          {attachment.mediaType === "text/plain" ? "text" : "image"}
+                        </summary>
+                        {attachment.mediaType === "text/plain" ? (
+                          <pre>{attachment.text}</pre>
+                        ) : (
+                          <img
+                            alt={`Attached ${attachment.name}`}
+                            src={
+                              api.attachmentUrl?.(message.threadId, attachment.attachmentId) ??
+                              `/api/threads/${encodeURIComponent(message.threadId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`
+                            }
+                          />
+                        )}
+                      </details>
+                    ))}
                   </div>
                 </article>
               ))
             )}
           </div>
-          <form className="composer" onSubmit={send}>
-            <label htmlFor="message">Message your crew</label>
-            <textarea
-              id="message"
-              placeholder="Describe a change or ask about the work…"
-              maxLength={8000}
-              rows={3}
-              value={drafts[threadId] ?? ""}
-              disabled={!threadId || busy}
-              onChange={(event) => setDrafts((all) => ({ ...all, [threadId]: event.target.value }))}
+          {attachmentErrors[threadId] && (
+            <p className="composer-error" role="alert">
+              {attachmentErrors[threadId]}
+            </p>
+          )}
+          {snapshot.turns?.some(
+            (turn) => turn.status === "queued" || turn.status === "running",
+          ) && (
+            <p className="composer-hint" role="status">
+              Repository agent replies are queued or running. New messages join the conversation
+              queue.
+            </p>
+          )}
+          {snapshot.turns
+            ?.filter((turn) => turn.status === "failed")
+            .map((turn) => (
+              <p key={turn.id} className="composer-error" role="alert">
+                Repository agent reply failed: {turn.error ?? "Execution unavailable"}. No work was
+                silently replayed.
+              </p>
+            ))}
+          {attachmentCompatibilityError && (
+            <p className="composer-error" role="alert">
+              {attachmentCompatibilityError}
+            </p>
+          )}
+          {composerCapabilities && api.setModelSettings && (
+            <WorkerModelSettings
+              key={projectId}
+              models={composerCapabilities.models}
+              settings={composerCapabilities.settings}
+              disabled={busy || !!selectionSaving[threadId]}
+              onSave={async (settings) => {
+                const next = await api.setModelSettings!(projectId, settings);
+                setComposerCapabilities((previous) =>
+                  previous ? { ...previous, settings: next } : previous,
+                );
+              }}
             />
-            <div className="composer-footer">
-              <button
-                type="submit"
-                disabled={!threadId || busy || loading || !(drafts[threadId] ?? "").trim()}
-              >
-                {busy ? "Sending…" : "Send message"}
-                <span aria-hidden="true"> ↑</span>
-              </button>
-            </div>
-          </form>
+          )}
+          <Composer
+            draft={drafts[threadId] ?? ""}
+            onDraft={(text) => setDrafts((all) => ({ ...all, [threadId]: text }))}
+            attachments={attachments[threadId] ?? []}
+            onFiles={addFiles}
+            onRemove={(id) => {
+              updateAttachments(threadId, (items) => items.filter((item) => item.id !== id));
+              setAttachmentErrors((all) => ({ ...all, [threadId]: "" }));
+            }}
+            onSend={send}
+            disabled={!threadId || busy}
+            sending={busy}
+            canSend={
+              !!threadId &&
+              !busy &&
+              !loading &&
+              !selectionSaving[threadId] &&
+              modelValid &&
+              !attachmentCompatibilityError &&
+              !!(drafts[threadId] ?? "").trim() &&
+              (drafts[threadId] ?? "").length <= 8000 &&
+              (attachments[threadId] ?? []).every((item) => item.status === "ready")
+            }
+            conversation={composerCapabilities?.conversation}
+            capabilities={attachmentCapabilities}
+            modelControls={
+              composerCapabilities && selection ? (
+                <ModelPicker
+                  models={composerCapabilities.models}
+                  selection={selection}
+                  onSelection={(next) => void chooseModel(next)}
+                  disabled={!threadId || busy || !!selectionSaving[threadId]}
+                />
+              ) : undefined
+            }
+            active={snapshot.runs.some((run) =>
+              ["queued", "running", "awaiting_review"].includes(run.status),
+            )}
+          />
           <p className="sr-only" role="status">
             {announcement}
           </p>

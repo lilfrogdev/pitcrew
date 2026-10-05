@@ -1,0 +1,131 @@
+.picker {
+  min-width: 0;
+}
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.control {
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-width: 0;
+  color: var(--muted);
+  border-radius: 8px;
+}
+.control select {
+  appearance: none;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 24px 8px 9px;
+  font: inherit;
+  font-size: 12px;
+  max-width: 240px;
+  min-height: 36px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.control svg {
+  position: absolute;
+  right: 6px;
+  pointer-events: none;
+}
+.control select:hover {
+  background: var(--canvas);
+  color: var(--text);
+}
+.control select:focus-visible,
+.roleLabel select:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+.control select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.control select[aria-invalid="true"] {
+  border-color: var(--error, #a83232);
+}
+.error {
+  color: var(--error, #a83232);
+  font-size: 12px;
+  margin: 6px 0;
+  line-height: 1.5;
+  max-width: 380px;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.settings {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.settings summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 6px 0;
+}
+.settings summary:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.settingsBody {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
+  margin-top: 6px;
+  display: grid;
+  gap: 12px;
+}
+.settingsBody p {
+  margin: 0;
+  line-height: 1.5;
+}
+.settingsBody .controls {
+  justify-content: flex-start;
+}
+.role {
+  display: grid;
+  gap: 4px;
+}
+.roleLabel {
+  display: grid;
+  gap: 6px;
+  color: var(--text);
+}
+.roleLabel select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  max-width: 100%;
+}
+.settingsBody button {
+  justify-self: start;
+}
+@media (max-width: 600px) {
+  .control select {
+    max-width: 160px;
+  }
+}
