@@ -43,6 +43,7 @@ interface Env extends PiEnv, AccessEnv {
   EXECUTION_MODE: string;
   REPOSITORY_LIFECYCLE?: string;
   INFRASTRUCTURE_ADMISSION_ENABLED?: string;
+  CLOUD_CONVERSATION_ENABLED?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
@@ -88,6 +89,14 @@ export class RepositoryAgent extends Agent<Env> {
       );
     }
     return this.repositoryLifecycle;
+  }
+  private conversationsEnabled() {
+    return (
+      this.env.EXECUTION_MODE === "fake" ||
+      (this.env.EXECUTION_MODE === "cloud" &&
+        this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
+        this.env.CLOUD_CONVERSATION_ENABLED === "true")
+    );
   }
   private landingStore?: SqliteLandingStore;
   private getLandingStore() {
@@ -249,11 +258,6 @@ export class RepositoryAgent extends Agent<Env> {
           return;
         }
         try {
-          const worker = await getAgentByName(
-            this.env.CHANGE,
-            `change:${input.projectId}:${input.runId}`,
-            { props: { runModels: input.runModels, role: "implementer" } },
-          );
           const request = { ...input, repository: this.env.ARTIFACT_REPOSITORY };
           const fingerprint = Array.from(
             new Uint8Array(
@@ -296,6 +300,15 @@ export class RepositoryAgent extends Agent<Env> {
             return;
           }
           await this.budgetJobs.enqueue("watchdog", {}, Date.now() + 5000);
+          // getAgentByName activates lifecycle capabilities, including the harness.
+          // Reserve first; denied/reconciliation work only observes its existing stub.
+          const worker = admitted.allowed
+            ? await getAgentByName(this.env.CHANGE, `change:${input.projectId}:${input.runId}`, {
+                props: { runModels: input.runModels, role: "implementer" },
+              })
+            : this.env.CHANGE.get(
+                this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
+              );
           // Dedicated cleanup job owns bounded stop retries; the result job only observes.
           const admission = admitted.allowed ? await worker.start(request) : { stage: "existing" };
           if (
@@ -340,7 +353,7 @@ export class RepositoryAgent extends Agent<Env> {
         const core = this.getCoordinator();
         const turn = core.conversationTurn(id);
         if (["completed", "failed"].includes(turn.status)) return;
-        if (!["cloud", "fake"].includes(this.env.EXECUTION_MODE)) {
+        if (!this.conversationsEnabled()) {
           core.completeConversation(id, undefined, "execution_unavailable");
           return;
         }
@@ -443,7 +456,7 @@ export class RepositoryAgent extends Agent<Env> {
       this.landing(coordinator),
       (await principal(request, this.env))!,
       this.env.CONVERSATION &&
-        ["fake", "cloud"].includes(this.env.EXECUTION_MODE) &&
+        this.conversationsEnabled() &&
         (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
         ? {
             catalog: resolveCatalog(this.env),

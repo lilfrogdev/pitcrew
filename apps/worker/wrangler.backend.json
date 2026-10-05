@@ -27,6 +27,10 @@
         "class_name": "ChangeAgent"
       },
       {
+        "name": "CONVERSATION",
+        "class_name": "RepoConversationAgent"
+      },
+      {
         "name": "REVIEW",
         "class_name": "ReviewAgent"
       }
@@ -40,6 +44,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["ChangeAgent", "ReviewAgent"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["RepoConversationAgent"]
     }
   ],
   "vars": {
@@ -49,7 +57,11 @@
     "ACCESS_ISSUER": "https://purple-mouse-ee03.cloudflareaccess.com",
     "ACCESS_AUDIENCE": "147a2e216894b65c6445fc8dec1a3347c6b1681e01089dd066f875a581e81683",
     "ACCESS_HOSTNAME": "pitcrew-backend.pitcrew-004.workers.dev",
-    "ACCESS_EMAIL": "dev@lilfrogdev.com"
+    "ACCESS_EMAIL": "dev@lilfrogdev.com",
+    "CLOUD_CONVERSATION_ENABLED": "false",
+    "REPOSITORY_LIFECYCLE": "disabled",
+    "MODEL_CONFIGURATION": "{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"qwen/qwen3.8-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}",
+    "MODELS_CONFIGURATION": "[{\"id\":\"deepseek-flash\",\"configuration\":{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"deepseek/deepseek-v4-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}},{\"id\":\"deepseek-flash-0731\",\"configuration\":{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"deepseek/deepseek-v4-flash-0731\",\"secretBinding\":\"OPENROUTER_API_KEY\"}},{\"id\":\"deepseek-vision\",\"configuration\":{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"deepseek/deepseek-v4-flash-vision-exp\",\"secretBinding\":\"OPENROUTER_API_KEY\"}}]"
   },
   "account_id": "004227d2029c56b084ce15356768def3"
 }

@@ -5,6 +5,26 @@ const path = process.argv[2] ?? "apps/worker/wrangler.backend.json";
 const config = JSON.parse(await readFile(path, "utf8"));
 const vars = config.vars ?? {};
 const blockers = [];
+for (const [binding, className, tag] of [
+  ["REPOSITORY", "RepositoryAgent", "v1"],
+  ["CHANGE", "ChangeAgent", "v2"],
+  ["REVIEW", "ReviewAgent", "v2"],
+  ["CONVERSATION", "RepoConversationAgent", "v3"],
+]) {
+  if (
+    !config.durable_objects?.bindings?.some(
+      (item) => item.name === binding && item.class_name === className,
+    ) ||
+    !config.migrations?.some(
+      (item) => item.tag === tag && item.new_sqlite_classes?.includes(className),
+    )
+  )
+    blockers.push(`Preserve current ${binding}/${className} binding and ${tag} migration.`);
+}
+if (vars.CLOUD_CONVERSATION_ENABLED !== "false")
+  blockers.push(
+    "Keep cloud conversations disabled until separate provider admission/budget bounds are reviewed.",
+  );
 if (
   !Number.isInteger(config.limits?.cpu_ms) ||
   config.limits.cpu_ms < 1 ||
@@ -64,6 +84,10 @@ console.log(
       config: path,
       liveConnectionVerified: false,
       cloudCallsMade: false,
+      executionMode: vars.EXECUTION_MODE,
+      infrastructureAdmissionEnabled: vars.INFRASTRUCTURE_ADMISSION_ENABLED === "true",
+      cloudConversationEnabled: vars.CLOUD_CONVERSATION_ENABLED === "true",
+      repositoryLifecycleEnabled: vars.REPOSITORY_LIFECYCLE === "enabled",
       readyForLiveVerification: blockers.length === 0,
       blockers,
       next: "OAuth and infrastructure budget are approved; finish runtime guards, service provisioning and authenticated ingress before live verification. No paid inference is authorized.",
