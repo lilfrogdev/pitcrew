@@ -89,3 +89,37 @@ it("shows failed deletion inside the confirmation dialog and keeps its selected 
   await screen.findByText("Deletion failed");
   expect(screen.getByRole("dialog").textContent).toContain("sandbox");
 });
+it("retries the initial list failure without remounting or enabling mutations prematurely", async () => {
+  const api = fixture(),
+    user = userEvent.setup();
+  const list = vi.fn(api.list).mockRejectedValueOnce(Error("Temporary outage"));
+  api.list = list;
+  render(<Repositories api={api} />);
+  await screen.findByText("Temporary outage");
+  expect((screen.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(true);
+  const refresh = screen.getByRole("button", { name: "Refresh repositories" }) as HTMLButtonElement;
+  expect(refresh.disabled).toBe(false);
+  await user.click(refresh);
+  await screen.findByText("sandbox");
+  expect(list).toHaveBeenCalledTimes(2);
+  expect((screen.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(
+    false,
+  );
+});
+it("shows an actionable import failure and refreshes its quarantined metadata", async () => {
+  const api = fixture(),
+    user = userEvent.setup();
+  api.provision = vi.fn(async () => {
+    throw Error("Only public repositories are supported");
+  });
+  render(<Repositories api={api} />);
+  await screen.findByText("sandbox");
+  await user.click(screen.getByRole("button", { name: "Import" }));
+  await user.type(screen.getByLabelText("Repository name"), "failed-import");
+  await user.type(screen.getByLabelText("Public GitHub HTTPS URL"), "https://github.com/a/b");
+  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByRole("button", { name: "Import repository" }));
+  await screen.findByText("Only public repositories are supported");
+  expect(api.list).toHaveBeenCalledTimes(2);
+  expect(screen.getByLabelText("Repository name").getAttribute("value")).toBe("failed-import");
+});

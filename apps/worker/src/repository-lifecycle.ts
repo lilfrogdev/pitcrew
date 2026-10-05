@@ -4,7 +4,8 @@ export type LifecycleRecord = {
   operation: "create" | "import";
   id?: string;
   source?: string;
-  status: "pending" | "cleanup_required" | "ready" | "deleted";
+  issue?: string;
+  status: "pending" | "cleanup_required" | "ready" | "deleting" | "deleted";
 };
 export type LifecycleStore = {
   get(name: string): LifecycleRecord | undefined;
@@ -12,6 +13,15 @@ export type LifecycleStore = {
   list(): LifecycleRecord[];
 };
 type Binding = Pick<Artifacts, "create" | "import" | "get" | "list" | "delete">;
+function serviceCode(error: unknown): string | undefined {
+  const allowed = ["NOT_FOUND", "REMOTE_AUTH_REQUIRED", "MEMORY_LIMIT", "ALREADY_EXISTS"];
+  const value = error as { code?: unknown; message?: unknown } | undefined;
+  if (typeof value?.code === "string" && allowed.includes(value.code)) return value.code;
+  if (typeof value?.message === "string")
+    return allowed.find(
+      (code) => value.message === code || (value.message as string).startsWith(`${code}:`),
+    );
+}
 const namePattern = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export function repositoryName(value: unknown): string {
   if (typeof value !== "string" || !namePattern.test(value)) throw Error("invalid_name");
@@ -50,24 +60,27 @@ export class RepositoryLifecycle {
   async list(cursor?: string) {
     const page = await this.binding.list({ limit: 50, cursor });
     const entries = page.repos.map((repo) => {
-      const owned = this.store.get(repo.name);
+      const saved = this.store.get(repo.name);
+      const owned = saved?.id && saved.id !== repo.id ? undefined : saved;
       return {
         name: repo.name,
         status: "present",
         lifecycle: owned?.status ?? "external",
+        issue: owned?.issue,
         deletable: owned?.status === "ready" && !this.referenced(repo.name),
       };
     });
     if (!cursor)
       for (const record of this.store.list())
         if (
-          ["pending", "cleanup_required"].includes(record.status) &&
+          ["pending", "cleanup_required", "deleting"].includes(record.status) &&
           !entries.some((entry) => entry.name === record.name)
         )
           entries.push({
             name: record.name,
             status: "unconfirmed",
             lifecycle: record.status,
+            issue: record.issue,
             deletable: false,
           });
     return { repositories: entries, cursor: page.cursor ?? null };
@@ -103,10 +116,13 @@ export class RepositoryLifecycle {
       const existing = this.store.get(name);
       // Never retry an ambiguous creation or replace a deleted/existing name.
       if (existing) {
+        if (existing.status === "deleted") throw Error("repository_name_retired");
+        if (existing.status === "deleting") throw Error("deletion_pending");
         if (existing.operation !== operation || existing.source !== source)
           throw Error("repository_exists");
         return existing;
       }
+      if (this.referenced(name)) throw Error("repository_protected");
       if (this.store.list().length >= 200) throw Error("lifecycle_limit");
       let cursor: string | undefined;
       for (let page = 0; page < 20; page++) {
@@ -138,7 +154,23 @@ export class RepositoryLifecycle {
         record.id = created.id;
         record.status = "cleanup_required";
         this.store.put(record);
-      } catch {
+      } catch (error) {
+        const code = serviceCode(error);
+        const issue =
+          code === "ALREADY_EXISTS"
+            ? "repository_exists"
+            : operation === "import"
+              ? (
+                  {
+                    REMOTE_AUTH_REQUIRED: "import_source_authentication_required",
+                    NOT_FOUND: "import_source_not_found",
+                    MEMORY_LIMIT: "import_limit_exceeded",
+                  } as Record<string, string>
+                )[code ?? ""]
+              : undefined;
+        // Even a recognized error may follow partial provisioning. Preserve
+        // quarantine and require investigation; do not resubmit or infer ownership.
+        if (issue) record.issue = issue;
         // Outcome may be ambiguous. Do not clean up an existing external repo.
         this.store.put({ ...record, status: "pending" });
         return { ...record, status: "pending" as const };
@@ -149,6 +181,20 @@ export class RepositoryLifecycle {
   reconcile(name: string) {
     return this.exclusive(async () => {
       const record = this.store.get(name);
+      if (record?.status === "deleting") {
+        try {
+          using repo = await this.binding.get(name);
+          if ((await repo.info()).id !== record.id) throw Error("repository_protected");
+          const ready = { ...record, status: "ready" as const };
+          this.store.put(ready);
+          return ready;
+        } catch (error) {
+          if (serviceCode(error) !== "NOT_FOUND") throw Error("deletion_pending");
+          const deleted = { ...record, status: "deleted" as const };
+          this.store.put(deleted);
+          return deleted;
+        }
+      }
       if (!record || record.status !== "cleanup_required")
         throw Error("reconciliation_unavailable");
       return this.cleanup(record);
@@ -158,10 +204,12 @@ export class RepositoryLifecycle {
     return this.exclusive(async () => {
       const record = this.store.get(name);
       if (confirmation !== name) throw Error("confirmation_required");
+      if (record?.status === "deleted") return { name, status: "deleted" };
       if (!record || record.status !== "ready" || this.referenced(name))
         throw Error("repository_protected");
       using repo = await this.binding.get(name);
       if (!record.id || (await repo.info()).id !== record.id) throw Error("repository_protected");
+      this.store.put({ ...record, status: "deleting" });
       if (!(await this.binding.delete(name))) throw Error("delete_not_confirmed");
       this.store.put({ ...record, status: "deleted" });
       return { name, status: "deleted" };
@@ -223,6 +271,7 @@ export async function lifecycleRequest(
           );
         }),
       ]).finally(() => clearTimeout(timer));
+      if (result.issue) return Response.json({ error: result.issue }, { status: 422 });
       return Response.json(result, { status: result.status === "ready" ? 200 : 202 });
     }
     if (url.pathname === "/api/repositories/reconcile")
@@ -237,6 +286,8 @@ export async function lifecycleRequest(
       "invalid_cursor",
       "credential_consent_required",
       "repository_exists",
+      "repository_name_retired",
+      "deletion_pending",
       "namespace_limit",
       "lifecycle_limit",
       "confirmation_required",

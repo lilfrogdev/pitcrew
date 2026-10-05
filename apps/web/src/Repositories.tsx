@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { RepositoryApi, RepositoryEntry } from "./repository-api";
-import { repositoryError } from "./repository-api";
+import { repositoryError, repositoryIssues } from "./repository-api";
 import shell from "./NavigationRail.module.css";
 import styles from "./Repositories.module.css";
 export function Repositories({ api }: { api?: RepositoryApi }) {
@@ -104,7 +104,7 @@ export function Repositories({ api }: { api?: RepositoryApi }) {
           <button
             aria-label="Refresh repositories"
             title="Refresh repositories"
-            disabled={!available || busy}
+            disabled={!api || busy}
             onClick={() => void perform(() => refresh())}
           >
             Refresh
@@ -125,12 +125,17 @@ export function Repositories({ api }: { api?: RepositoryApi }) {
               onSubmit={(event) => {
                 event.preventDefault();
                 void perform(async () => {
-                  const result = await api!.provision({
-                    name,
-                    operation: mode,
-                    ...(mode === "import" ? { url } : {}),
-                    credentialConsent: true,
-                  });
+                  const result = await api!
+                    .provision({
+                      name,
+                      operation: mode,
+                      ...(mode === "import" ? { url } : {}),
+                      credentialConsent: true,
+                    })
+                    .catch(async (cause) => {
+                      await refresh().catch(() => {});
+                      throw cause;
+                    });
                   setStatus(`${result.name}: ${result.status.replaceAll("_", " ")}.`);
                   setMode(undefined);
                   setName("");
@@ -202,13 +207,16 @@ export function Repositories({ api }: { api?: RepositoryApi }) {
                   <strong>{item.name}</strong>
                   <span>{item.lifecycle.replaceAll("_", " ")}</span>
                 </div>
+                {item.issue && (
+                  <p>{repositoryIssues[item.issue] ?? "Owner investigation required."}</p>
+                )}
                 {item.lifecycle === "pending" && (
                   <p>
                     Outcome pending. Refresh status; owner investigation may be required. Do not
                     create again.
                   </p>
                 )}
-                {item.lifecycle === "cleanup_required" && (
+                {["cleanup_required", "deleting"].includes(item.lifecycle) && (
                   <button
                     disabled={busy}
                     onClick={() =>

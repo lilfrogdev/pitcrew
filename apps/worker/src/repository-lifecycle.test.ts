@@ -24,7 +24,7 @@ function fixture() {
   };
   const created = { id: "new-id", name: "sandbox", token: "SECRET_MUST_NOT_ESCAPE" };
   const binding = {
-    list: vi.fn(async () => ({ repos: present ? [{ name: "sandbox" }] : [] })),
+    list: vi.fn(async () => ({ repos: present ? [{ name: "sandbox", id: "new-id" }] : [] })),
     get: vi.fn(async () => repo),
     create: vi.fn(async () => {
       present = true;
@@ -113,10 +113,12 @@ it("serializes repeated creation and never replaces an existing or deleted name"
   ]);
   expect(f.binding.create).toHaveBeenCalledTimes(1);
   await f.lifecycle.remove("sandbox", "sandbox");
-  await f.lifecycle.provision("sandbox", "create");
+  await expect(f.lifecycle.provision("sandbox", "create")).rejects.toThrow(
+    "repository_name_retired",
+  );
   expect(f.binding.create).toHaveBeenCalledTimes(1);
   const other = fixture();
-  other.binding.list.mockResolvedValue({ repos: [{ name: "sandbox" }] });
+  other.binding.list.mockResolvedValue({ repos: [{ name: "sandbox", id: "new-id" }] });
   await expect(other.lifecycle.provision("sandbox", "create")).rejects.toThrow("repository_exists");
   expect(other.binding.create).not.toHaveBeenCalled();
   expect(other.repo.revokeToken).not.toHaveBeenCalled();
@@ -152,7 +154,10 @@ it("requires exact confirmation, excludes external/referenced/replaced resources
   await expect(f.lifecycle.remove("sandbox", "sandbox")).rejects.toThrow("repository_protected");
   expect(f.binding.delete).not.toHaveBeenCalled();
   await f.lifecycle.remove("sandbox", "sandbox");
-  await expect(f.lifecycle.remove("sandbox", "sandbox")).rejects.toThrow();
+  expect(await f.lifecycle.remove("sandbox", "sandbox")).toEqual({
+    name: "sandbox",
+    status: "deleted",
+  });
   expect(f.binding.delete).toHaveBeenCalledTimes(1);
 });
 it("redacts binding failures and fails closed with no configured backend", async () => {
@@ -211,4 +216,78 @@ it("does not mark cleanup complete with truncated token metadata or a failed rev
   other.repo.listTokens.mockResolvedValue({ total: 2, tokens: [] });
   expect((await other.lifecycle.provision("sandbox", "create")).status).toBe("cleanup_required");
   expect(other.repo.revokeToken).not.toHaveBeenCalled();
+});
+it("persists delete intent, reconciles response loss safely and keeps tombstone retries idempotent", async () => {
+  const f = fixture();
+  await f.lifecycle.provision("sandbox", "create");
+  f.binding.delete.mockImplementationOnce(async () => {
+    f.binding.list.mockResolvedValue({ repos: [] });
+    throw Error("response lost SECRET");
+  });
+  await expect(f.lifecycle.remove("sandbox", "sandbox")).rejects.toThrow();
+  expect(f.records.get("sandbox")?.status).toBe("deleting");
+  expect((await f.lifecycle.list()).repositories[0].lifecycle).toBe("deleting");
+  await expect(f.lifecycle.provision("sandbox", "create")).rejects.toThrow("deletion_pending");
+  f.binding.get.mockRejectedValueOnce(Error("unknown transport"));
+  await expect(f.lifecycle.reconcile("sandbox")).rejects.toThrow("deletion_pending");
+  expect(f.records.get("sandbox")?.status).toBe("deleting");
+  f.binding.get.mockRejectedValueOnce(Error("NOT_FOUND"));
+  expect((await f.lifecycle.reconcile("sandbox")).status).toBe("deleted");
+  expect(await f.lifecycle.remove("sandbox", "sandbox")).toEqual({
+    name: "sandbox",
+    status: "deleted",
+  });
+  expect(f.binding.delete).toHaveBeenCalledTimes(1);
+});
+it("delete reconciliation restores the same existing ID but never admits a replacement", async () => {
+  const f = fixture();
+  await f.lifecycle.provision("sandbox", "create");
+  f.binding.delete.mockRejectedValue(Error("response lost"));
+  await expect(f.lifecycle.remove("sandbox", "sandbox")).rejects.toThrow();
+  f.repo.info.mockResolvedValueOnce({ id: "replacement" });
+  await expect(f.lifecycle.reconcile("sandbox")).rejects.toThrow("deletion_pending");
+  expect(f.records.get("sandbox")?.status).toBe("deleting");
+  expect((await f.lifecycle.reconcile("sandbox")).status).toBe("ready");
+  expect(f.binding.delete).toHaveBeenCalledTimes(1);
+});
+it("does not claim ownership/deletion permission for a replacement sharing the name", async () => {
+  const f = fixture();
+  await f.lifecycle.provision("sandbox", "create");
+  f.binding.list.mockResolvedValue({ repos: [{ name: "sandbox", id: "replacement" }] });
+  const [item] = (await f.lifecycle.list()).repositories;
+  expect(item.lifecycle).toBe("external");
+  expect(item.deletable).toBe(false);
+});
+it("rejects protected names before minting and retired names with an explicit error", async () => {
+  const f = fixture();
+  f.referenced.mockReturnValue(true);
+  expect((await f.request("create", { name: "sandbox", credentialConsent: true })).status).toBe(
+    409,
+  );
+  expect(f.binding.create).not.toHaveBeenCalled();
+  f.referenced.mockReturnValue(false);
+  await f.lifecycle.provision("sandbox", "create");
+  await f.lifecycle.remove("sandbox", "sandbox");
+  const response = await f.request("create", { name: "sandbox", credentialConsent: true });
+  expect(await response.json()).toEqual({ error: "repository_name_retired" });
+});
+it("exposes allowlisted import failures without raw messages, unsafe cleanup or resubmission", async () => {
+  for (const [code, issue] of [
+    ["REMOTE_AUTH_REQUIRED", "import_source_authentication_required"],
+    ["NOT_FOUND", "import_source_not_found"],
+    ["MEMORY_LIMIT", "import_limit_exceeded"],
+  ]) {
+    const f = fixture();
+    f.binding.import.mockRejectedValue(Error(`${code}: SECRET`));
+    const input = { name: "sandbox", url: "https://github.com/a/b", credentialConsent: true };
+    const response = await f.request("import", input);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: issue });
+    expect(f.records.get("sandbox")?.status).toBe("pending");
+    expect(f.records.get("sandbox")?.issue).toBe(issue);
+    expect(JSON.stringify([...f.records.values()])).not.toContain("SECRET");
+    await f.request("import", input);
+    expect(f.binding.import).toHaveBeenCalledTimes(1);
+    expect(f.repo.revokeToken).not.toHaveBeenCalled();
+  }
 });
