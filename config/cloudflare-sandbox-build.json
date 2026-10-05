@@ -1,0 +1,33 @@
+{
+  "platform": "linux/amd64",
+  "baseImage": "node:24-bookworm-slim@sha256:5cbc7caba8c2c0f0bca675d1b61b9f2857e1cf1853c6164ee9dd409501a936e7",
+  "localDockerContext": "colima-pitcrew-build",
+  "localImage": "pitcrew-sandbox:connection-prep",
+  "localImageId": "sha256:75f7fd8a36cb03a0acb248d8800f6cafcb04fbf0d4efeb252e2c43ae5d98c8a3",
+  "localImageBytes": 145305557,
+  "registeredCloudflareImage": null,
+  "cloudSmokeVerified": false,
+  "liteLocalProbe": {
+    "memoryMiB": 256,
+    "cpu": 0.0625,
+    "network": "none",
+    "readOnlyFilesystem": true,
+    "timeoutSeconds": 10,
+    "node": "v24.21.0",
+    "git": "2.39.5",
+    "pnpm": "probe_timed_out_before_completion",
+    "python": "not_reached"
+  },
+  "basicLocalProbe": {
+    "memoryMiB": 1024,
+    "cpu": 0.25,
+    "network": "none",
+    "readOnlyFilesystem": true,
+    "timeoutSeconds": 30,
+    "exitCode": 0,
+    "node": "v24.21.0",
+    "git": "2.39.5",
+    "pnpm": "11.17.0",
+    "python": "3.11.2"
+  }
+}

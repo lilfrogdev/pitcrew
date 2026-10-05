@@ -87,7 +87,12 @@ export class DeliveryChangeAgent extends Agent<Env> {
       .exec<{ input: string; result: string }>("SELECT input,result FROM delivery WHERE id=1")
       .toArray();
     if (JSON.parse(row.input).runId !== runId) throw Error("context_mismatch");
-    return { stage: "done", result: JSON.parse(row.result) as ExecutionResult };
+    // This fixture runs no container; its synchronous owned work is already complete.
+    return {
+      stage: "done",
+      result: JSON.parse(row.result) as ExecutionResult,
+      cleanupVerified: true,
+    };
   }
   async acknowledge(runId: string) {
     const persisted = await this.env.REPOSITORY.get(

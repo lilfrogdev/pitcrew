@@ -28,6 +28,8 @@ export interface PipelineState {
   resultAcknowledged?: boolean;
   stopRequested?: boolean;
   cleanupPending?: boolean;
+  cleanupAttempts?: number;
+  cleanupParked?: boolean;
   error?: "reconciliation_required" | "execution_failed" | "deadline_exceeded";
 }
 export interface PipelineStore {
@@ -86,7 +88,13 @@ export class DurableChangePipeline {
     });
   }
   private async cleanup(state: PipelineState, ports: PipelinePorts) {
-    if (!state.cleanupPending || !state.workspace) return;
+    if (!state.cleanupPending || !state.workspace || state.cleanupParked) return;
+    if ((state.cleanupAttempts ?? 0) >= 12) {
+      this.store.write({ ...state, cleanupParked: true, error: "reconciliation_required" });
+      return;
+    }
+    state.cleanupAttempts = (state.cleanupAttempts ?? 0) + 1;
+    this.store.write(state);
     try {
       await ports.stop(state.workspace);
     } catch {

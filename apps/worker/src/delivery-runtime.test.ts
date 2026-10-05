@@ -38,6 +38,7 @@ async function fixtureOptions() {
     bindings: {
       ENVIRONMENT: "development",
       EXECUTION_MODE: "cloud",
+      INFRASTRUCTURE_ADMISSION_ENABLED: "true",
       FIXTURE_IDENTITY: "lilfrogdev",
       MODEL_CONFIGURATION: '{"provider":"fake"}',
       PROJECT_BASE_SHA: "a".repeat(40),

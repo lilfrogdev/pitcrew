@@ -23,6 +23,11 @@ import { Agent, getAgentByName } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
 export { ChangeAgent, ReviewAgent };
 import { DurableJobs } from "./durable-jobs";
+import {
+  InfrastructureAdmission,
+  sqliteAdmission,
+  boundedCleanupRpc,
+} from "./infrastructure-admission";
 import { api } from "./api";
 import { Coordinator, fakeExecution, initialState, type State } from "./coordinator";
 interface Env extends PiEnv, AccessEnv {
@@ -37,6 +42,7 @@ interface Env extends PiEnv, AccessEnv {
   LANDING_MODE?: string;
   EXECUTION_MODE: string;
   REPOSITORY_LIFECYCLE?: string;
+  INFRASTRUCTURE_ADMISSION_ENABLED?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
@@ -171,8 +177,50 @@ export class RepositoryAgent extends Agent<Env> {
     return this.getImages().get(reference);
   }
   private readonly jobs: DurableJobs;
+  private readonly budgetJobs: DurableJobs;
+  private admission?: InfrastructureAdmission;
+  private getAdmission() {
+    if (this.admission) return this.admission;
+    return (this.admission = sqliteAdmission(this.ctx.storage));
+  }
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.budgetJobs = new DurableJobs(
+      "infrastructure-cleanup",
+      async (jobs) => {
+        if (this.getAdmission().monitored().length) await jobs.enqueue("watchdog", {});
+      },
+      async () => {
+        const gate = this.getAdmission();
+        for (const reservation of gate.monitored()) {
+          if (
+            !gate.stopRequired(
+              reservation.runId,
+              this.env.EXECUTION_MODE === "cloud" &&
+                this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true",
+            )
+          )
+            continue;
+          if (!gate.beginCleanupAttempt(reservation.runId)) continue;
+          // The singleton coordinator derives worker identity; no client controls the target.
+          const core = this.getCoordinator();
+          const run = core.state.runs.find((item) => item.id === reservation.runId);
+          if (!run) continue; // Uncertain ownership retains its slot for reconciliation.
+          const worker = this.env.CHANGE.get(
+            this.env.CHANGE.idFromName(`change:${core.state.project.id}:${run.id}`),
+          );
+          try {
+            await boundedCleanupRpc(worker.stop(run.id));
+            const receipt = await boundedCleanupRpc(worker.result(run.id));
+            if (receipt.cleanupVerified) gate.release(run.id, true);
+          } catch {
+            /* Durable slot and cleanup job remain; never release on transport failure. */
+          }
+        }
+        return gate.monitored().length ? { rescheduleAt: Date.now() + 5000 } : undefined;
+      },
+    );
+    this.lifecycle.use(this.budgetJobs);
     this.jobs = new DurableJobs(
       "repository-results",
       async (jobs) => {
@@ -206,10 +254,50 @@ export class RepositoryAgent extends Agent<Env> {
             `change:${input.projectId}:${input.runId}`,
             { props: { runModels: input.runModels, role: "implementer" } },
           );
-          const admission = await worker.start({
-            ...input,
-            repository: this.env.ARTIFACT_REPOSITORY,
-          });
+          const request = { ...input, repository: this.env.ARTIFACT_REPOSITORY };
+          const fingerprint = Array.from(
+            new Uint8Array(
+              await crypto.subtle.digest(
+                "SHA-256",
+                new TextEncoder().encode(JSON.stringify(request)),
+              ),
+            ),
+            (byte) => byte.toString(16).padStart(2, "0"),
+          ).join("");
+          const gate = this.getAdmission();
+          if (gate.active().some((item) => item.runId === runId && item.state === "quarantined")) {
+            core.fail(runId, true);
+            return;
+          }
+          let admitted: ReturnType<InfrastructureAdmission["reserve"]>;
+          try {
+            admitted = gate.reserve(
+              runId,
+              fingerprint,
+              this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true",
+            );
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              ["admission_identity_conflict", "invalid_admission_identity"].includes(error.message)
+            ) {
+              core.fail(runId, true);
+              return;
+            }
+            throw error;
+          }
+          if (!admitted.allowed && admitted.reason === "busy")
+            return { rescheduleAt: Date.now() + 5000 };
+          if (
+            !admitted.allowed &&
+            !["stop_required", "already_finished"].includes(admitted.reason)
+          ) {
+            core.fail(runId, true);
+            return;
+          }
+          await this.budgetJobs.enqueue("watchdog", {}, Date.now() + 5000);
+          // Dedicated cleanup job owns bounded stop retries; the result job only observes.
+          const admission = admitted.allowed ? await worker.start(request) : { stage: "existing" };
           if (
             admission.stage === "blocked" &&
             "error" in admission &&
@@ -222,9 +310,12 @@ export class RepositoryAgent extends Agent<Env> {
           if (receipt.stage === "done" && receipt.result) {
             await core.completeVerified(runId, receipt.result);
             await worker.acknowledge(runId);
+            if (receipt.cleanupVerified) gate.release(runId, true);
             return;
           }
           if (receipt.stage === "blocked") {
+            if (!receipt.cleanupVerified) return { rescheduleAt: Date.now() + 5000 };
+            gate.release(runId, true);
             core.fail(runId, receipt.error === "reconciliation_required");
             return;
           }

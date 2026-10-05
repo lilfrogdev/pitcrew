@@ -23,9 +23,8 @@
     "budgetAlertThresholdsUsd": [50, 75, 90]
   },
   "missingRuntimeControls": [
-    "Atomic monthly admission and reservation ledger covering infrastructure",
-    "Durable aggregate run concurrency admission",
-    "Independent durable deadline and stop verification",
+    "Live verification of atomic admission, single-run concurrency and bounded cleanup",
+    "Reconciliation/administrative recovery of quarantined owned resources",
     "Outbound byte limits and bounded artifact/log retention",
     "Provider token, turn, retry and timeout ceilings in the OpenRouter integration"
   ]

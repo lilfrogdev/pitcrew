@@ -120,6 +120,30 @@ it("quarantines uncertain native preparation and never replays it", async () => 
   expect(f.store.read()).toMatchObject({ stage: "blocked", error: "reconciliation_required" });
   expect(calls).toBe(1);
 });
+it("parks failed cleanup after twelve attempts without replaying paid work", async () => {
+  const f = fixture(),
+    runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  await runner.advance(f.ports);
+  runner.requestStop(input.runId);
+  let stops = 0;
+  const ports = {
+    ...f.ports,
+    stop: async () => {
+      stops++;
+      throw Error("unavailable");
+    },
+  };
+  for (let i = 0; i < 20; i++) await new DurableChangePipeline(f.store).advance(ports);
+  expect(stops).toBe(12);
+  expect(f.store.read()).toMatchObject({
+    stage: "blocked",
+    cleanupPending: true,
+    cleanupParked: true,
+    error: "reconciliation_required",
+  });
+  expect(f.calls).toEqual(["prepare"]);
+});
 it("rejects stale reviewer evidence and bounds total pipeline lifetime", async () => {
   const f = fixture(),
     runner = new DurableChangePipeline(f.store);

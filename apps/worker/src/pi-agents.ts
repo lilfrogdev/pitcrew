@@ -395,7 +395,11 @@ export class ChangeAgent extends TaskAgent {
       "change-pipeline",
       async (jobs) => {
         const state = this.pipeline.status();
-        if (state && (state.cleanupPending || !["done", "blocked"].includes(state.stage)))
+        if (
+          state &&
+          ((state.cleanupPending && !state.cleanupParked) ||
+            !["done", "blocked"].includes(state.stage))
+        )
           await jobs.enqueue("pipeline", { runId: state.input.runId });
       },
       async () => {
@@ -451,7 +455,9 @@ export class ChangeAgent extends TaskAgent {
           stop: (workspace) => this.stopOwners(workspace),
         });
         const state = this.pipeline.status();
-        return state && (state.cleanupPending || !["done", "blocked"].includes(state.stage))
+        return state &&
+          ((state.cleanupPending && !state.cleanupParked) ||
+            !["done", "blocked"].includes(state.stage))
           ? { rescheduleAt: Date.now() + 1000 }
           : undefined;
       },
@@ -559,6 +565,10 @@ export class ChangeAgent extends TaskAgent {
       result: state.result,
       error: state.error,
       acknowledged: !!state.resultAcknowledged,
+      cleanupVerified:
+        !state.cleanupPending &&
+        (state.stage === "done" ||
+          (state.stage === "blocked" && state.error !== "reconciliation_required")),
     };
   }
 }
