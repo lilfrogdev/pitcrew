@@ -2,7 +2,18 @@
 
 Verified on 2026-10-05 from local checkout `7678dbf` and the user's Mac Google Chrome, profile `Your Chrome`. This branch is `codex/cloudflare-connection` in an isolated clone; it does not change the managed UI/runtime on port 5173.
 
-## Current state
+## Verified update: 2026-10-05 04:44 UTC
+
+The user approved the exact proposed OAuth grant and a **$100 USD/month total Pitcrew Cloudflare budget**, with subscription details to be confirmed before purchase. The user then requested a separate Cloudflare account.
+
+- Wrangler OAuth callback completed successfully. `wrangler whoami` confirms OAuth authentication and exactly `user:read`, `offline_access`, `account:read`, `workers_scripts:write`, `artifacts:write`, `containers:write`, `cloudchamber:write`, `ai:write`. No raw credential values were read or transmitted manually.
+- Refreshable credentials are stored by Wrangler at `/Users/lilfrogdev/Library/Preferences/.wrangler/config/default.toml`. The default-scope warning is expected for the intentionally narrowed grant; do not run a default login to expand it.
+- Created a separate account **Pitcrew**, ID `004227d2029c56b084ce15356768def3`, at `2026-10-05T04:41:52.035760Z`. Existing OAuth can see it in `whoami --json`; no second authorization was started. Browser consent was completed by the user.
+- Creation UI explicitly said free-tier defaults, with no inherited payment methods, plans, subscriptions or entitlements. There was no new agreement on the creation form. The browser initially kept showing progress; both a read-only account API result and the Pitcrew dashboard verify creation. Do not retry account creation.
+- `wrangler.backend.json` is now pinned to **Pitcrew's account_id**. No resources or paid execution belong in the other accounts.
+- Worker/model/Artifacts/Container provisioning remains pending. $100 is an authorized operating budget, not a Cloudflare-enforced hard cap. Subscription purchase remains pending explicit checkout review/confirmation.
+
+## Initial inspection (before approved OAuth and account creation)
 
 - Browser: signed in to account `lilfrogdev`, account ID `f0c2450b36acc78da326d2bfbd84346b`, Workers subdomain `lilfrogdev.workers.dev`.
 - Workers dashboard: no projects, zero requests. Containers dashboard explicitly shows "Enable Containers" and requires purchase of Workers Paid. Workers plan: **Free**. Dashboard says Zero Trust must be set up before requiring Access sign-in.
@@ -38,7 +49,7 @@ Runtime owner task: `01a1092c-e9ba-77ae-a9ae-32af249660ff`. This branch changes 
 
 ## Credential approval
 
-No OAuth request has been started. A requested narrowed Wrangler OAuth consent would use exactly:
+The user completed the approved narrowed Wrangler OAuth consent. The verified grant uses exactly:
 
 - `account:read`, `user:read`: account details/membership and user info.
 - `workers_scripts:write`: Workers scripts, Durable Objects, subdomains, triggers and tail data.
@@ -47,19 +58,19 @@ No OAuth request has been started. A requested narrowed Wrangler OAuth consent w
 - `ai:write`: Workers AI catalog/assets.
 - `offline_access`: Wrangler adds this automatically; a refreshable credential is stored locally until revoked.
 
-Wrangler scope names/descriptions were checked with `wrangler login --scopes-list`; automatic offline_access was confirmed in the installed CLI. OAuth is potentially broad across accounts the user can access, unlike an account-scoped API token. No Pages, DNS/routes, KV, R2, or billing permission is requested. User approval is required immediately before starting this persistent grant. If an account-scoped custom token is preferred, the user must create and store it through the official dashboard/secret manager; never paste it in chat. Do not inspect or copy browser cookies/tokens.
+Wrangler scope names/descriptions were checked with `wrangler login --scopes-list`; automatic offline_access was confirmed in the installed CLI. OAuth is potentially broad across accounts the user can access, unlike an account-scoped API token. No Pages, DNS/routes, KV, R2, or billing permission is requested. The action-time user approval for this grant was received; no broader grant is authorized. If an account-scoped custom token is preferred, the user must create and store it through the official dashboard/secret manager; never paste it in chat. Do not inspect or copy browser cookies/tokens.
 
 Account credentials must not enter sandboxes. Existing transport mints 300-second repo-scoped read/write Artifacts leases for Git operations; approval of that runtime delegation is part of enabling live execution. Do not manually transmit raw lease tokens. Repository import needs separate approval for any new GitHub access or private source transfer.
 
 ## Budget needed before live execution
 
-Current account is Free. Containers and Artifacts require **Workers Paid at $5/month plus usage**. There is no approved budget yet. Do not upgrade or provision these billable services until approved.
+Pitcrew is currently Free. Containers and Artifacts require **Workers Paid at $5/month plus usage**. The user approved a $100/month total operating budget; do not purchase the subscription until the actual checkout agreements and final total are confirmed.
 
 - Containers: monthly includes 25 GiB-hours RAM, 375 vCPU-minutes CPU, 200 GB-hours disk; overages are $0.0000025/GiB-second, $0.000020/vCPU-second, $0.00000007/GB-second. Default `lite` is 256 MiB RAM, 1/16 vCPU and 2 GB disk. Ten active minutes at full CPU would cost roughly $0.001284 beyond included allowances, excluding DO/Worker/model/network/log charges. This is a small validation workload estimate, not proof that lite can run project builds. Run size and concurrency still need measured limits.
 - Artifacts: Paid only; operations/storage billing begins October 14, 2026. Includes 10,000 operations/month and 1 GB; overages $0.15/1,000 operations and $0.50/GB-month.
 - Workers AI: 10,000 neurons/day included; on Paid, overage $0.011/1,000 neurons. An economical candidate already covered by the repo's model tests is `@cf/qwen/qwen3-30b-a3b-fp8`: $0.051/million input and $0.335/million output tokens. Capability/quality for coding still needs live validation.
 
-Worker, Durable Object, egress and logging usage are separate. A billing alert is not a hard spending cap. A strict approved budget requires bounded run duration, concurrency, model tokens and an execution kill switch before autonomous operation; no new spend is authorized by this document.
+Worker, Durable Object, egress and logging usage are separate. A billing alert is not a hard spending cap. A strict approved budget requires bounded run duration, concurrency, model tokens and an execution kill switch before autonomous operation; the operating budget is authorized by the user, while purchase confirmation and live execution controls remain pending.
 
 ## Required live evidence after approvals
 
@@ -73,3 +84,37 @@ Sources checked on 2026-10-05:
 - https://developers.cloudflare.com/artifacts/get-started/workers/
 - https://developers.cloudflare.com/containers/api/durable-object-container/
 - https://developers.cloudflare.com/workers-ai/platform/pricing/
+
+## Budget controls proposal after subscription approval
+
+Official Cloudflare budget alerts only send email; they **do not pause or cap usage**. They cover usage-based charges, so the $5 base subscription and applicable tax also need room inside the $100 total budget. No hard $100 account cap has been verified.
+
+Proposed initial limits, to implement and verify before autonomous paid runs:
+
+- One active change run, one independent reviewer, smallest measured viable instance size; at most one live container per class initially.
+- Ten-minute wall-clock sandbox lifetime with durable destruction/cleanup, bounded command duration, no idle `sleep infinity` surviving a completed run.
+- Explicit model/token ceilings, bounded retry count, per-run reservation and monthly admission ledger. Refuse new paid work when the conservative reservation reaches the operating threshold.
+- Usage alerts at $50, $75 and $90; pause new admission at the $75 internal estimate, destroy active sandbox workloads by the $90 internal threshold, reserve remaining budget for subscription, tax, delayed accounting, storage, and other services. These controls mitigate overspend but do not guarantee a total cap while Cloudflare's reporting is delayed or other actors can use the account.
+- Keep execution disabled until the controls and bounded live probes are reviewed. Do not schedule automatic paid activity just because credentials exist.
+
+These are proposals, not controls already active on Cloudflare. Subscription checkout in the new account still must establish exact total/tax, payment type, recurring terms and agreement links before purchase. General cancellation documentation says cancellation/downgrade takes effect at the end of the current billing period, with no refund for unused time; use the actual Workers checkout for account-specific confirmation.
+
+Additional sources:
+
+- https://developers.cloudflare.com/billing/manage/budget-alerts/
+- https://developers.cloudflare.com/billing/manage/cancel-subscription/
+
+## Actual Pitcrew Workers checkout inspected
+
+Checkout: https://dash.cloudflare.com/004227d2029c56b084ce15356768def3/workers/checkout/payment
+
+- Current plan remains Free. No upgrade was confirmed.
+- Workers Paid order summary: **$5/month**, base fee charged today; usage above included allowances billed monthly.
+- New account has no saved payment method. Form offers credit-card billing details and PayPal. No card, address, VAT/GST, or other payment details were entered or copied. User must enter billing information securely in the browser.
+- Taxes: no exact tax or final tax-inclusive total is displayed before billing address entry. Do not call the $5 display a verified tax-inclusive total.
+- Two unchecked agreements: Terms of Service/Privacy Policy, and authorization to charge the card for usage beyond free limits each month until cancellation. Checkout explicitly says cancellation is effective at the end of the current billing period.
+- Actual agreement links: https://www.cloudflare.com/terms and https://www.cloudflare.com/privacypolicy ; usage rates link https://www.cloudflare.com/plans ; cancellation link https://dash.cloudflare.com/?to=/:account/billing/subscriptions . No checkboxes were checked.
+- Final action is **Confirm upgrade**. It was not clicked. Obtain action-time confirmation for these agreements/purchase after user enters payment details and the final total/tax is available.
+- Browser tab `2120546198` in the user's Mac Google Chrome is kept open for secure handoff. Visual evidence: `/Users/lilfrogdev/Documents/Codex/2026-10-04/task-19/evidence/pitcrew-workers-checkout.png`. Account creation evidence: `/Users/lilfrogdev/Documents/Codex/2026-10-04/task-19/evidence/pitcrew-account-created.png`.
+
+Authentication is live and verified, account creation is verified, but backend execution is not connected: no Worker, DO migration, Artifacts repository, sandbox image/application, model call or local authenticated API ingress has been provisioned or exercised.

@@ -3,22 +3,45 @@
   "name": "pitcrew-backend",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-03",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": false,
   "preview_urls": false,
   "durable_objects": {
     "bindings": [
-      { "name": "REPOSITORY", "class_name": "RepositoryAgent" },
-      { "name": "CHANGE", "class_name": "ChangeAgent" },
-      { "name": "REVIEW", "class_name": "ReviewAgent" }
+      {
+        "name": "REPOSITORY",
+        "class_name": "RepositoryAgent"
+      },
+      {
+        "name": "CHANGE",
+        "class_name": "ChangeAgent"
+      },
+      {
+        "name": "REVIEW",
+        "class_name": "ReviewAgent"
+      }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["RepositoryAgent"] },
-    { "tag": "v2", "new_sqlite_classes": ["ChangeAgent", "ReviewAgent"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RepositoryAgent"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "ChangeAgent",
+        "ReviewAgent"
+      ]
+    }
   ],
   "vars": {
     "ENVIRONMENT": "production",
     "EXECUTION_MODE": "disabled"
-  }
+  },
+  "account_id": "004227d2029c56b084ce15356768def3"
 }
