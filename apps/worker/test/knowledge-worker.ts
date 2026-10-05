@@ -1,5 +1,6 @@
+import { readRepositoryState } from "../src/repository-state";
 import { RepositoryAgent } from "../src/index";
-import { Coordinator, initialState, fakeExecution, type State } from "../src/coordinator";
+import { initialState, fakeExecution, type State } from "../src/coordinator";
 import { ChangeAgent, type PiEnv } from "../src/pi-agents";
 import type { KnowledgeAck, KnowledgeReport, WorkerKnowledgeContext } from "@pitcrew/protocol";
 interface Env extends PiEnv {
@@ -46,19 +47,10 @@ export class KnowledgeChangeAgent extends ChangeAgent {
 }
 export class KnowledgeReceiver extends RepositoryAgent {
   async prepareFixture() {
-    void this
-      .sql`CREATE TABLE IF NOT EXISTS repository_state (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)`;
-    const state = initialState({ baseSha: "a".repeat(40), configurationRevision: "1" });
-    const core = new Coordinator(
-      state,
-      (value) => {
-        void this.sql`INSERT OR REPLACE INTO repository_state VALUES(1,${JSON.stringify(value)})`;
-      },
-      () => "now",
-      (() => {
-        let id = 0;
-        return () => String(++id);
-      })(),
+    const core = this.getCoordinator();
+    Object.assign(
+      core.state,
+      initialState({ baseSha: "a".repeat(40), configurationRevision: "1" }),
     );
     const thread = core.createThread("fixture", "thread"),
       submitted = core.submit(thread.id, "fixture intent", "message");
@@ -98,8 +90,8 @@ export class KnowledgeReceiver extends RepositoryAgent {
   async fixtureStatus() {
     void this
       .sql`CREATE TABLE IF NOT EXISTS fixture_notes(id TEXT PRIMARY KEY,body TEXT NOT NULL,attempts INTEGER NOT NULL)`;
-    const [row] = this.sql<{ value: string }>`SELECT value FROM repository_state WHERE id=1`;
-    const state = row ? (JSON.parse(row.value) as State) : undefined;
+    const stored = readRepositoryState(this.ctx.storage.sql);
+    const state = stored ? (JSON.parse(stored) as State) : undefined;
     return this.sql`SELECT id,body,attempts FROM fixture_notes`.map((note) => ({
       ...note,
       recorded: state?.events.filter((event) => event.knowledge?.eventId === note.id),

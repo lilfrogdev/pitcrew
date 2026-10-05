@@ -7,6 +7,11 @@ import type {
   RunEvidence,
   LandingAuthorizationReceipt,
   LandingResultReceipt,
+  SubmittedAttachment,
+  AttachmentCapabilities,
+  ModelChoice,
+  ModelSelection,
+  ModelSettings,
 } from "@pitcrew/protocol";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
 export type Snapshot = {
@@ -14,8 +19,17 @@ export type Snapshot = {
   runs: Run[];
   reviews: Review[];
   evidence: RunEvidence[];
+  turns?: { id: string; status: "queued" | "running" | "completed" | "failed"; error?: string }[];
 };
-export type LandingCapabilities = { landing: { enabled: boolean; backend: "fixture" | null } };
+export type LandingCapabilities = {
+  landing: { enabled: boolean; backend: "fixture" | null };
+  composer?: {
+    models: ModelChoice[];
+    settings: ModelSettings;
+    conversation: boolean;
+    attachments?: AttachmentCapabilities;
+  };
+};
 export type ApprovalInput = {
   expectedTargetSha: string;
   candidateSha: string;
@@ -35,7 +49,20 @@ export interface Api {
   snapshot(threadId: string): Promise<Snapshot>;
   latestRun?(threadId: string): Promise<Run | undefined>;
   createThread(projectId: string, title: string, key: string): Promise<Thread>;
-  send(threadId: string, content: string, key: string): Promise<unknown>;
+  setThreadModelSelection?(
+    projectId: string,
+    threadId: string,
+    selection: ModelSelection,
+  ): Promise<Thread>;
+  setModelSettings?(projectId: string, settings: ModelSettings): Promise<ModelSettings>;
+  attachmentUrl?(threadId: string, attachmentId: string): string;
+  send(
+    threadId: string,
+    content: string,
+    key: string,
+    attachments?: SubmittedAttachment[],
+    selection?: ModelSelection,
+  ): Promise<unknown>;
 }
 export class ApiError extends Error {
   constructor(public status: number) {
@@ -105,6 +132,8 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 export const httpApi: Api = {
+  attachmentUrl: (threadId, attachmentId) =>
+    `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`,
   capabilities: () => request("/capabilities"),
   approve: (id, input) => request(`/runs/${encodeURIComponent(id)}/merge-approval`, input),
   land: (id, authorizationId) =>
@@ -121,15 +150,17 @@ export const httpApi: Api = {
   latestRun: async (id) => (await request<Run[]>(`/threads/${encodeURIComponent(id)}/runs`)).at(-1),
   snapshot: async (id) => {
     const path = `/threads/${encodeURIComponent(id)}`;
-    const [messages, runs] = await Promise.all([
+    const [messages, runs, turns] = await Promise.all([
       request<Message[]>(`${path}/messages`),
       request<Run[]>(`${path}/runs`),
+      request<NonNullable<Snapshot["turns"]>>(`${path}/turns`),
     ]);
     const evidence = await Promise.all(
       runs.map((run) => request<RunEvidence>(`/runs/${encodeURIComponent(run.id)}/evidence`)),
     );
     return {
       messages,
+      turns,
       runs: evidence.map((item) => item.run),
       reviews: evidence.flatMap((item) => item.reviews),
       evidence,
@@ -137,6 +168,18 @@ export const httpApi: Api = {
   },
   createThread: (id, title, idempotencyKey) =>
     request(`/projects/${encodeURIComponent(id)}/threads`, { title, idempotencyKey }),
-  send: (id, content, idempotencyKey) =>
-    request(`/threads/${encodeURIComponent(id)}/messages`, { content, idempotencyKey }),
+  setThreadModelSelection: (projectId, id, modelSelection) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/threads/${encodeURIComponent(id)}/model-selection`,
+      { modelSelection },
+    ),
+  setModelSettings: (projectId, settings) =>
+    request(`/projects/${encodeURIComponent(projectId)}/model-settings`, { settings }),
+  send: (id, content, idempotencyKey, attachments, modelSelection) =>
+    request(`/threads/${encodeURIComponent(id)}/messages`, {
+      content,
+      idempotencyKey,
+      attachments,
+      modelSelection,
+    }),
 };

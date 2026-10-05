@@ -6,7 +6,7 @@ import { createAI } from "agents/models/pi-ai";
 import type { ModelConfiguration } from "@pitcrew/protocol";
 export function configureModels(
   configuration: ModelConfiguration,
-  bindings: { AI?: Ai; secrets?: Record<string, string> },
+  bindings: { AI?: unknown; secrets?: Record<string, string> },
   fixture?: Provider,
 ) {
   const credentials: CredentialStore = {
@@ -58,9 +58,13 @@ export function configureModels(
   if (configuration.provider === "cloudflare") {
     if (!bindings.AI || !configuration.model.startsWith("@cf/"))
       throw Error("model_not_configured");
-    const ai = createAI({ binding: bindings.AI });
+    const ai = createAI({ binding: bindings.AI as Parameters<typeof createAI>[0]["binding"] });
     models.setProvider(ai.provider);
-    return { models, model: ai(configuration.model) };
+    // Only pinned catalog models expose trustworthy effort/input capabilities.
+    // The adapter can synthesize unknown IDs, which must not become selectable.
+    const model = ai.provider.getModels().find((entry) => entry.id === configuration.model);
+    if (!model) throw Error("model_not_configured");
+    return { models, model };
   }
   const factories: Record<string, () => Provider> = {
     openai: openaiProvider,

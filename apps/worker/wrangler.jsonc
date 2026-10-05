@@ -21,6 +21,10 @@
         "class_name": "ChangeAgent",
       },
       {
+        "name": "CONVERSATION",
+        "class_name": "RepoConversationAgent",
+      },
+      {
         "name": "REVIEW",
         "class_name": "ReviewAgent",
       },
@@ -34,6 +38,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["ChangeAgent", "ReviewAgent"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["RepoConversationAgent"],
     },
   ],
   "vars": {
@@ -57,6 +65,10 @@
           {
             "name": "CHANGE",
             "class_name": "ChangeAgent",
+          },
+          {
+            "name": "CONVERSATION",
+            "class_name": "RepoConversationAgent",
           },
           {
             "name": "REVIEW",

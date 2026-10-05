@@ -1,3 +1,9 @@
+import type { ConversationTurn, ConversationInput } from "./conversation";
+import type { ModelCatalog } from "./model-selection";
+import { validateSelection, resolveRunModels } from "./model-selection";
+import { selectionAttachmentCapabilities } from "@pitcrew/protocol";
+import type { ModelSettings } from "@pitcrew/protocol";
+import type { AttachmentStore } from "./attachment-store";
 import {
   applyKnowledgePage,
   projectKnowledge,
@@ -35,6 +41,7 @@ import {
   type VerificationPlan,
 } from "../../../packages/verification/src/index.ts";
 import type { VerificationEvidence } from "@pitcrew/protocol";
+import { AttachmentValidationError, validateMessageAttachments } from "@pitcrew/protocol";
 import type {
   Change,
   Event,
@@ -61,6 +68,7 @@ export class AdmissionError extends Error {
   }
 }
 export interface State {
+  conversationTurns?: ConversationTurn[];
   // Latest explicit checkpoint per run; never a per-note causal watermark.
   knowledgeObservations?: Record<string, number>;
   knowledgeProjection?: { projectId: string; repository: string; current: CurrentKnowledge };
@@ -142,9 +150,11 @@ function delegationPolicy(project: Project): KnowledgeRecord {
 export class Coordinator {
   constructor(
     public state: State,
-    private persist: (state: State) => void,
+    private persistState: (state: State) => void,
     private now = () => new Date().toISOString(),
     private id: () => string = () => crypto.randomUUID(),
+    private attachments?: AttachmentStore,
+    private atomic: <T>(operation: () => T) => T = (operation) => operation(),
   ) {
     const needsMigration =
       state.threads.some((thread) => thread.archived === undefined) ||
@@ -460,6 +470,7 @@ export class Coordinator {
     input: DispatchIntake,
     acceptance: AcceptanceCriteria,
     profileRevision: string,
+    catalog?: ModelCatalog,
   ) {
     this.validateKey(key);
     const saved = this.state.keys[`intake_dispatch_${actor}_${key}`];
@@ -572,6 +583,9 @@ export class Coordinator {
               const run: Run = {
                 id: this.id(),
                 changeId,
+                runModels: catalog
+                  ? resolveRunModels(catalog, undefined, project.modelSettings)
+                  : undefined,
                 messageId: messages[0].id,
                 threadId: thread.id,
                 status: "queued",
@@ -646,9 +660,28 @@ export class Coordinator {
     }
     this.complete(runId, result);
   }
+  private persist(state: State) {
+    // Bound aggregate in-memory snapshots as well as SQLite rows. Durable Objects have
+    // a 128 MiB heap; updates clone state and encode several temporary copies.
+    if (new TextEncoder().encode(JSON.stringify(state)).byteLength > 16 * 1024 * 1024)
+      throw new AdmissionError("repository_storage_limit", 413);
+    this.persistState(state);
+  }
   private validateKey(key: unknown): asserts key is string {
     if (typeof key !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(key))
       throw new AdmissionError("invalid_idempotency_key");
+  }
+  readThreadAttachment(threadId: string, attachmentId: string) {
+    this.thread(threadId);
+    const reference = this.state.messages
+      .filter((message) => message.threadId === threadId)
+      .flatMap((message) => message.attachments ?? [])
+      .find(
+        (attachment) => "attachmentId" in attachment && attachment.attachmentId === attachmentId,
+      );
+    if (!reference || !("attachmentId" in reference) || !this.attachments)
+      throw new AdmissionError("not_found", 404);
+    return this.attachments.get(reference);
   }
   private transaction<T>(key: string, body: unknown, operation: () => T): T {
     const serialized = JSON.stringify(body),
@@ -660,10 +693,12 @@ export class Coordinator {
     if (Object.keys(this.state.keys).length >= 500) throw new AdmissionError("capacity", 429);
     const before = structuredClone(this.state);
     try {
-      const result = operation();
-      this.state.keys[key] = { body: serialized, result: structuredClone(result) };
-      this.persist(this.state);
-      return result;
+      return this.atomic(() => {
+        const result = operation();
+        this.state.keys[key] = { body: serialized, result: structuredClone(result) };
+        this.persist(this.state);
+        return result;
+      });
     } catch (error) {
       this.state = before;
       throw error;
@@ -672,9 +707,11 @@ export class Coordinator {
   private durableUpdate<T>(operation: () => T): T {
     const before = structuredClone(this.state);
     try {
-      const result = operation();
-      this.persist(this.state);
-      return result;
+      return this.atomic(() => {
+        const result = operation();
+        this.persist(this.state);
+        return result;
+      });
     } catch (error) {
       this.state = before;
       throw error;
@@ -701,7 +738,11 @@ export class Coordinator {
       type === "message.created"
         ? this.state.messages.find((item) => item.id === entityId)
         : undefined;
+    const conversation = type.startsWith("conversation.")
+      ? this.state.conversationTurns?.find((item) => item.id === entityId)
+      : undefined;
     const threadId =
+      conversation?.threadId ??
       run?.threadId ??
       change?.threadId ??
       message?.threadId ??
@@ -725,10 +766,12 @@ export class Coordinator {
       provenance: {
         actor: review ? { kind: "worker", id: `review:${review.runId}` } : actor,
         repository: this.state.project.repository,
-        baseSha: run?.baseSha ?? this.state.project.baseSha,
+        baseSha: run?.baseSha ?? conversation?.baseSha ?? this.state.project.baseSha,
         candidateSha: run?.candidateSha,
         configurationRevision:
-          run?.configurationRevision ?? this.state.project.configurationRevision,
+          run?.configurationRevision ??
+          conversation?.configurationRevision ??
+          this.state.project.configurationRevision,
         threadId,
         changeId: change?.id,
         runId: run?.id,
@@ -736,7 +779,10 @@ export class Coordinator {
           ? [{ kind: "review", id: review.id, revision: review.candidateSha }]
           : run?.artifactId
             ? [{ kind: "artifact", id: run.artifactId, revision: run.candidateSha }]
-            : (change?.originMessageIds ?? (message ? [message.id] : [])).map((id) => ({
+            : (
+                change?.originMessageIds ??
+                (message ? [message.id] : conversation ? [conversation.messageId] : [])
+              ).map((id) => ({
                 kind: "message" as const,
                 id,
               })),
@@ -776,55 +822,401 @@ export class Coordinator {
       return thread;
     });
   }
-  submit(threadId: string, content: string, key: string, actor = "local-fixture"): SubmitResult {
+  setThreadModelSelection(threadId: string, catalog: ModelCatalog, value: unknown) {
+    const chosen = validateSelection(catalog, value);
+    return this.durableUpdate(() => {
+      const thread = this.thread(threadId);
+      thread.modelSelection = chosen;
+      return structuredClone(thread);
+    });
+  }
+  updateModelSettings(catalog: ModelCatalog, settings: unknown) {
+    if (!settings || typeof settings !== "object" || Array.isArray(settings))
+      throw new AdmissionError("invalid_model_settings");
+    const input = settings as ModelSettings;
+    if (Object.keys(input).some((key) => !["default", "roles"].includes(key)))
+      throw new AdmissionError("invalid_model_settings");
+    if (
+      input.roles &&
+      (typeof input.roles !== "object" ||
+        Array.isArray(input.roles) ||
+        Object.keys(input.roles).some((key) => !["implementer", "reviewer"].includes(key)))
+    )
+      throw new AdmissionError("invalid_model_settings");
+    const normalized: ModelSettings = { default: validateSelection(catalog, input.default) };
+    if (input.roles) {
+      normalized.roles = {};
+      for (const role of ["implementer", "reviewer"] as const)
+        if (input.roles[role])
+          normalized.roles[role] = validateSelection(catalog, input.roles[role]);
+    }
+    return this.durableUpdate(() => {
+      this.state.project.modelSettings = normalized;
+      return structuredClone(normalized);
+    });
+  }
+  queueTurn(
+    threadId: string,
+    content: string,
+    key: string,
+    actor: string,
+    catalog: ModelCatalog,
+    selection?: unknown,
+    attachments?: unknown,
+  ) {
     this.validateKey(key);
-    return this.transaction(`message_${key}`, { threadId, content }, () => {
-      this.thread(threadId);
-      if (typeof content !== "string" || !content.trim() || content.length > 8000)
-        throw new AdmissionError("invalid_content");
-      if (
-        this.state.messages.length >= 500 ||
-        this.state.runs.length >= 500 ||
-        this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4
+    // Leave room for the bounded pending replies and terminal worker/event records.
+    if (
+      !this.state.keys[`conversation_${key}`] &&
+      new TextEncoder().encode(JSON.stringify(this.state)).byteLength > 15 * 1024 * 1024
+    )
+      throw new AdmissionError("repository_storage_limit", 413);
+    const previous = this.state.keys[`conversation_${key}`]?.result as
+      | { message: Message; turn: ConversationTurn }
+      | undefined;
+    const thread = this.thread(threadId);
+    const chosen = validateSelection(
+      catalog,
+      selection ??
+        previous?.turn.models.repoAgent ??
+        thread.modelSelection ??
+        this.state.project.modelSettings?.default ??
+        catalog.defaultSelection,
+    );
+    const models =
+      previous?.turn.models ?? resolveRunModels(catalog, chosen, this.state.project.modelSettings);
+    const capabilities = selectionAttachmentCapabilities(catalog.choices, models);
+    const accepted = validateMessageAttachments(attachments, capabilities);
+    // Replay compares bytes against immutable references, without storing user image bytes in keys.
+    if (previous)
+      accepted.forEach((item, index) => {
+        if ("data" in item) {
+          const ref = previous.message.attachments?.[index];
+          if (
+            !this.attachments ||
+            !ref ||
+            !("attachmentId" in ref) ||
+            !this.attachments.matches(ref, item)
+          )
+            throw new AdmissionError("idempotency_conflict", 409);
+        }
+      });
+    const descriptor = accepted.map((item) =>
+      "data" in item ? { id: item.id, name: item.name, mediaType: item.mediaType } : item,
+    );
+    return this.transaction(
+      `conversation_${key}`,
+      { threadId, content, actor, selection: chosen, attachments: descriptor },
+      () => {
+        if (typeof content !== "string" || !content.trim() || content.length > 8000)
+          throw new AdmissionError("invalid_content");
+        const turns = (this.state.conversationTurns ??= []);
+        if (
+          this.state.messages.length >= 500 ||
+          turns.length >= 500 ||
+          turns.filter((turn) => ["queued", "running"].includes(turn.status)).length >= 16
+        )
+          throw new AdmissionError("capacity", 429);
+        // Admit the complete preserved history against the new selection. Nothing is silently dropped.
+        const historyAttachments = this.state.messages
+          .filter((m) => m.threadId === threadId)
+          .flatMap((m) => m.attachments ?? [])
+          .map((item) => ("attachmentId" in item ? this.attachments!.get(item) : item));
+        let imageBytes = 0,
+          imageCount = 0,
+          textBytes = 0;
+        for (const item of [...historyAttachments, ...accepted]) {
+          validateMessageAttachments([item], capabilities);
+          if ("data" in item) {
+            imageBytes += atob(item.data).length;
+            imageCount++;
+          } else textBytes += new TextEncoder().encode(item.text).byteLength;
+        }
+        if (
+          imageCount > capabilities.maxImages ||
+          imageBytes > capabilities.imageTotalBytes ||
+          textBytes > capabilities.textTotalBytes
+        )
+          throw new AdmissionError("conversation_attachment_context_limit", 413);
+
+        const provisional: Message = {
+          id: "$pending",
+          threadId,
+          role: "user",
+          content: content.trim(),
+          attachments: accepted.map((item) =>
+            "data" in item
+              ? {
+                  id: item.id,
+                  name: item.name,
+                  mediaType: item.mediaType,
+                  attachmentId: "$pending",
+                }
+              : item,
+          ),
+          createdAt: this.now(),
+        };
+        const contextBytes = new TextEncoder().encode(
+          JSON.stringify({
+            repositoryContext: this.repositoryContext(),
+            messages: [...this.state.messages.filter((m) => m.threadId === threadId), provisional],
+          }),
+        ).byteLength;
+        const contextLimit = Math.min(
+          196608,
+          ...[models.repoAgent, models.implementer, models.reviewer].map((selection) =>
+            Math.floor(
+              catalog.choices.find((choice) => choice.id === selection.modelId)!.contextWindow / 2,
+            ),
+          ),
+        );
+        if (
+          contextBytes +
+            16384 *
+              turns.filter(
+                (item) => item.threadId === threadId && ["queued", "running"].includes(item.status),
+              ).length >
+          contextLimit
+        )
+          throw new AdmissionError("conversation_context_limit", 413);
+        const stored = accepted.map((item) => {
+          if (!("data" in item)) return item;
+          if (!this.attachments) throw new AdmissionError("image_storage_unavailable", 503);
+          return this.attachments.put(item);
+        });
+        const message: Message = {
+          id: this.id(),
+          threadId,
+          role: "user",
+          content: content.trim(),
+          attachments: stored?.length ? stored : undefined,
+          createdAt: this.now(),
+        };
+        const history = [...this.state.messages.filter((m) => m.threadId === threadId), message];
+        if (new TextEncoder().encode(JSON.stringify(history)).byteLength > 196608)
+          throw new AdmissionError("conversation_context_limit", 413);
+        const turn: ConversationTurn = {
+          id: this.id(),
+          threadId,
+          messageId: message.id,
+          status: "queued",
+          models,
+          actor,
+          contextBudgetBytes: contextLimit,
+          baseSha: this.state.project.baseSha,
+          configurationRevision: this.state.project.configurationRevision,
+          createdAt: this.now(),
+        };
+        thread.modelSelection = structuredClone(chosen);
+        this.state.messages.push(message);
+        turns.push(turn);
+        this.event("message.created", message.id, { kind: "principal", id: actor });
+        this.event("conversation.queued", turn.id);
+        return { message: structuredClone(message), turn: structuredClone(turn) };
+      },
+    );
+  }
+  conversationTurn(id: string) {
+    const turn = this.state.conversationTurns?.find((turn) => turn.id === id);
+    if (!turn) throw new AdmissionError("not_found", 404);
+    return turn;
+  }
+  beginConversation(id: string): ConversationInput | undefined {
+    const turn = this.conversationTurn(id);
+    if (!["queued", "running"].includes(turn.status)) return;
+    if (
+      this.state.conversationTurns!.some(
+        (other) =>
+          other.threadId === turn.threadId &&
+          other.id !== turn.id &&
+          ["queued", "running"].includes(other.status) &&
+          this.state.conversationTurns!.indexOf(other) <
+            this.state.conversationTurns!.indexOf(turn),
       )
-        throw new AdmissionError("capacity", 429);
+    )
+      return;
+    if (turn.input) return structuredClone(turn.input);
+    return this.durableUpdate(() => {
+      const origin = this.state.messages.findIndex((message) => message.id === turn.messageId);
+      // Earlier assistant answers are appended after queued user inputs; collect by earlier turn id.
+      const laterIds = new Set(
+        this.state
+          .conversationTurns!.slice(this.state.conversationTurns!.indexOf(turn) + 1)
+          .map((item) => item.messageId),
+      );
+      const messages = this.state.messages.filter(
+        (m, index) =>
+          m.threadId === turn.threadId &&
+          !laterIds.has(m.id) &&
+          (m.role !== "user" || index <= origin),
+      );
+      const order = new Map<string, number>();
+      this.state
+        .conversationTurns!.filter((item) => item.threadId === turn.threadId)
+        .forEach((item, index) => {
+          order.set(item.messageId, index * 2);
+          if (item.replyMessageId) order.set(item.replyMessageId, index * 2 + 1);
+        });
+      messages.sort((left, right) => (order.get(left.id) ?? -1) - (order.get(right.id) ?? -1));
+      if (
+        new TextEncoder().encode(
+          JSON.stringify({ messages, repositoryContext: this.repositoryContext() }),
+        ).byteLength > (turn.contextBudgetBytes ?? 196608)
+      )
+        throw new AdmissionError("conversation_context_limit", 413);
+      turn.status = "running";
+      turn.input = {
+        turnId: id,
+        threadId: turn.threadId,
+        projectId: this.state.project.id,
+        messageId: turn.messageId,
+        models: structuredClone(turn.models),
+        baseSha: turn.baseSha,
+        configurationRevision: turn.configurationRevision,
+        repositoryContext: this.repositoryContext(),
+        messages: structuredClone(messages),
+      };
+      this.event("conversation.started", id);
+      return structuredClone(turn.input);
+    });
+  }
+  completeConversation(id: string, text?: string, error?: string) {
+    const turn = this.conversationTurn(id);
+    if (["completed", "failed"].includes(turn.status)) return;
+    if (!error && (typeof text !== "string" || !text.trim() || text.length > 16384))
+      error = "conversation_response_limit";
+    this.durableUpdate(() => {
+      turn.status = error ? "failed" : "completed";
+      turn.error = error;
       const message: Message = {
         id: this.id(),
-        threadId,
-        role: "user",
-        content: content.trim(),
+        threadId: turn.threadId,
+        role: "coordinator",
+        content: error
+          ? `Repository agent could not answer: ${error}. You can send a new message to retry.`
+          : text!,
         createdAt: this.now(),
       };
+      turn.replyMessageId = message.id;
+      this.state.messages.push(message);
+      this.event("message.created", message.id);
+      this.event(error ? "conversation.failed" : "conversation.completed", id);
+    });
+  }
+  delegateConversation(id: string) {
+    const turn = this.conversationTurn(id);
+    if (turn.runId) return structuredClone(this.evidence(turn.runId).run);
+    if (turn.status !== "running" || !turn.input)
+      throw new AdmissionError("conversation_not_running", 409);
+    if (
+      turn.baseSha !== this.state.project.baseSha ||
+      turn.configurationRevision !== this.state.project.configurationRevision
+    )
+      throw new AdmissionError("stale_configuration", 409);
+    return this.durableUpdate(() => {
+      if (this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4)
+        throw new AdmissionError("capacity", 429);
       const change: Change = {
         id: this.id(),
-        threadId,
-        originMessageIds: [message.id],
-        contextRevision: this.repositoryContext().revision,
+        threadId: turn.threadId,
+        originMessageIds: [turn.messageId],
+        conversationContext: structuredClone(
+          turn.input!.messages.filter((m) => m.id !== turn.messageId),
+        ),
+        contextRevision: turn.input!.repositoryContext.revision,
+      };
+      const run: Run = {
+        id: this.id(),
+        threadId: turn.threadId,
+        messageId: turn.messageId,
+        changeId: change.id,
+        status: "queued",
+        baseSha: turn.baseSha,
+        configurationRevision: turn.configurationRevision,
+        runModels: structuredClone(turn.models),
       };
       this.state.changes!.push(change);
-      const run: Run = {
-        changeId: change.id,
-        messageId: message.id,
-        id: this.id(),
-        threadId,
-        status: "queued",
-        baseSha: this.state.project.baseSha,
-        configurationRevision: this.state.project.configurationRevision,
-      };
-      this.state.messages.push(message);
       this.state.runs.push(run);
-      this.event("message.created", message.id, { kind: "principal", id: actor });
-      this.event("change.created", change.id, { kind: "principal", id: actor });
+      turn.runId = run.id;
+      this.event("change.created", change.id);
       this.event("run.queued", run.id);
-      return { message, run, change };
+      return structuredClone(run);
     });
+  }
+  submit(
+    threadId: string,
+    content: string,
+    key: string,
+    actor = "local-fixture",
+    attachments?: unknown,
+  ): SubmitResult {
+    this.validateKey(key);
+    let acceptedAttachments;
+    try {
+      acceptedAttachments = validateMessageAttachments(attachments).map((item) => {
+        if ("data" in item) throw new AdmissionError("conversation_required");
+        return item;
+      });
+    } catch (error) {
+      if (error instanceof AttachmentValidationError) throw new AdmissionError(error.code);
+      throw error;
+    }
+    return this.transaction(
+      `message_${key}`,
+      {
+        threadId,
+        content,
+        ...(acceptedAttachments.length ? { attachments: acceptedAttachments } : {}),
+      },
+      () => {
+        this.thread(threadId);
+        if (typeof content !== "string" || !content.trim() || content.length > 8000)
+          throw new AdmissionError("invalid_content");
+        if (
+          this.state.messages.length >= 500 ||
+          this.state.runs.length >= 500 ||
+          this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4
+        )
+          throw new AdmissionError("capacity", 429);
+        const message: Message = {
+          id: this.id(),
+          threadId,
+          role: "user",
+          content: content.trim(),
+          ...(acceptedAttachments.length ? { attachments: acceptedAttachments } : {}),
+          createdAt: this.now(),
+        };
+        const change: Change = {
+          id: this.id(),
+          threadId,
+          originMessageIds: [message.id],
+          contextRevision: this.repositoryContext().revision,
+        };
+        this.state.changes!.push(change);
+        const run: Run = {
+          changeId: change.id,
+          messageId: message.id,
+          id: this.id(),
+          threadId,
+          status: "queued",
+          baseSha: this.state.project.baseSha,
+          configurationRevision: this.state.project.configurationRevision,
+        };
+        this.state.messages.push(message);
+        this.state.runs.push(run);
+        this.event("message.created", message.id, { kind: "principal", id: actor });
+        this.event("change.created", change.id, { kind: "principal", id: actor });
+        this.event("run.queued", run.id);
+        return { message: structuredClone(message), run, change };
+      },
+    );
   }
   change(changeId: string): Change {
     const change = this.state.changes!.find((change) => change.id === changeId);
     if (!change) throw new AdmissionError("not_found", 404);
     return change;
   }
-  retryChange(changeId: string, key: string): Run {
+  retryChange(changeId: string, key: string, catalog?: ModelCatalog): Run {
     this.validateKey(key);
     return this.transaction(`retry_${key}`, { changeId }, () => {
       const change = this.change(changeId);
@@ -853,6 +1245,13 @@ export class Coordinator {
       const run: Run = {
         id: this.id(),
         changeId,
+        runModels: catalog
+          ? resolveRunModels(
+              catalog,
+              this.thread(change.threadId).modelSelection,
+              this.state.project.modelSettings,
+            )
+          : this.state.runs.find((r) => r.changeId === changeId)?.runModels,
         messageId: change.originMessageIds[0],
         threadId: change.threadId,
         status: "queued",
@@ -941,6 +1340,7 @@ export class Coordinator {
       run.status = "running";
       this.event("run.started", run.id);
       const request: ExecutionInput = {
+        runModels: run.runModels,
         knowledgeContext: {
           attemptId: runId,
           projectId: this.state.project.id,
@@ -961,6 +1361,7 @@ export class Coordinator {
         baseSha: run.baseSha,
         configurationRevision: run.configurationRevision,
         repositoryContext: this.repositoryContext(),
+        conversationContext: structuredClone(this.change(run.changeId!).conversationContext),
         messages: structuredClone(
           this.state.messages.filter((m) =>
             this.change(run.changeId!).originMessageIds.includes(m.id),
@@ -1019,6 +1420,15 @@ export class Coordinator {
       run.landing = structuredClone(result);
       run.status = "completed";
       this.event("run.completed", run.id);
+    });
+  }
+  blockModelConfiguration(runId: string) {
+    const run = this.evidence(runId).run;
+    if (!["queued", "running", "awaiting_review"].includes(run.status)) return;
+    this.durableUpdate(() => {
+      run.status = "waiting_user";
+      run.error = "model_configuration_changed";
+      this.event("run.failed", run.id);
     });
   }
   fail(runId: string, reconcile = false) {

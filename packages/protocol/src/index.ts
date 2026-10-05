@@ -5,8 +5,13 @@ import type {
   WorkerKnowledgeContext,
 } from "./knowledge.ts";
 export * from "./knowledge.ts";
+export * from "./attachments.ts";
+export * from "./models.ts";
+import type { ModelSelection, ModelSettings, FrozenRunModels } from "./models.ts";
+import type { MessageAttachment, SubmittedAttachment } from "./attachments.ts";
 import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
 export interface Project {
+  modelSettings?: ModelSettings;
   id: string;
   name: string;
   repository: string;
@@ -14,6 +19,7 @@ export interface Project {
   configurationRevision: string;
 }
 export interface Thread {
+  modelSelection?: ModelSelection;
   id: string;
   projectId: string;
   title: string;
@@ -21,12 +27,15 @@ export interface Thread {
   archived?: boolean;
 }
 export interface Change {
+  /** Frozen historical discussion; reference data, never a new task authorization. */
+  conversationContext?: Message[];
   id: string;
   threadId: string;
   originMessageIds: string[];
   contextRevision: string;
 }
 export interface Message {
+  attachments?: MessageAttachment[];
   id: string;
   threadId: string;
   role: "user" | "coordinator" | "worker" | "reviewer";
@@ -42,6 +51,7 @@ export type RunStatus =
   | "failed"
   | "stopped";
 export interface Run {
+  runModels?: FrozenRunModels;
   landing?: LandingResultReceipt;
   // Optional only for legacy wire records; coordinator assigns every stored run.
   changeId?: string;
@@ -54,7 +64,11 @@ export interface Run {
   configurationRevision: string;
   workerId?: string;
   artifactId?: string;
-  error?: "execution_unavailable" | "execution_failed" | "reconciliation_required";
+  error?:
+    | "execution_unavailable"
+    | "execution_failed"
+    | "reconciliation_required"
+    | "model_configuration_changed";
 }
 export interface TestEvidence {
   baseSha: string;
@@ -85,6 +99,10 @@ export interface Event {
   sequence: number;
   projectId: string;
   type:
+    | "conversation.queued"
+    | "conversation.started"
+    | "conversation.completed"
+    | "conversation.failed"
     | "knowledge.changed"
     | "thread.created"
     | "message.created"
@@ -99,6 +117,7 @@ export interface Event {
   createdAt: string;
 }
 export interface SubmitMessage {
+  attachments?: SubmittedAttachment[];
   content: string;
   idempotencyKey: string;
 }
@@ -108,6 +127,8 @@ export interface SubmitResult {
   run: Run;
 }
 export interface ExecutionInput {
+  conversationContext?: Message[];
+  runModels?: FrozenRunModels;
   knowledgeContext?: WorkerKnowledgeContext;
   verificationPlan?: VerificationPlan;
   changeId?: string;

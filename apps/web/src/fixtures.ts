@@ -1,7 +1,35 @@
 import type { Api, Message, Run, Snapshot, Thread, Authorization } from "./api";
+import {
+  validateMessageAttachments,
+  selectionAttachmentCapabilities,
+  type ModelChoice,
+  type ModelSettings,
+  type MessageAttachment,
+} from "@pitcrew/protocol";
 const baseSha = "851b619d31a4f1b769b8046a3d306122097ac036";
 const candidateSha = "2a456c88e1d6489d17c1684bfb7f9e0e2a915a04";
 export function createFixtureApi(): Api {
+  const models: ModelChoice[] = [
+    {
+      id: "fixture",
+      label: "Fixture vision (synthetic)",
+      provider: "fixture",
+      model: "fixture",
+      efforts: ["off", "low", "medium", "high"],
+      contextWindow: 524288,
+      imageLimits: { maxBytes: 1048576, maxPerMessage: 4, maxPerRequest: 4 },
+    },
+    {
+      id: "fixture-text",
+      label: "Fixture text (synthetic)",
+      provider: "fixture",
+      model: "fixture-text",
+      efforts: ["off"],
+      contextWindow: 524288,
+    },
+  ];
+  let settings: ModelSettings = { default: { modelId: "fixture", effort: "medium" } };
+  const images = new Map<string, string>();
   const threads: Thread[] = [
     { id: "welcome", projectId: "pitcrew", title: "Make agent work visible" },
     { id: "recovery", projectId: "pitcrew", title: "Recover interrupted work" },
@@ -119,7 +147,25 @@ export function createFixtureApi(): Api {
   const sent = new Set<string>();
   const authorizations = new Map<string, Authorization>();
   return {
-    capabilities: async () => ({ landing: { enabled: true, backend: "fixture" } }),
+    capabilities: async () => ({
+      landing: { enabled: true, backend: "fixture" },
+      composer: {
+        models: structuredClone(models),
+        settings: structuredClone(settings),
+        conversation: true,
+      },
+    }),
+    attachmentUrl: (_threadId, id) => images.get(id) ?? "",
+    setThreadModelSelection: async (projectId, id, modelSelection) => {
+      const thread = threads.find((item) => item.projectId === projectId && item.id === id);
+      if (!thread) throw Error("Conversation not found.");
+      thread.modelSelection = structuredClone(modelSelection);
+      return structuredClone(thread);
+    },
+    setModelSettings: async (_projectId, next) => {
+      settings = structuredClone(next);
+      return structuredClone(settings);
+    },
     approve: async (runId, input) => {
       const existing = authorizations.get(input.idempotencyKey);
       if (existing) return existing;
@@ -192,14 +238,34 @@ export function createFixtureApi(): Api {
       data[key] = { messages: [], runs: [], reviews: [], evidence: [] };
       return thread;
     },
-    send: async (threadId, content, key) => {
+    send: async (threadId, content, key, attachments, selection = settings.default) => {
       if (sent.has(key)) return;
+      const validated = validateMessageAttachments(
+        attachments,
+        selectionAttachmentCapabilities(models, {
+          repoAgent: selection,
+          implementer: settings.roles?.implementer ?? selection,
+          reviewer: settings.roles?.reviewer ?? selection,
+        }),
+      );
+      const stored: MessageAttachment[] = validated.map((attachment) => {
+        if (attachment.mediaType === "text/plain") return attachment;
+        const attachmentId = crypto.randomUUID();
+        images.set(attachmentId, `data:${attachment.mediaType};base64,${attachment.data}`);
+        return {
+          id: attachment.id,
+          name: attachment.name,
+          mediaType: attachment.mediaType,
+          attachmentId,
+        };
+      });
       sent.add(key);
       const message: Message = {
         id: key,
         threadId,
         role: "user",
         content,
+        ...(stored.length ? { attachments: structuredClone(stored) } : {}),
         createdAt: new Date().toISOString(),
       };
       const run: Run = {
@@ -213,6 +279,7 @@ export function createFixtureApi(): Api {
         ...message,
         id: `agent-${key}`,
         role: "coordinator",
+        attachments: undefined,
         content:
           "Your change is queued. This preview uses synthetic data; no cloud worker or model was called.",
       });

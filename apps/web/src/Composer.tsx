@@ -1,0 +1,279 @@
+import { useEffect, useId, useRef, useState } from "react";
+import {
+  ATTACHMENT_LIMITS,
+  validateMessageAttachments,
+  type SubmittedAttachment,
+  type AttachmentCapabilities,
+} from "@pitcrew/protocol";
+import { Icon } from "./icons";
+
+export interface AttachmentDraft {
+  id: string;
+  name: string;
+  status: "reading" | "ready" | "error";
+  attachment?: SubmittedAttachment;
+  error?: string;
+}
+export function attachmentError(error: unknown): string {
+  const code = error instanceof Error ? error.message : "";
+  if (code.includes("too_large"))
+    return "Attachment size exceeds the displayed file or combined limit. Nothing has been truncated.";
+  if (code.includes("too_many")) return "Attach at most four files.";
+  if (code.includes("images_unsupported"))
+    return "Images are not supported by all selected agents. Choose compatible models or remove the images.";
+  if (code.includes("image"))
+    return "Use a static PNG, JPEG or WebP image with valid bytes, at most 4096 pixels per edge. Animated images are not supported.";
+  return "Use a supported UTF-8 text/source file or static PNG/JPEG/WebP image. Invalid binary data, PDFs and control characters are not supported.";
+}
+const extensions = [...ATTACHMENT_LIMITS.extensions, ".png", ".jpg", ".jpeg", ".webp"].join(",");
+
+export function Composer({
+  draft,
+  onDraft,
+  attachments,
+  onFiles,
+  onRemove,
+  onSend,
+  disabled,
+  sending,
+  canSend,
+  active,
+  capabilities,
+  modelControls,
+  conversation = false,
+}: {
+  draft: string;
+  onDraft: (text: string) => void;
+  attachments: AttachmentDraft[];
+  onFiles: (files: File[]) => void;
+  onRemove: (id: string) => void;
+  onSend: (event: React.FormEvent) => void;
+  disabled: boolean;
+  sending: boolean;
+  canSend: boolean;
+  active: boolean;
+  capabilities?: AttachmentCapabilities;
+  modelControls?: React.ReactNode;
+  conversation?: boolean;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const [showLimits, setShowLimits] = useState(false);
+  const hint = useId();
+  const modelInfo = useId();
+  const support = `4 files · UTF-8 text/source: 64 KiB each, ${Math.floor((capabilities?.textTotalBytes ?? ATTACHMENT_LIMITS.totalBytes) / 1024)} KiB total. Static PNG/JPEG/WebP: ${Math.floor((capabilities?.imageFileBytes ?? ATTACHMENT_LIMITS.imageFileBytes) / 1024)} KiB each, ${Math.floor((capabilities?.imageTotalBytes ?? ATTACHMENT_LIMITS.imageTotalBytes) / 1024)} KiB total, 4096 pixels per edge. PDFs and other binary files are not supported.`;
+  useEffect(() => {
+    if (textarea.current) {
+      textarea.current.style.height = "auto";
+      textarea.current.style.height = `${Math.min(240, Math.max(64, textarea.current.scrollHeight))}px`;
+    }
+  }, [draft]);
+  return (
+    <form
+      className={`composer${dragging ? " composer-dragging" : ""}`}
+      onSubmit={onSend}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) {
+          event.preventDefault();
+          if (!disabled) setDragging(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        if (!disabled) onFiles(Array.from(event.dataTransfer.files));
+      }}
+    >
+      <label className="sr-only" htmlFor="message">
+        Message your crew
+      </label>
+      <textarea
+        ref={textarea}
+        id="message"
+        placeholder="Describe a change or ask about the work…"
+        rows={2}
+        value={draft}
+        disabled={disabled}
+        aria-describedby={hint}
+        onChange={(event) => onDraft(event.target.value)}
+        onPaste={(event) => {
+          if (event.clipboardData.files.length) {
+            event.preventDefault();
+            if (!disabled) onFiles(Array.from(event.clipboardData.files));
+          }
+        }}
+        onKeyDown={(event) => {
+          if (
+            event.key === "Enter" &&
+            !event.shiftKey &&
+            !event.nativeEvent.isComposing &&
+            event.keyCode !== 229
+          ) {
+            event.preventDefault();
+            if (canSend) event.currentTarget.form?.requestSubmit();
+          }
+        }}
+      />
+      {attachments.length > 0 && (
+        <ul className="attachment-previews" aria-label="Attached files">
+          {attachments.map((item) => (
+            <li key={item.id} className={`attachment-preview ${item.status}`}>
+              <div className="attachment-heading">
+                <Icon kind="file" />
+                <strong>{item.name}</strong>
+                <button
+                  type="button"
+                  aria-label={`Remove ${item.name}`}
+                  disabled={disabled}
+                  onClick={() => onRemove(item.id)}
+                >
+                  <Icon kind="close" />
+                </button>
+              </div>
+              {item.status === "reading" ? (
+                <span role="status">Reading file…</span>
+              ) : item.status === "error" ? (
+                <span role="alert">{item.error}</span>
+              ) : item.attachment!.mediaType === "text/plain" ? (
+                <details>
+                  <summary>
+                    {new TextEncoder().encode(item.attachment!.text).byteLength} bytes · Preview
+                  </summary>
+                  <pre>{item.attachment!.text}</pre>
+                </details>
+              ) : (
+                <img
+                  className="attachment-image"
+                  alt={`Preview of ${item.name}`}
+                  src={`data:${item.attachment!.mediaType};base64,${item.attachment!.data}`}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {draft.length > 8000 && (
+        <p role="alert" className="composer-error">
+          The prompt exceeds 8,000 characters. Shorten it before sending; nothing has been
+          truncated.
+        </p>
+      )}
+      <div className="composer-footer">
+        <input
+          ref={input}
+          type="file"
+          className="sr-only"
+          tabIndex={-1}
+          aria-label="Choose attachments"
+          accept={extensions}
+          multiple
+          disabled={disabled}
+          onChange={(event) => {
+            onFiles(Array.from(event.target.files ?? []));
+            event.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          className="composer-attach"
+          title={support}
+          aria-label="Attach files"
+          disabled={disabled}
+          onClick={() => {
+            setShowLimits(true);
+            input.current?.click();
+          }}
+        >
+          <Icon kind="plus" />
+        </button>
+        <button
+          type="button"
+          className="composer-limits"
+          aria-expanded={showLimits}
+          onClick={() => setShowLimits(!showLimits)}
+        >
+          Attachments
+        </button>
+        <div className="composer-actions">
+          {modelControls ?? (
+            <details className="composer-model">
+              <summary aria-describedby={modelInfo}>Model unavailable</summary>
+              <p id={modelInfo}>
+                The repository coordinator has no conversational model yet. Workers use deployment
+                configuration. Model and effort selection will become available when the runtime can
+                honor them.
+              </p>
+            </details>
+          )}
+          <button
+            type="submit"
+            className="composer-send"
+            aria-label={sending ? "Sending message" : "Send message"}
+            title={conversation ? "Queue repository agent reply" : "Queue a new change"}
+            disabled={!canSend}
+          >
+            <Icon kind={sending ? "working" : "send"} />
+          </button>
+        </div>
+      </div>
+      <p id={hint} className="composer-hint">
+        {conversation
+          ? "Send queues a repository agent reply; it does not steer active workers. "
+          : active
+            ? "Send creates a separate change; it does not steer active workers. "
+            : "Send queues a new change. "}
+        Enter to send · Shift+Enter for a new line.
+      </p>
+      {showLimits && (
+        <p className="composer-support">
+          {support}{" "}
+          {capabilities && !capabilities.images
+            ? (capabilities.reason ?? "Images are unavailable for selected agents.")
+            : ""}{" "}
+          Content is shared with configured agents on send. Never attach secrets. No files are
+          uploaded until you send.
+        </p>
+      )}
+    </form>
+  );
+}
+
+export async function readAttachment(file: File, id: string): Promise<SubmittedAttachment> {
+  const imageType = /\.png$/i.test(file.name)
+    ? "image/png"
+    : /\.jpe?g$/i.test(file.name)
+      ? "image/jpeg"
+      : /\.webp$/i.test(file.name)
+        ? "image/webp"
+        : undefined;
+  if (file.size > (imageType ? ATTACHMENT_LIMITS.imageFileBytes : ATTACHMENT_LIMITS.fileBytes))
+    throw Error("attachment_too_large");
+  const bytes = file.arrayBuffer
+    ? await file.arrayBuffer()
+    : await new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(Error("attachment_read_failed"));
+        reader.onabort = () => reject(Error("attachment_read_failed"));
+        reader.readAsArrayBuffer(file);
+      });
+  const attachment: SubmittedAttachment = imageType
+    ? {
+        id,
+        name: file.name,
+        mediaType: imageType,
+        data: btoa(Array.from(new Uint8Array(bytes), (byte) => String.fromCharCode(byte)).join("")),
+      }
+    : {
+        id,
+        name: file.name,
+        mediaType: "text/plain",
+        text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+      };
+  validateMessageAttachments([attachment]);
+  return attachment;
+}

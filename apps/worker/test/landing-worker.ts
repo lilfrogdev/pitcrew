@@ -1,19 +1,13 @@
+import { readRepositoryState, writeRepositoryState } from "../src/repository-state";
 import { protectedFetch, type AccessEnv } from "../src/access";
 import { RepositoryAgent } from "../src/index";
-import { Coordinator, initialState, type State } from "../src/coordinator";
+import { type State } from "../src/coordinator";
 import { SqliteLandingStore } from "../../../packages/execution/src/landing-store";
 import { assertConfigurationIdle } from "../src/landing-api";
 const candidate = "b".repeat(40);
 export class LandingFixtureAgent extends RepositoryAgent {
   async seed() {
-    const state = initialState();
-    let n = 0;
-    const core = new Coordinator(
-      state,
-      () => {},
-      () => "now",
-      () => String(++n),
-    );
+    const core = this.getCoordinator();
     const thread = core.createThread("fixture intent", "thread");
     const { run } = core.submit(thread.id, "change fixture source", "message");
     core.begin(run.id);
@@ -43,9 +37,9 @@ export class LandingFixtureAgent extends RepositoryAgent {
         summary: "fixture reviewed",
       },
     });
-    void this
-      .sql`CREATE TABLE IF NOT EXISTS repository_state(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`;
-    void this.sql`INSERT OR REPLACE INTO repository_state VALUES(1,${JSON.stringify(core.state)})`;
+    this.ctx.storage.transactionSync(() =>
+      writeRepositoryState(this.ctx.storage.sql, JSON.stringify(core.state)),
+    );
     return {
       runId: run.id,
       expectedTargetSha: run.baseSha,
@@ -59,12 +53,13 @@ export class LandingFixtureAgent extends RepositoryAgent {
     store.begin(authorizationId, "lilfrogdev", runId, Date.now());
     try {
       this.ctx.storage.transactionSync(() => {
-        const [row] = this.sql<{ value: string }>`SELECT value FROM repository_state WHERE id=1`;
-        const state = JSON.parse(row.value) as State,
+        const stored = readRepositoryState(this.ctx.storage.sql);
+        if (!stored) throw Error("fixture_state_missing");
+        const state = JSON.parse(stored) as State,
           previous = structuredClone(state.project);
         state.project.configurationRevision = "changed";
         assertConfigurationIdle(store, previous, state.project);
-        void this.sql`UPDATE repository_state SET value=${JSON.stringify(state)} WHERE id=1`;
+        writeRepositoryState(this.ctx.storage.sql, JSON.stringify(state));
       });
       return { blocked: false };
     } catch {

@@ -61,7 +61,7 @@ describe("canonical HTTP adapter", () => {
         async (path: string) =>
           new Response(
             JSON.stringify(
-              path.endsWith("/messages")
+              path.endsWith("/messages") || path.endsWith("/turns")
                 ? []
                 : path.endsWith("/runs")
                   ? [{ ...run, status: "running" }]
@@ -74,6 +74,7 @@ describe("canonical HTTP adapter", () => {
     expect(fetch.mock.calls.map((call) => call[0])).toEqual([
       "/api/threads/thread%2F1/messages",
       "/api/threads/thread%2F1/runs",
+      "/api/threads/thread%2F1/turns",
       "/api/runs/run%2F1/evidence",
     ]);
     expect(result.runs[0].status).toBe("waiting_user");
