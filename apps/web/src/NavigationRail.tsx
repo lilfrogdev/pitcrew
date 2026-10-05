@@ -26,7 +26,7 @@ export function NavigationRail({
           aria-current={section === item.id ? "page" : undefined}
           onClick={() => onSelect(item.id)}
         >
-          <Icon kind={item.icon} />
+          <Icon kind={item.icon} filled={section === item.id} />
         </button>
       ))}
     </nav>
