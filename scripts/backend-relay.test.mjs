@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import {
   BACKEND_ACCESS,
+  backendRelayPlugin,
   createBackendRelayMiddleware,
   readCachedAccessToken,
   verifyUserAccessToken,
@@ -451,4 +452,52 @@ test("missing installed helper and empty cache fail closed without auth fallback
   const result = readCachedAccessToken({ spawnProcess: () => child });
   child.emit("close", 1);
   await assert.rejects(result, /backend_sign_in_required/);
+});
+
+test("valid first page includes fifty remote plus two hundred quarantined records", async () => {
+  const page = {
+    repositories: Array.from({ length: 250 }, (_, i) => ({
+      name: `repo-${i}`,
+      lifecycle: "pending",
+      deletable: false,
+    })),
+    cursor: null,
+  };
+  const f = fixture({
+    fetchImpl: async (url) =>
+      url.endsWith("/api/local-session")
+        ? new Response(null, {
+            status: 302,
+            headers: { location: `${BACKEND_ACCESS.issuer}/cdn-cgi/access/login/backend` },
+          })
+        : Response.json(page),
+  });
+  assert.equal((await request(f.handler)).json.repositories.length, 250);
+  page.repositories.push({ name: "overflow", lifecycle: "pending", deletable: false });
+  assert.equal((await request(f.handler)).status, 503);
+});
+test("plugin admits actual ephemeral listener port and refuses unavailable or wildcard listener", async () => {
+  let handler;
+  let address = { address: "127.0.0.1", port: 5220 };
+  backendRelayPlugin({ enabled: true, userAccessSession: true }).configureServer({
+    config: { server: { host: "127.0.0.1", port: 5219 } },
+    httpServer: { address: () => address },
+    middlewares: {
+      use: (value) => {
+        handler = value;
+      },
+    },
+  });
+  assert.equal(
+    (await request(handler, "/api/local-session", { headers: { host: "127.0.0.1:5220" } })).status,
+    200,
+  );
+  assert.equal((await request(handler, "/api/local-session")).status, 403);
+  address = undefined;
+  assert.equal((await request(handler, "/api/local-session")).status, 403);
+  address = { address: "0.0.0.0", port: 5220 };
+  assert.equal(
+    (await request(handler, "/api/local-session", { headers: { host: "127.0.0.1:5220" } })).status,
+    403,
+  );
 });

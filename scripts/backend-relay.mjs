@@ -239,7 +239,7 @@ function cleanResponse(path, value) {
     if (
       !value ||
       !Array.isArray(value.repositories) ||
-      value.repositories.length > 200 ||
+      value.repositories.length > 250 ||
       !(value.cursor === null || (typeof value.cursor === "string" && value.cursor.length <= 1024))
     )
       throw Error();
@@ -284,8 +284,16 @@ export function createBackendRelayMiddleware({
   tokenProvider = readCachedAccessToken,
   verifyToken = verifyUserAccessToken,
 } = {}) {
-  const local = new URL(origin);
-  if (local.protocol !== "http:" || local.hostname !== "127.0.0.1" || local.origin !== origin)
+  const configuredOrigin = origin;
+  const validOrigin = (value) => {
+    try {
+      const local = new URL(value);
+      return local.protocol === "http:" && local.hostname === "127.0.0.1" && local.origin === value;
+    } catch {
+      return false;
+    }
+  };
+  if (typeof configuredOrigin !== "function" && !validOrigin(configuredOrigin))
     throw Error("invalid_relay_origin");
   const sessions = new Map();
   let busy = false,
@@ -324,7 +332,16 @@ export function createBackendRelayMiddleware({
     return acquiring;
   }
   return async (req, res, next) => {
+    const origin = typeof configuredOrigin === "function" ? configuredOrigin() : configuredOrigin;
     const raw = req.url ?? "";
+    if (!validOrigin(origin)) {
+      if (
+        raw.startsWith("/api/repositories") ||
+        (enabled && userAccessSession && raw.startsWith("/api/local-session"))
+      )
+        return reply(res, 403, { error: "backend_relay_forbidden" });
+      return next();
+    }
     if (!raw.startsWith("/") || raw.startsWith("//")) return next();
     const url = new URL(raw, origin);
     const metadata =
@@ -430,7 +447,12 @@ export function backendRelayPlugin(options = {}) {
       server.middlewares.use(
         createBackendRelayMiddleware({
           ...options,
-          origin: `http://127.0.0.1:${address.port ?? 5173}`,
+          origin: () => {
+            const listening = server.httpServer?.address();
+            return listening && typeof listening !== "string" && listening.address === "127.0.0.1"
+              ? `http://127.0.0.1:${listening.port}`
+              : undefined;
+          },
         }),
       );
     },
