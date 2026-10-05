@@ -6,7 +6,7 @@
 .work {
   min-width: 0;
 }
-.work[hidden] {
+.shell .work[hidden] {
   display: none;
 }
 .rail {
