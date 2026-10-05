@@ -410,11 +410,28 @@ textarea {
   background: transparent;
   color: var(--text);
 }
-.composer-footer .composer-limits {
-  padding: 6px 2px;
+.composer-footer .composer-mic {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 6px;
   border: 0;
+  border-radius: 50%;
   background: transparent;
-  color: var(--muted);
+  color: var(--text);
+  flex-shrink: 0;
+}
+.composer-footer .composer-mic.recording {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.dictation-error {
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+.dictation-download {
+  margin-top: 8px;
   font-size: 12px;
 }
 .composer-footer .composer-send {
@@ -432,36 +449,6 @@ textarea {
 .composer-footer .composer-send:hover:not(:disabled) {
   background: var(--accent);
 }
-.composer-model {
-  position: relative;
-  font-size: 12px;
-  color: var(--muted);
-}
-.composer-model summary {
-  cursor: pointer;
-}
-.composer-model p {
-  position: absolute;
-  z-index: 5;
-  bottom: 25px;
-  right: 0;
-  width: 250px;
-  max-width: 65vw;
-  padding: 14px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px #0001;
-  line-height: 1.5;
-}
-.composer-hint,
-.composer-support {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 10px 0 0;
-  line-height: 1.6;
-}
 .composer-error {
   color: var(--text);
   font-size: 12px;
@@ -472,48 +459,86 @@ textarea {
   outline: 2px solid var(--accent);
 }
 .attachment-previews {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  display: flex;
   list-style: none;
-  margin: 12px 0 0;
+  margin: 0 0 16px;
   padding: 0;
-  gap: 8px;
+  gap: 10px;
+  overflow-x: auto;
+  padding-top: 8px;
 }
 .attachment-preview {
-  min-width: 0;
+  position: relative;
+  flex: 0 0 120px;
+  width: 120px;
+  min-height: 120px;
   border: 1px solid var(--border);
   background: var(--canvas);
-  padding: 10px;
   border-radius: 12px;
   font-size: 12px;
 }
+.attachment-preview.reading,
 .attachment-preview.error {
-  display: block;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.attachment-remove {
+  position: absolute;
+  z-index: 1;
+  right: 3px;
+  top: 3px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface);
   color: var(--text);
 }
-.attachment-heading {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.attachment-heading strong {
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-.attachment-heading button {
-  margin-left: auto;
-  flex-shrink: 0;
-  padding: 3px;
+.attachment-text {
   border: 0;
-  background: transparent;
+  margin: 0;
+  padding: 0;
 }
-.attachment-preview summary,
+.attachment-text summary {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  padding: 30px 10px 12px;
+  min-height: 118px;
+  list-style: none;
+}
+.attachment-text summary::-webkit-details-marker {
+  display: none;
+}
+.attachment-text summary span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-text pre {
+  max-height: 160px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.attachment-preview .attachment-image {
+  width: 118px;
+  height: 118px;
+  border-radius: 11px;
+  object-fit: cover;
+}
 .message-attachment summary {
   cursor: pointer;
   overflow-wrap: anywhere;
 }
-.attachment-preview pre,
 .message-attachment pre {
   max-height: 200px;
   overflow: auto;

@@ -8,6 +8,7 @@ import type {
   ModelSettings,
 } from "@pitcrew/protocol";
 import { configureModels } from "./pi-models";
+import { OPENROUTER_SNAPSHOT } from "./openrouter-models";
 export interface ModelEnv {
   MODEL_CONFIGURATION?: string;
   MODELS_CONFIGURATION?: string;
@@ -82,6 +83,10 @@ export function resolveCatalog(env: ModelEnv): ModelCatalog {
       throw Error("model_not_enabled");
     const { model } = configureModels(config, bindings(env, config));
     const limits = model.inputLimits;
+    const snapshot =
+      model.provider === "openrouter"
+        ? OPENROUTER_SNAPSHOT[model.id as keyof typeof OPENROUTER_SNAPSHOT]
+        : undefined;
     const choice: ModelChoice = {
       id: value.id,
       label:
@@ -91,6 +96,18 @@ export function resolveCatalog(env: ModelEnv): ModelCatalog {
       provider: model.provider,
       model: model.id,
       efforts: getSupportedThinkingLevels(model),
+      ...(snapshot
+        ? {
+            defaultEffort: model.id === "qwen/qwen3.8-flash" ? ("off" as const) : ("high" as const),
+            pricing: {
+              input: snapshot.input,
+              output: snapshot.output,
+              currency: "USD" as const,
+              per: "million_tokens" as const,
+              asOf: "2026-10-05",
+            },
+          }
+        : {}),
       contextWindow: model.contextWindow,
       // Keep a native Pi submission's base64 payload below the SQLite 2 MiB row ceiling.
       imageLimits: model.input.includes("image")
@@ -115,7 +132,8 @@ export function resolveCatalog(env: ModelEnv): ModelCatalog {
     choices: entries.map((e) => e.choice),
     defaultSelection: {
       modelId: choice.id,
-      effort: choice.efforts.includes("medium") ? "medium" : choice.efforts[0],
+      effort:
+        choice.defaultEffort ?? (choice.efforts.includes("medium") ? "medium" : choice.efforts[0]),
     },
   };
 }

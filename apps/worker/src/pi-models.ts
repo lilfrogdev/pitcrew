@@ -1,6 +1,7 @@
 import { createModels, type Provider } from "@earendil-works/pi-ai/models";
 import { fauxProvider, fauxAssistantMessage, type CredentialStore } from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { pitcrewOpenrouterProvider } from "./openrouter-models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { createAI } from "agents/models/pi-ai";
 import type { ModelConfiguration } from "@pitcrew/protocol";
@@ -69,6 +70,7 @@ export function configureModels(
   const factories: Record<string, () => Provider> = {
     openai: openaiProvider,
     anthropic: anthropicProvider,
+    openrouter: pitcrewOpenrouterProvider,
   };
   const factory = factories[configuration.providerId];
   if (!factory || !bindings.secrets?.[configuration.secretBinding])

@@ -13,6 +13,7 @@ import type {
   ModelSelection,
   ModelSettings,
 } from "@pitcrew/protocol";
+import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
 export type Snapshot = {
   messages: Message[];
@@ -39,6 +40,7 @@ export type ApprovalInput = {
 export type Authorization = LandingAuthorizationReceipt;
 export type LandingResult = LandingResultReceipt;
 export interface Api {
+  openrouter?: OpenRouterConnectionApi;
   capabilities(): Promise<LandingCapabilities>;
   approve(runId: string, input: ApprovalInput): Promise<Authorization>;
   land(runId: string, authorizationId: string): Promise<LandingResult>;
@@ -131,7 +133,47 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
     throw new ApiError(0);
   }
 }
+async function connectionRequest(path: string, init?: RequestInit): Promise<OpenRouterStatus> {
+  const response = await fetch(path, {
+    ...init,
+    cache: "no-store",
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!response.ok) throw new ApiError(0);
+  const value = (await response.json()) as OpenRouterStatus;
+  if (
+    !value ||
+    [value.available, value.configured, value.executionEnabled].some(
+      (flag) => typeof flag !== "boolean",
+    )
+  )
+    throw new ApiError(0);
+  return {
+    available: value.available,
+    configured: value.configured,
+    executionEnabled: value.executionEnabled,
+  };
+}
 export const httpApi: Api = {
+  openrouter: {
+    async status() {
+      return connectionRequest("/api/provider-connection/openrouter");
+    },
+    async store(key) {
+      const session = await fetch("/api/provider-connection/openrouter/session", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!session.ok) throw new ApiError(0);
+      const { nonce } = (await session.json()) as { nonce?: unknown };
+      if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)) throw new ApiError(0);
+      return connectionRequest("/api/provider-connection/openrouter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Pitcrew-Connection-Nonce": nonce },
+        body: JSON.stringify({ action: "store", key }),
+      });
+    },
+  },
   attachmentUrl: (threadId, attachmentId) =>
     `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`,
   capabilities: () => request("/capabilities"),

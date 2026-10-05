@@ -19,6 +19,7 @@ describe("project conversations", () => {
     await mount();
     expect(screen.getByText("Repository agent")).toBeTruthy();
     expect(screen.getByText("Change worker")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Review / PR" }));
     fireEvent.click(screen.getByText("Tests and tool output"));
     expect(screen.getByText(/8 synthetic checks passed/)).toBeTruthy();
     expect(screen.getByText(/Matches current candidate/)).toBeTruthy();
