@@ -51,6 +51,11 @@ export class UserCredentials extends DurableObject<CredentialEnv> {
   async configured(actor: string) {
     return !!(await this.read(actor));
   }
+  /** Display metadata needs presence only, never the encrypted value or plaintext. */
+  async present(actor: string) {
+    this.assertOwner(actor);
+    return [...this.ctx.storage.sql.exec("SELECT 1 FROM credential WHERE id=1")].length > 0;
+  }
   async remove(actor: string) {
     this.assertOwner(actor);
     this.ctx.storage.sql.exec("DELETE FROM credential WHERE id=1");

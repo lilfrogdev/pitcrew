@@ -15,6 +15,7 @@ import { sameKnowledgeContext } from "./knowledge";
 import { RepoConversationAgent } from "./repo-conversation-agent";
 export { RepoConversationAgent };
 import { resolveCatalog, validateFrozenModels, requiresUserOpenRouter } from "./model-selection";
+import { providerModelsRequest } from "./provider-models";
 import { attachmentStore, type AttachmentStore } from "./attachment-store";
 import {
   ATTACHMENT_LIMITS,
@@ -479,6 +480,16 @@ export class RepositoryAgent extends Agent<Env> {
     if (!identity) return Response.json({ error: "access_not_configured" }, { status: 403 });
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter")
       return providerConnectionRequest(request, this.env, identity.actor);
+    if (new URL(request.url).pathname === "/api/provider-connection/openrouter/models")
+      return providerModelsRequest(request, this.env, identity.actor);
+    if (
+      this.env.EXECUTION_MODE === "disabled" &&
+      request.method === "POST" &&
+      (/^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname) ||
+        /^\/api\/changes\/[^/]+\/runs$/.test(new URL(request.url).pathname) ||
+        /^\/api\/projects\/[^/]+\/intake\/dispatch$/.test(new URL(request.url).pathname))
+    )
+      return Response.json({ error: "execution_disabled" }, { status: 503 });
     if (/^\/api\/repositories(?:\/|$)/.test(new URL(request.url).pathname))
       return lifecycleRequest(request, this.getRepositoryLifecycle(request), (task) =>
         this.ctx.waitUntil(task),

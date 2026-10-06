@@ -1,6 +1,52 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, httpApi } from "./api";
 afterEach(() => vi.unstubAllGlobals());
+it("overlays authenticated display models on the actual fixture transport without authorizing Send", async () => {
+  const native = {
+    landing: { enabled: false, backend: null },
+    composer: {
+      conversation: true,
+      models: [{ id: "default", provider: "pitcrew-fixture" }],
+      settings: { default: { modelId: "default", effort: "off" } },
+    },
+  };
+  const models = [
+    {
+      id: "default",
+      label: "Qwen",
+      provider: "openrouter",
+      model: "qwen/qwen3.8-flash",
+      efforts: ["off"],
+      contextWindow: 1000000,
+    },
+  ];
+  let connected = true;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) =>
+      Response.json(
+        path.endsWith("/models")
+          ? connected
+            ? {
+                models,
+                catalogRevision: "a".repeat(64),
+                defaultSelection: { modelId: "default", effort: "off" },
+                executionEnabled: true,
+              }
+            : { models: [], executionEnabled: false }
+          : native,
+      ),
+    ),
+  );
+  expect((await httpApi.capabilities()).composer).toMatchObject({
+    conversation: false,
+    displayOnly: true,
+    executionEnabled: false,
+    models,
+  });
+  connected = false;
+  expect((await httpApi.capabilities()).composer?.models[0].provider).toBe("pitcrew-fixture");
+});
 it("uses a separate secure connection session and returns public status only", async () => {
   const fetch = vi.fn(async (path: string) =>
     path.endsWith("/session")
@@ -163,11 +209,12 @@ describe("canonical HTTP adapter", () => {
     await httpApi.reconcile("run/1", "receipt");
     expect(fetch.mock.calls.map((call) => call[0])).toEqual([
       "/api/capabilities",
+      "/api/provider-connection/openrouter/models",
       "/api/runs/run%2F1/merge-approval",
       "/api/runs/run%2F1/landing",
       "/api/runs/run%2F1/landing/reconcile",
     ]);
-    expect(fetch.mock.calls.slice(1).map((call) => call[1].body)).toEqual([
+    expect(fetch.mock.calls.slice(2).map((call) => call[1].body)).toEqual([
       JSON.stringify(approval),
       JSON.stringify({ authorizationId: "receipt" }),
       JSON.stringify({ authorizationId: "receipt" }),

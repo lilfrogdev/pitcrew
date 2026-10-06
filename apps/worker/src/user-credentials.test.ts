@@ -13,6 +13,7 @@ const alice = "sk-or-v1-synthetic_alice_never_live";
 const bob = "sk-or-v1-synthetic_bob_never_live";
 const base = "https://fixture.pitcrew.test";
 const route = "/api/provider-connection/openrouter";
+const modelsRoute = route + "/models";
 it("uses fresh AES-GCM IVs, authenticates the owner and rejects tampering/wrong encryption keys", async () => {
   const a = await encryptCredential("access:alice", alice, secret),
     b = await encryptCredential("access:alice", alice, secret);
@@ -106,8 +107,15 @@ it("real SQLite DOs isolate two signed Access users, revoke without fallback, re
     });
   try {
     expect((await mf.dispatchFetch(base + route)).status).toBe(403);
+    expect((await mf.dispatchFetch(base + modelsRoute)).status).toBe(403);
     expect((await request("other")).status).toBe(403);
     expect((await request("expired")).status).toBe(403);
+    expect((await request("other", modelsRoute)).status).toBe(403);
+    expect((await request("expired", modelsRoute)).status).toBe(403);
+    expect(await (await request("alice", modelsRoute)).json()).toEqual({
+      models: [],
+      executionEnabled: false,
+    });
     expect(
       (
         await request(
@@ -126,6 +134,20 @@ it("real SQLite DOs isolate two signed Access users, revoke without fallback, re
       (await (await request("alice", route, { action: "store", key: alice })).json()) as any,
     ).toMatchObject({ configured: true, executionEnabled: false });
     expect(await (await request("bob")).json()).toMatchObject({ configured: false });
+    const display = await request("alice", modelsRoute);
+    expect(display.status).toBe(200);
+    expect(display.headers.get("cache-control")).toBe("private, no-store");
+    const metadata = await display.text();
+    expect(JSON.parse(metadata)).toMatchObject({
+      models: [{ provider: "openrouter" }],
+      executionEnabled: false,
+    });
+    expect(metadata).not.toContain(alice);
+    expect(metadata).not.toContain("OPENROUTER_API_KEY");
+    expect(await (await request("bob", modelsRoute)).json()).toEqual({
+      models: [],
+      executionEnabled: false,
+    });
     expect((await request("bob", route, { action: "store", key: bob })).status).toBe(200);
     const a = (await (await request("alice", "/api/fixture/runtime")).json()) as any;
     const b = (await (await request("bob", "/api/fixture/runtime")).json()) as any;
@@ -141,6 +163,9 @@ it("real SQLite DOs isolate two signed Access users, revoke without fallback, re
     );
     expect(a.called && b.called).toBe(true);
     expect(await (await request("alice", "/api/fixture/foreign")).json()).toEqual({ denied: true });
+    expect(await (await request("alice", "/api/fixture/foreign-presence")).json()).toEqual({
+      denied: true,
+    });
     const stored = await (await request("alice", "/api/fixture/ciphertext")).text();
     expect(stored).not.toContain(alice);
     expect(stored).toContain("ciphertext");
@@ -154,12 +179,23 @@ it("real SQLite DOs isolate two signed Access users, revoke without fallback, re
     expect((await request("alice", route, { action: "remove" })).status).toBe(200);
     expect((await request("alice", route, { action: "remove" })).status).toBe(200);
     expect((await request("alice", "/api/fixture/runtime")).status).toBe(409);
+    expect(await (await request("alice", modelsRoute)).json()).toEqual({
+      models: [],
+      executionEnabled: false,
+    });
     expect(await (await request("bob")).json()).toMatchObject({ configured: true });
     expect((await request("bob", "/api/fixture/runtime")).status).toBe(200);
     await request("bob", "/api/fixture/corrupt", {});
     const corrupt = await request("bob");
     expect(corrupt.status).toBe(503);
     expect(await corrupt.json()).toEqual({ error: "provider_storage_unavailable" });
+    // Presence remains readable with corrupt ciphertext: this metadata route never decrypts.
+    const corruptDisplay = await request("bob", modelsRoute);
+    expect(corruptDisplay.status).toBe(200);
+    expect(await corruptDisplay.json()).toMatchObject({
+      models: [{ provider: "openrouter" }],
+      executionEnabled: false,
+    });
     await mf.setOptions(
       convertV4MiniflareOptions({
         ...options,
@@ -171,6 +207,10 @@ it("real SQLite DOs isolate two signed Access users, revoke without fallback, re
       storageAvailable: false,
     });
     expect((await request("alice", route, { action: "store", key: alice })).status).toBe(503);
+    expect(await (await request("bob", modelsRoute)).json()).toEqual({
+      models: [],
+      executionEnabled: false,
+    });
   } finally {
     await mf.dispose();
   }
