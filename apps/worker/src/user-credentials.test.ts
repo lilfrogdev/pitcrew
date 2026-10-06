@@ -22,8 +22,10 @@ it("uses fresh AES-GCM IVs, authenticates the owner and rejects tampering/wrong 
   await expect(decryptCredential("access:bob", a, secret)).rejects.toThrow(
     "provider_storage_unavailable",
   );
+  const tampered = Buffer.from(a.ciphertext, "base64");
+  tampered[0] ^= 1;
   await expect(
-    decryptCredential("access:alice", { ...a, ciphertext: "A" + a.ciphertext.slice(1) }, secret),
+    decryptCredential("access:alice", { ...a, ciphertext: tampered.toString("base64") }, secret),
   ).rejects.toThrow("provider_storage_unavailable");
   await expect(
     decryptCredential("access:alice", a, Buffer.alloc(32, 18).toString("base64")),
