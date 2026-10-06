@@ -10,6 +10,7 @@ import type {
 import { configureModels } from "./pi-models";
 import { OPENROUTER_SNAPSHOT } from "./openrouter-models";
 export interface ModelEnv {
+  openRouterKey?: () => Promise<string>;
   MODEL_CONFIGURATION?: string;
   MODELS_CONFIGURATION?: string;
   EXECUTION_MODE?: string;
@@ -49,8 +50,9 @@ function bindings(env: ModelEnv, config: ModelConfiguration) {
   const values = env as unknown as Record<string, unknown>;
   return {
     AI: env.AI,
+    openRouterKey: env.openRouterKey,
     secrets:
-      config.provider === "byok"
+      config.provider === "byok" && config.providerId !== "openrouter"
         ? {
             [config.secretBinding]:
               typeof values[config.secretBinding] === "string"
@@ -211,4 +213,21 @@ export function validateFrozenModels(env: ModelEnv, models?: FrozenRunModels) {
   validateSelection(catalog, models.repoAgent);
   validateSelection(catalog, models.implementer);
   validateSelection(catalog, models.reviewer);
+}
+
+/** The OpenRouter route never consults shared provider credentials. Other providers keep their own admission. */
+export function requiresUserOpenRouter(env: ModelEnv) {
+  try {
+    const configured = [
+      JSON.parse(env.MODEL_CONFIGURATION ?? '{"provider":"fake"}'),
+      ...JSON.parse(env.MODELS_CONFIGURATION ?? "[]").map(
+        (entry: { configuration: unknown }) => entry.configuration,
+      ),
+    ];
+    return configured.some(
+      (config) => config?.provider === "byok" && config.providerId === "openrouter",
+    );
+  } catch {
+    return true;
+  }
 }

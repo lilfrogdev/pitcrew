@@ -166,10 +166,14 @@ async function connectionMutation(
   });
   if (!session.ok) throw new ApiError(0);
   const { nonce } = (await session.json()) as { nonce?: unknown };
-  if (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)) throw new ApiError(0);
+  if (nonce !== null && (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)))
+    throw new ApiError(0);
   return connectionRequest("/api/provider-connection/openrouter", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Pitcrew-Connection-Nonce": nonce },
+    headers: {
+      "Content-Type": "application/json",
+      ...(nonce ? { "X-Pitcrew-Connection-Nonce": nonce } : {}),
+    },
     body: JSON.stringify(body),
   });
 }

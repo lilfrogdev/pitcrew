@@ -1,3 +1,4 @@
+import { userModelEnv, type CredentialEnv } from "./user-credentials";
 import { pinPlan, executePlan } from "../../../packages/verification/src/index.ts";
 import { Agent, getAgentByName } from "agents";
 import {
@@ -46,7 +47,7 @@ interface WorkerKnowledgeReceiver {
     report: KnowledgeReport,
   ): Promise<KnowledgeAck>;
 }
-export interface PiEnv {
+export interface PiEnv extends CredentialEnv {
   ENVIRONMENT: string;
   EXECUTION_MODE: string;
   INFRASTRUCTURE_ADMISSION_ENABLED?: string;
@@ -67,6 +68,7 @@ interface Context {
   brief?: ReviewBrief;
 }
 export interface TaskAdmission {
+  credentialActor?: string;
   runModels?: ExecutionInput["runModels"];
   role: "implementer" | "reviewer";
   deadline?: number;
@@ -116,7 +118,12 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     super(ctx, env);
     this.lifecycle.use(
       new TaskModelAdmission((admission) =>
-        this.bindModelAdmission(admission.runModels, admission.role, admission.deadline),
+        this.bindModelAdmission(
+          admission.runModels,
+          admission.role,
+          admission.deadline,
+          admission.credentialActor,
+        ),
       ),
     );
     this.harness = new AdmittedPiHarness(
@@ -140,7 +147,12 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
             task?.input?.runModels?.implementer ??
             task?.brief?.runModels?.reviewer;
           const { models, model, selection } = configureSelectedModels(
-            env,
+            userModelEnv(
+              env,
+              admission?.credentialActor ??
+                task?.input?.credentialActor ??
+                task?.brief?.credentialActor,
+            ),
             selected,
             admitted?.catalogRevision ?? task?.brief?.runModels?.catalogRevision,
           );
@@ -265,6 +277,7 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     runModels: ExecutionInput["runModels"],
     role: TaskAdmission["role"] = "implementer",
     deadline?: number,
+    credentialActor?: string,
   ) {
     void this
       .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
@@ -272,8 +285,9 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     const admitted = prior ? (JSON.parse(prior.value) as TaskAdmission | null) : undefined;
     // start() rebinds only models; it must preserve the parent's immutable deadline.
     deadline ??= admitted?.deadline;
+    credentialActor ??= admitted?.credentialActor;
     const serialized = JSON.stringify(
-      runModels || deadline !== undefined ? { runModels, role, deadline } : null,
+      runModels || deadline !== undefined ? { runModels, role, deadline, credentialActor } : null,
     );
     if (prior && prior.value !== serialized) throw Error("context_conflict");
     void this.sql`INSERT OR IGNORE INTO task_models VALUES(1,${serialized})`;
@@ -562,6 +576,7 @@ export class ChangeAgent extends TaskAgent {
             const reviewer = await getAgentByName(this.env.REVIEW, `review:${workspace.runId}`, {
               props: {
                 runModels: input.runModels,
+                credentialActor: input.credentialActor,
                 role: "reviewer",
                 deadline: this.taskDeadline(),
               },
@@ -573,6 +588,7 @@ export class ChangeAgent extends TaskAgent {
               repositoryContext: input.repositoryContext,
               implementationSummary: this.pipeline.status()!.change!.summary,
               runModels: input.runModels,
+              credentialActor: input.credentialActor,
               knowledgeContext: input.knowledgeContext,
             });
           },
@@ -625,7 +641,7 @@ export class ChangeAgent extends TaskAgent {
   }
   async start(input: ExecutionInput) {
     if (this.pipeline.status()) {
-      this.bindModelAdmission(input.runModels);
+      this.bindModelAdmission(input.runModels, "implementer", undefined, input.credentialActor);
       const existing = this.pipeline.start(input); // Validate the immutable request identity.
       if (
         existing.stage === "stop" ||
@@ -660,7 +676,7 @@ export class ChangeAgent extends TaskAgent {
     }
     // The harness lifecycle starts before sandbox preparation. Store the immutable model
     // admission independently; bind the full context when the workspace exists.
-    this.bindModelAdmission(input.runModels);
+    this.bindModelAdmission(input.runModels, "implementer", undefined, input.credentialActor);
     if (!this.taskActive()) return rejected;
     await this.lifecycle.start();
     const state = this.pipeline.start(input);

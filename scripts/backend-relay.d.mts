@@ -5,6 +5,7 @@ export const BACKEND_ACCESS: Readonly<{
   issuer: string;
   audience: string;
   email: string;
+  emails: readonly string[];
 }>;
 export function readCachedAccessToken(options?: {
   spawnProcess?: typeof import("node:child_process").spawn;

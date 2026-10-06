@@ -45,7 +45,8 @@ describe("thread/change/run traceability", () => {
     const legacy = f.saved();
     delete legacy.changes;
     for (const run of legacy.runs) delete run.changeId;
-    const old = legacy.keys.message_message.result as typeof submitted;
+    const old = legacy.keys[Object.keys(legacy.keys).find((key) => key.startsWith("message_"))!]
+      .result as typeof submitted;
     delete old.change;
     delete old.run.changeId;
     legacy.runs.push({ ...legacy.runs[0], id: "missing", messageId: undefined });

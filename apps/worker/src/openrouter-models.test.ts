@@ -15,20 +15,23 @@ const env = (model: string) => ({
   OPENROUTER_API_KEY: "synthetic-not-a-credential",
 });
 
-it("configures native OpenRouter with only the explicit binding and no provider request", async () => {
+it("configures native OpenRouter through a user credential loader and never the global binding", async () => {
   const fetch = vi
     .spyOn(globalThis, "fetch")
     .mockRejectedValue(new Error("provider calls forbidden"));
   try {
     const { models, model } = configureModels(config("deepseek/deepseek-v4-flash-vision-exp"), {
-      secrets: { OPENROUTER_API_KEY: "synthetic-not-a-credential" },
+      openRouterKey: async () => "synthetic-not-a-credential",
     });
     expect(model.provider).toBe("openrouter");
     expect(model.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(await models.getAuth("openai")).toBeUndefined();
     expect((await models.getAuth("openrouter"))?.source).toBeDefined();
     expect(fetch).not.toHaveBeenCalled();
-    expect(() => configureModels(config(model.id), {})).toThrow("model_not_configured");
+    const missing = configureModels(config(model.id), {
+      secrets: { OPENROUTER_API_KEY: "synthetic_global_must_never_be_used" },
+    });
+    await expect(missing.models.getAuth("openrouter")).rejects.toThrow("model_not_configured");
     expect(() =>
       configureModels(config("invented/model"), { secrets: { OPENROUTER_API_KEY: "synthetic" } }),
     ).toThrow("model_not_configured");
@@ -86,7 +89,7 @@ it("publishes Qwen with verified vision and explicit reasoning off until budget 
 });
 it("sends the exact documented Qwen reasoning/tool contract through native Pi with mocked fetch", async () => {
   const { models, model } = configureModels(config("qwen/qwen3.8-flash"), {
-    secrets: { OPENROUTER_API_KEY: "synthetic-not-a-credential" },
+    openRouterKey: async () => "synthetic-not-a-credential",
   });
   let sent: Record<string, unknown> | undefined;
   const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {

@@ -283,11 +283,12 @@ test("native abort port stops a real owned process and descendant while unrelate
         `
       const { spawn } = require("node:child_process");
       const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
-      process.stdout.write(String(child.pid));
+      const exited = new Promise(resolve => child.once("exit", resolve));
       process.on("SIGTERM", () => {
-        child.once("exit", () => process.exit(0));
         child.kill();
+        exited.then(() => process.exit(0));
       });
+      process.stdout.write(String(child.pid));
     `,
       ],
       { shell: false, detached: true },
@@ -317,12 +318,19 @@ test("native abort port stops a real owned process and descendant while unrelate
     assert.throws(() => process.kill(descendant, 0), { code: "ESRCH" });
     assert.doesNotThrow(() => process.kill(unrelated.pid, 0));
   } finally {
-    if (owned && owned.exitCode === null) {
-      process.kill(-owned.pid, "SIGTERM");
-      await ownedExit;
+    try {
+      if (owned) {
+        try {
+          process.kill(-owned.pid, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+        await ownedExit;
+      }
+    } finally {
+      unrelated.kill("SIGKILL");
+      await unrelatedExit;
     }
-    unrelated.kill();
-    await unrelatedExit;
   }
 });
 

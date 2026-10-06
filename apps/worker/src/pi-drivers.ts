@@ -118,6 +118,7 @@ export async function applyChange(
   return { candidateSha: candidate.sha, summary: (result.text ?? "").slice(0, 4096) };
 }
 export interface ReviewBrief {
+  credentialActor?: string;
   conversationContext?: ExecutionInput["conversationContext"];
   knowledgeContext?: ExecutionInput["knowledgeContext"];
   runModels?: ExecutionInput["runModels"];

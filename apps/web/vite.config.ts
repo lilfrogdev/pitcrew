@@ -11,7 +11,7 @@ export default defineConfig({
     }),
     openRouterConnectionPlugin({
       enabled: process.env.PITCREW_OPENROUTER_SETUP === "true",
-      userWranglerAuth: process.env.PITCREW_OPENROUTER_AUTH_CONTEXT === "user-preferences",
+      userAccessSession: process.env.PITCREW_ACCESS_SESSION === "user-cache",
     }),
   ],
   server: { host: "127.0.0.1", proxy: { "/api": "http://127.0.0.1:8787" } },

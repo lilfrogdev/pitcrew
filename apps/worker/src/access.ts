@@ -6,6 +6,7 @@ export interface AccessEnv {
   ACCESS_ISSUER?: string;
   ACCESS_AUDIENCE?: string;
   ACCESS_EMAIL?: string;
+  ACCESS_EMAILS?: string;
   ACCESS_HOSTNAME?: string;
 }
 const cookieName = "pitcrew-local-nonce";
@@ -29,6 +30,22 @@ function trustedLocalOrigin(request: Request) {
   );
 }
 let cached: { issuer: string; keys: JWTVerifyGetKey } | undefined;
+function allowedEmails(env: AccessEnv): string[] {
+  if (env.ACCESS_EMAILS === undefined)
+    return env.ACCESS_EMAIL ? [env.ACCESS_EMAIL.toLowerCase()] : [];
+  try {
+    const emails: unknown = JSON.parse(env.ACCESS_EMAILS);
+    return Array.isArray(emails) &&
+      emails.length > 0 &&
+      emails.every(
+        (email) => typeof email === "string" && /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(email),
+      )
+      ? emails.map((email: string) => email.toLowerCase())
+      : [];
+  } catch {
+    return [];
+  }
+}
 export async function principal(
   request: Request,
   env: AccessEnv,
@@ -40,7 +57,8 @@ export async function principal(
       if (
         !trustedLocalOrigin(request) ||
         !nonce ||
-        request.headers.get("x-pitcrew-local-nonce") !== nonce
+        (request.headers.get("x-pitcrew-local-nonce") ??
+          request.headers.get("x-pitcrew-connection-nonce")) !== nonce
       )
         return;
     }
@@ -51,7 +69,7 @@ export async function principal(
     !env.ACCESS_ISSUER ||
     !/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(env.ACCESS_ISSUER) ||
     !env.ACCESS_AUDIENCE ||
-    !env.ACCESS_EMAIL ||
+    !allowedEmails(env).length ||
     !env.ACCESS_HOSTNAME
   )
     return;
@@ -83,7 +101,7 @@ export async function principal(
     });
     if (
       typeof payload.email !== "string" ||
-      payload.email.toLowerCase() !== env.ACCESS_EMAIL.toLowerCase() ||
+      !allowedEmails(env).includes(payload.email.toLowerCase()) ||
       typeof payload.sub !== "string" ||
       !payload.sub ||
       typeof payload.iat !== "number" ||
@@ -107,7 +125,12 @@ export async function protectedFetch(
       { error: "access_not_configured_or_denied" },
       { status: 403, headers: { "Cache-Control": "no-store" } },
     );
-  if (new URL(request.url).pathname === "/api/local-session" && request.method === "GET") {
+  if (
+    ["/api/local-session", "/api/provider-connection/openrouter/session"].includes(
+      new URL(request.url).pathname,
+    ) &&
+    request.method === "GET"
+  ) {
     if (!fixtureAccess(request, env))
       return Response.json({ nonce: null }, { headers: { "Cache-Control": "private, no-store" } });
     if (

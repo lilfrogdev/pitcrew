@@ -7,14 +7,21 @@ import { createAI } from "agents/models/pi-ai";
 import type { ModelConfiguration } from "@pitcrew/protocol";
 export function configureModels(
   configuration: ModelConfiguration,
-  bindings: { AI?: unknown; secrets?: Record<string, string> },
+  bindings: {
+    AI?: unknown;
+    secrets?: Record<string, string>;
+    openRouterKey?: () => Promise<string>;
+  },
   fixture?: Provider,
 ) {
   const credentials: CredentialStore = {
     async read(providerId) {
       if (configuration.provider !== "byok" || providerId !== configuration.providerId)
         return undefined;
-      const key = bindings.secrets?.[configuration.secretBinding];
+      const key =
+        configuration.providerId === "openrouter"
+          ? await bindings.openRouterKey?.()
+          : bindings.secrets?.[configuration.secretBinding];
       if (!key) throw Error("model_not_configured");
       return { type: "api_key", key };
     },
@@ -73,7 +80,10 @@ export function configureModels(
     openrouter: pitcrewOpenrouterProvider,
   };
   const factory = factories[configuration.providerId];
-  if (!factory || !bindings.secrets?.[configuration.secretBinding])
+  if (
+    !factory ||
+    (configuration.providerId !== "openrouter" && !bindings.secrets?.[configuration.secretBinding])
+  )
     throw Error("model_not_configured");
   const provider = factory();
   models.setProvider(provider);

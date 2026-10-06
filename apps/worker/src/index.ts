@@ -1,4 +1,11 @@
 import {
+  credentialStorageAvailable,
+  providerConnectionRequest,
+  userCredential,
+  userModelEnv,
+} from "./user-credentials";
+export { UserCredentials } from "./user-credentials-agent";
+import {
   RepositoryLifecycle,
   lifecycleRequest,
   type LifecycleRecord,
@@ -7,7 +14,7 @@ import { readRepositoryState, writeRepositoryState } from "./repository-state";
 import { sameKnowledgeContext } from "./knowledge";
 import { RepoConversationAgent } from "./repo-conversation-agent";
 export { RepoConversationAgent };
-import { resolveCatalog, validateFrozenModels } from "./model-selection";
+import { resolveCatalog, validateFrozenModels, requiresUserOpenRouter } from "./model-selection";
 import { attachmentStore, type AttachmentStore } from "./attachment-store";
 import {
   ATTACHMENT_LIMITS,
@@ -48,9 +55,11 @@ interface Env extends PiEnv, AccessEnv {
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
   private repositoryLifecycle?: RepositoryLifecycle;
-  private getRepositoryLifecycle() {
+  private getRepositoryLifecycle(request: Request) {
+    const listing =
+      request.method === "GET" && new URL(request.url).pathname === "/api/repositories";
     if (
-      this.env.REPOSITORY_LIFECYCLE !== "enabled" ||
+      (!listing && this.env.REPOSITORY_LIFECYCLE !== "enabled") ||
       !this.env.ARTIFACTS ||
       this.env.ENVIRONMENT !== "production"
     )
@@ -269,6 +278,20 @@ export class RepositoryAgent extends Agent<Env> {
             (byte) => byte.toString(16).padStart(2, "0"),
           ).join("");
           const gate = this.getAdmission();
+          // Revocation fences first admission only. Existing receipts and cleanup must still reconcile.
+          if (!gate.hasReservation(runId) && requiresUserOpenRouter(this.env)) {
+            try {
+              if (
+                !(await userCredential(this.env, input.credentialActor).configured(
+                  input.credentialActor!,
+                ))
+              )
+                throw Error();
+            } catch {
+              core.blockModelConfiguration(runId);
+              return;
+            }
+          }
           if (gate.active().some((item) => item.runId === runId && item.state === "quarantined")) {
             core.fail(runId, true);
             return;
@@ -306,6 +329,7 @@ export class RepositoryAgent extends Agent<Env> {
             ? await getAgentByName(this.env.CHANGE, `change:${input.projectId}:${input.runId}`, {
                 props: {
                   runModels: input.runModels,
+                  credentialActor: input.credentialActor,
                   role: "implementer",
                   deadline: admitted.reservation.deadline,
                 },
@@ -361,6 +385,7 @@ export class RepositoryAgent extends Agent<Env> {
           core.completeConversation(id, undefined, "execution_unavailable");
           return;
         }
+        const firstAdmission = turn.status === "queued";
         let input;
         try {
           input = core.beginConversation(id);
@@ -370,6 +395,14 @@ export class RepositoryAgent extends Agent<Env> {
         }
         if (!input) return { rescheduleAt: Date.now() + 1000 };
         try {
+          if (
+            firstAdmission &&
+            requiresUserOpenRouter(this.env) &&
+            !(await userCredential(this.env, input.credentialActor).configured(
+              input.credentialActor!,
+            ))
+          )
+            throw Error("provider_credential_unavailable");
           validateFrozenModels(this.env, input.models);
         } catch {
           core.completeConversation(id, undefined, "model_configuration_changed");
@@ -442,10 +475,12 @@ export class RepositoryAgent extends Agent<Env> {
     return this.coordinator;
   }
   async onRequest(request: Request) {
-    if (!(await principal(request, this.env)))
-      return Response.json({ error: "access_not_configured" }, { status: 403 });
+    const identity = await principal(request, this.env);
+    if (!identity) return Response.json({ error: "access_not_configured" }, { status: 403 });
+    if (new URL(request.url).pathname === "/api/provider-connection/openrouter")
+      return providerConnectionRequest(request, this.env, identity.actor);
     if (/^\/api\/repositories(?:\/|$)/.test(new URL(request.url).pathname))
-      return lifecycleRequest(request, this.getRepositoryLifecycle(), (task) =>
+      return lifecycleRequest(request, this.getRepositoryLifecycle(request), (task) =>
         this.ctx.waitUntil(task),
       );
     const bodyLimit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
@@ -454,16 +489,34 @@ export class RepositoryAgent extends Agent<Env> {
     if (Number(request.headers.get("content-length") ?? 0) > bodyLimit)
       return Response.json({ error: "body_too_large" }, { status: 413 });
     const coordinator = this.getCoordinator();
+    let providerReady = this.env.EXECUTION_MODE === "fake" || !requiresUserOpenRouter(this.env);
+    if (!providerReady && credentialStorageAvailable(this.env)) {
+      try {
+        providerReady = await userCredential(this.env, identity.actor).configured(identity.actor);
+      } catch {
+        /* Fail closed. */
+      }
+    }
+    if (
+      this.env.EXECUTION_MODE !== "fake" &&
+      !providerReady &&
+      request.method === "POST" &&
+      (/^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname) ||
+        /^\/api\/changes\/[^/]+\/runs$/.test(new URL(request.url).pathname) ||
+        /^\/api\/projects\/[^/]+\/intake\/dispatch$/.test(new URL(request.url).pathname))
+    )
+      return Response.json({ error: "provider_credential_unavailable" }, { status: 409 });
     const app = api(
       coordinator,
       (id) => this.dispatchRun(id),
       this.landing(coordinator),
-      (await principal(request, this.env))!,
+      identity,
       this.env.CONVERSATION &&
+        providerReady &&
         this.conversationsEnabled() &&
         (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
         ? {
-            catalog: resolveCatalog(this.env),
+            catalog: resolveCatalog(userModelEnv(this.env, identity.actor)),
             dispatch: (id) => this.conversationJobs.enqueue(id, { turnId: id }),
           }
         : undefined,

@@ -16,6 +16,7 @@ export interface ConversationTurn {
   input?: ConversationInput;
 }
 export interface ConversationInput {
+  credentialActor?: string;
   turnId: string;
   threadId: string;
   projectId: string;

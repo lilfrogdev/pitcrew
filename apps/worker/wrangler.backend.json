@@ -33,6 +33,10 @@
       {
         "name": "REVIEW",
         "class_name": "ReviewAgent"
+      },
+      {
+        "name": "USER_CREDENTIALS",
+        "class_name": "UserCredentials"
       }
     ]
   },
@@ -48,6 +52,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["RepoConversationAgent"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["UserCredentials"]
     }
   ],
   "vars": {
@@ -58,6 +66,7 @@
     "ACCESS_AUDIENCE": "147a2e216894b65c6445fc8dec1a3347c6b1681e01089dd066f875a581e81683",
     "ACCESS_HOSTNAME": "pitcrew-backend.pitcrew-004.workers.dev",
     "ACCESS_EMAIL": "dev@lilfrogdev.com",
+    "ACCESS_EMAILS": "[\"dev@lilfrogdev.com\",\"bryan.aldair.zamora@gmail.com\"]",
     "CLOUD_CONVERSATION_ENABLED": "false",
     "REPOSITORY_LIFECYCLE": "disabled",
     "MODEL_CONFIGURATION": "{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"qwen/qwen3.8-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}",
