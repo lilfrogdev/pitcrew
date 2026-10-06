@@ -46,6 +46,13 @@ backend settings were not modified. Local checks reused the existing dependency
 trees with pnpm dependency verification set to warn, avoiding an automatic
 replacement of the shared dependency directory.
 
+Publication CI initially stopped at locked installation because transitive
+`esbuild@0.18.20` and `esbuild@0.25.12` hooks had no declared policy. Their unused
+hooks are now explicitly denied; native optional binaries remain installed and
+the existing approved esbuild/workerd hooks are unchanged. No dependency version
+or lockfile changed. A fresh frozen install in task-owned directories, all local
+checks/tests and both dry-run bundles passed with this policy.
+
 Independent frontend review identified the two reload edges above; both were
 fixed and re-reviewed with no actionable findings remaining.
 
