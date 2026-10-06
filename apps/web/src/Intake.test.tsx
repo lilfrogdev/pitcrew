@@ -31,7 +31,8 @@ it("collects two sources, explicitly groups and dispatches with criteria through
   await collect("Save failure two");
   expect(core.state.runs).toHaveLength(0);
   await user.click(screen.getByRole("checkbox", { name: "Save failure two" }));
-  await user.selectOptions(screen.getByLabelText("Move selected reports to"), core.groups()[0].id);
+  await user.click(screen.getByRole("combobox", { name: "Move selected reports to" }));
+  await user.click(screen.getByRole("option", { name: core.groups()[0].title }));
   await user.click(screen.getByRole("button", { name: "Move reports" }));
   await waitFor(() => expect(core.groups()[0].reports).toHaveLength(2));
   await user.type(screen.getByLabelText("Acceptance criterion"), "Both originals remain traceable");

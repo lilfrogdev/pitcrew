@@ -111,20 +111,20 @@ it("retains image previews when a model becomes incompatible and delivers native
   fireEvent.change(screen.getByLabelText("Message your crew"), {
     target: { value: "Inspect synthetic image" },
   });
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Repo agent model" }),
-    "fixture-text",
-  );
+  await user.click(screen.getByRole("combobox", { name: "Repo agent model" }));
+  await user.click(screen.getByRole("option", { name: "Fixture text (synthetic)" }));
   await screen.findByText(/Images are not supported by all selected agents/);
   expect(screen.getByRole("button", { name: "Send message" }).hasAttribute("disabled")).toBe(true);
   expect(screen.getByAltText("Preview of preview.png")).toBeTruthy();
-  await user.selectOptions(screen.getByRole("combobox", { name: "Repo agent model" }), "fixture");
+  await user.click(screen.getByRole("combobox", { name: "Repo agent model" }));
+  await user.click(screen.getByRole("option", { name: "Fixture vision (synthetic)" }));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Send message" }).hasAttribute("disabled")).toBe(
       false,
     ),
   );
-  await user.selectOptions(screen.getByRole("combobox", { name: "Repo agent effort" }), "high");
+  await user.click(screen.getByRole("combobox", { name: "Repo agent effort" }));
+  await user.click(screen.getByRole("option", { name: "High" }));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Send message" }).hasAttribute("disabled")).toBe(
       false,
@@ -148,7 +148,8 @@ it("does not leak a delayed model preference failure into another thread", async
         },
       ),
   );
-  fireEvent.change(screen.getByLabelText("Repo agent effort"), { target: { value: "high" } });
+  fireEvent.click(screen.getByRole("combobox", { name: "Repo agent effort" }));
+  fireEvent.click(screen.getByRole("option", { name: "High" }));
   await waitFor(() => expect(api.setThreadModelSelection).toHaveBeenCalled());
   fireEvent.click(screen.getByRole("button", { name: "Recover interrupted work" }));
   await screen.findByText(/Worker execution stopped/);
@@ -212,11 +213,12 @@ it.each(["missing", "failed", "no-conversation"] as const)(
       expect(screen.getByText("Text reference").textContent).toBe("Text reference"),
     );
     fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
-    await waitFor(() => expect(api.send).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(api.send).mock.calls[0][3]?.[0]).toMatchObject({
-      mediaType: "text/plain",
-      text: "Text reference",
-    });
+    expect(api.send).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Set up a provider" })).toBeTruthy();
+    expect((screen.getByLabelText("Message your crew") as HTMLTextAreaElement).value).toBe(
+      "Preserve this draft",
+    );
+    expect(screen.getByText("Text reference")).toBeTruthy();
   },
 );
 
