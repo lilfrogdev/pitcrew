@@ -14,7 +14,7 @@
   position: relative;
   min-width: 0;
   color: var(--muted);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
 }
 .divider {
   height: 14px;
@@ -66,7 +66,7 @@
 }
 .settingsBody {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   background: var(--surface);
   padding: 14px;
   margin-top: 6px;
