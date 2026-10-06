@@ -199,11 +199,14 @@ export class NativeTrustedPublisher {
     const repos: ArtifactsRepo[] = [];
     const fence = async () => {
       if (this.now() >= input.deadline) throw new ExecutionError("PUBLISHER_EXPIRED");
-      const record = await this.journal.read(input.operationId);
+      const record = await this.bounded(this.journal.read(input.operationId), input.deadline);
       if (!record || record.fingerprint !== fingerprint || record.cancelled)
         throw new ExecutionError("PUBLISHER_CANCELLED");
-      await this.admitted(identity);
+      await this.bounded(this.admitted(identity), input.deadline);
       if (this.now() >= input.deadline) throw new ExecutionError("PUBLISHER_EXPIRED");
+      const current = await this.bounded(this.journal.read(input.operationId), input.deadline);
+      if (!current || current.fingerprint !== fingerprint || current.cancelled)
+        throw new ExecutionError("PUBLISHER_CANCELLED");
     };
     const stage = async <T>(operation: () => Promise<T>): Promise<T> => {
       await fence();
@@ -326,7 +329,7 @@ export class NativeTrustedPublisher {
 
   async cleanup(operationId: string): Promise<boolean> {
     const record = await this.journal.read(operationId);
-    if (!record) return !this.container.running;
+    if (!record) return false;
     await this.journal.update(operationId, record.fingerprint, { cancelled: true });
     let revoked = !record.lease || record.lease.state === "revoked";
     if (!revoked && record.lease?.id) {
