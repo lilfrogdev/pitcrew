@@ -76,6 +76,10 @@
   border-top: 1px solid var(--border);
   margin: 4px 0;
 }
+.favoritesIcon {
+  color: #b77900;
+  fill: #eab308;
+}
 .content {
   min-width: 0;
   flex: 1;
@@ -173,11 +177,11 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--muted);
+  color: #b77900;
   border-radius: 4px;
 }
-.favorite[aria-pressed="true"] {
-  color: var(--text);
+.favorite[aria-pressed="true"] > svg {
+  fill: #eab308;
 }
 .check {
   flex-shrink: 0;

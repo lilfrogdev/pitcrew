@@ -63,6 +63,88 @@ function Controlled({ change = () => {} }: { change?: (model: ModelChoice) => vo
     </>
   );
 }
+it("shows model identity on the trigger, retains routing-provider identity in the selector, and passes through catalog choices", async () => {
+  const user = userEvent.setup();
+  const change = vi.fn();
+  const catalog: ModelChoice[] = [
+    { ...models[0], model: "anthropic/claude-sonnet-5", label: "Sonnet 5" },
+    { ...models[1], model: "qwen/qwen3.8-flash", label: "Qwen Flash" },
+  ];
+  const view = render(
+    <ModelCatalogPicker
+      models={catalog}
+      label="Model"
+      value="a"
+      disabled={false}
+      onChange={change}
+    />,
+  );
+  const trigger = screen.getByRole("combobox", { name: "Model" });
+  expect(within(trigger).getByRole("img", { name: "Claude model" })).toBeTruthy();
+  expect(within(trigger).queryByRole("img", { name: "openrouter provider" })).toBeNull();
+  await user.click(trigger);
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getAllByRole("img", { name: "openrouter provider" })).toHaveLength(3);
+  expect(within(dialog).queryByRole("img", { name: "Claude model" })).toBeNull();
+  await user.type(screen.getByLabelText("Search models"), "qwen");
+  await user.keyboard("{Enter}");
+  expect(change).toHaveBeenCalledExactlyOnceWith(catalog[1]);
+  expect(document.activeElement).toBe(trigger);
+  view.rerender(
+    <ModelCatalogPicker
+      models={catalog}
+      label="Model"
+      value="b"
+      disabled={false}
+      onChange={change}
+    />,
+  );
+  expect(within(trigger).getByRole("img", { name: "Qwen model" })).toBeTruthy();
+});
+it("uses a neutral trigger for unknown or missing selections even when the label names a brand", () => {
+  const catalog = [{ ...models[0], model: "unknown/unlisted", label: "Claude-like model" }];
+  const view = render(
+    <ModelCatalogPicker
+      models={catalog}
+      label="Model"
+      value="a"
+      disabled={false}
+      onChange={vi.fn()}
+    />,
+  );
+  const trigger = screen.getByRole("combobox", { name: "Model" });
+  expect(within(trigger).getByRole("img", { name: "Model" }).querySelector("img")).toBeNull();
+  expect(within(trigger).queryByRole("img", { name: "Claude model" })).toBeNull();
+  view.rerender(
+    <ModelCatalogPicker
+      models={catalog}
+      label="Model"
+      value="removed"
+      disabled={false}
+      onChange={vi.fn()}
+    />,
+  );
+  expect(trigger.getAttribute("aria-invalid")).toBe("true");
+  expect(within(trigger).getByRole("img", { name: "Model" })).toBeTruthy();
+});
+it("keeps favorite toggles keyboard-accessible and independent of model selection", async () => {
+  const user = userEvent.setup();
+  const change = vi.fn();
+  render(<Controlled change={change} />);
+  await user.click(screen.getByRole("combobox", { name: "Model" }));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  const star = screen.getByRole("button", { name: "Add Model A to favorites" });
+  await user.tab();
+  expect(document.activeElement).toBe(star);
+  await user.keyboard(" ");
+  expect(star.getAttribute("aria-pressed")).toBe("true");
+  expect(star.querySelector("svg")?.getAttribute("fill")).toBe("currentColor");
+  await user.keyboard("{Enter}");
+  expect(star.getAttribute("aria-pressed")).toBe("false");
+  expect(star.querySelector("svg")?.getAttribute("fill")).toBe("none");
+  expect(document.activeElement).toBe(star);
+  expect(change).not.toHaveBeenCalled();
+});
 it("searches the supplied catalog across providers and supports keyboard commit, Escape, and outside dismissal", async () => {
   const user = userEvent.setup();
   const change = vi.fn();

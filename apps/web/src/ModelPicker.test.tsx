@@ -30,7 +30,7 @@ const models: ModelChoice[] = [
     contextWindow: 100000,
   },
 ];
-it("uses the transport provider for the glyph without inferring a brand from the model label", () => {
+it("keeps unknown model identities neutral without inferring a brand from the label and retains provider glyphs in the selector", () => {
   const branded = [{ ...models[0], provider: "openrouter", label: "Qwen custom label" }];
   const { rerender } = render(
     <ModelPicker
@@ -40,12 +40,13 @@ it("uses the transport provider for the glyph without inferring a brand from the
       disabled={false}
     />,
   );
-  expect(
-    screen.getByRole("img", { name: "openrouter provider" }).querySelector("img"),
-  ).not.toBeNull();
+  expect(screen.getByRole("img", { name: "Model" }).querySelector("img")).toBeNull();
   expect(screen.getByRole("combobox", { name: "Repo agent model" })).toHaveProperty("value", "a");
   fireEvent.click(screen.getByRole("combobox", { name: "Repo agent model" }));
   expect(screen.getByRole("gridcell", { name: "Qwen custom label" })).toBeTruthy();
+  expect(
+    within(screen.getByRole("dialog")).getAllByRole("img", { name: "openrouter provider" }),
+  ).toHaveLength(2);
   fireEvent.click(screen.getByRole("combobox", { name: "Repo agent model" }));
   fireEvent.click(screen.getByRole("combobox", { name: "Repo agent effort" }));
   expect(screen.getByRole("option", { name: "High" })).toBeTruthy();
@@ -57,7 +58,7 @@ it("uses the transport provider for the glyph without inferring a brand from the
       disabled={false}
     />,
   );
-  expect(screen.getByRole("img", { name: "unknown provider" }).querySelector("img")).toBeNull();
+  expect(screen.getByRole("img", { name: "Model" }).querySelector("img")).toBeNull();
 });
 it("shows supported efforts and chooses a supported default on model change", () => {
   const onSelection = vi.fn();
