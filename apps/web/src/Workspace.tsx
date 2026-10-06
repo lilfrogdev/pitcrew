@@ -10,6 +10,7 @@ import {
 import type { Api, Project, Snapshot } from "./api";
 import "./Workspace.css";
 import { Select } from "./Select";
+import { runDisplayStatus } from "./landing-receipt";
 
 type Tab = "browser" | "files" | "diffs" | "review";
 const tabs = [
@@ -259,7 +260,7 @@ export function Workspace({
                   onChange={(value) => update({ run: value })}
                   options={[...snapshot.runs].reverse().map((run) => ({
                     value: run.id,
-                    label: `${run.id} · ${run.status.replaceAll("_", " ")}`,
+                    label: `${run.id} · ${runDisplayStatus(run).replaceAll("_", " ")}`,
                   }))}
                 />
               </label>

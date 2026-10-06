@@ -8,6 +8,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities, InvitationPreview } from "./api";
 import "./styles.css";
 import { LandingControl, type LandingState } from "./LandingControl";
+import { isLandedReceipt, runDisplayStatus } from "./landing-receipt";
+import { landingStateKey, readLandingStates, saveLandingState } from "./landing-storage";
 import { Workspace, WorkspaceResize, workspaceStyle } from "./Workspace";
 import { Composer, readAttachment, attachmentError, type AttachmentDraft } from "./Composer";
 import {
@@ -46,6 +48,7 @@ export function App({ api, auth, viewer, demo = false }: {
   const keyboardFocus = useKeyboardFocus();
   const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
+  const [landingBackend, setLandingBackend] = useState<LandingCapabilities["landing"]["backend"]>(null);
   const [providerRevision, setProviderRevision] = useState(0);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [composerCapabilities, setComposerCapabilities] =
@@ -53,7 +56,9 @@ export function App({ api, auth, viewer, demo = false }: {
   const [notesEnabled, setNotesEnabled] = useState(false);
   const [selections, setSelections] = useState<Record<string, ModelSelection>>({});
   const [selectionSaving, setSelectionSaving] = useState<Record<string, boolean>>({});
-  const [landingStates, setLandingStates] = useState<Record<string, LandingState>>({});
+  const landingAccount = viewer?.id ?? (demo ? "fixture-local" : undefined);
+  const [landingStates, setLandingStates] = useState<Record<string, LandingState>>(() => readLandingStates(landingAccount));
+  useEffect(() => { setLandingStates(readLandingStates(landingAccount)); }, [landingAccount]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -107,6 +112,7 @@ export function App({ api, auth, viewer, demo = false }: {
   useEffect(() => {
     let cancelled = false;
     setLandingEnabled(false);
+    setLandingBackend(null);
     setProvidersLoading(true);
     setComposerCapabilities(undefined);
     setNotesEnabled(false);
@@ -119,13 +125,16 @@ export function App({ api, auth, viewer, demo = false }: {
           setNotesEnabled(capabilities.notesEnabled === true);
           setProvidersLoading(false);
           setLandingEnabled(
-            capabilities.landing.enabled && capabilities.landing.backend === "fixture",
+            capabilities.landing.enabled && ["fixture", "artifacts"].includes(capabilities.landing.backend ?? ""),
           );
+          setLandingBackend(["fixture", "artifacts"].includes(capabilities.landing.backend ?? "")
+            ? capabilities.landing.backend : null);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setLandingEnabled(false);
+          setLandingBackend(null);
           setComposerCapabilities(undefined);
           setProvidersLoading(false);
         }
@@ -646,7 +655,7 @@ export function App({ api, auth, viewer, demo = false }: {
             </div>
             <Collaborators api={api.collaboration} projectId={projectId} threadId={threadId}
               onAccessLost={accessLost} />
-            {latest && <span className={`status ${latest.status}`}>{labels[latest.status]}</span>}
+            {latest && <span className={`status ${runDisplayStatus(latest)}`}>{labels[runDisplayStatus(latest)]}</span>}
           </header>
           {!demo && projectId && (
             <details className="intake-panel" open={!threadId}>
@@ -848,7 +857,7 @@ export function App({ api, auth, viewer, demo = false }: {
                 <section className="run-card" key={run.id}>
                   <div className="run-title">
                     <strong>Change run</strong>
-                    <span className={`status ${run.status}`}>{labels[run.status]}</span>
+                    <span className={`status ${runDisplayStatus(run)}`}>{labels[runDisplayStatus(run)]}</span>
                   </div>
                   {run.error && (
                     <p className="run-error">
@@ -983,10 +992,29 @@ export function App({ api, auth, viewer, demo = false }: {
                     evidence={evidence}
                     reviews={reviews}
                     enabled={landingEnabled}
-                    state={landingStates[run.id]}
-                    onStateChange={(state) =>
-                      setLandingStates((states) => ({ ...states, [run.id]: state }))
-                    }
+                    backend={landingBackend}
+                    state={landingStates[landingStateKey(landingAccount, projectId, run.id)]}
+                    onStateChange={(state) => {
+                      const confirmed = isLandedReceipt(run, state.result, landingBackend);
+                      let persisted = true;
+                      try { saveLandingState(landingAccount, projectId, run.id, state); }
+                      catch { persisted = false; }
+                      setLandingStates((states) => ({ ...states,
+                        [landingStateKey(landingAccount, projectId, run.id)]: persisted || confirmed ? state
+                          : { ...state, busy: false, persistenceError: true,
+                            error: "Could not save the landing receipt in this browser. Landing is disabled; restore browser storage and reload to check the receipt." },
+                      }));
+                      if (confirmed) {
+                        setSnapshot((current) => ({ ...current, runs: current.runs.map((item) =>
+                          item.id === run.id && item.baseSha === run.baseSha &&
+                          item.candidateSha === run.candidateSha &&
+                          item.configurationRevision === run.configurationRevision
+                            ? { ...item, landing: state.result, status: "completed" }
+                            : item),
+                        }));
+                      }
+                      return persisted || confirmed;
+                    }}
                   />
                 </section>
               );

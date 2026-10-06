@@ -227,7 +227,9 @@ describe("repository sidebar", () => {
         threadId="thread"
         revision={0}
         busy={false}
-        activeRun={{ id: "run", threadId: "thread", status } as Run}
+        activeRun={{ id: "run", threadId: "thread", status, candidateSha: "candidate",
+          landing: status === "completed" ? { authorizationId: "receipt", backend: "artifacts",
+            status: "landed", landedSha: "candidate" } : undefined } as Run}
         onSelect={() => {}}
         onCreate={() => {}}
       />,

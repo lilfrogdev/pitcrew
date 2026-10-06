@@ -33,6 +33,9 @@ Focused sidebar/archive tests cover both collapse directions, persistence on
 remount, account changes, selection, drafts, removal of the last pin while a
 Pinned creation form is active, archive failure/retry, and restoration. An
 independent reviewer found no remaining actionable issue after the draft fixes.
+Chrome also verified Pinned closed while Repositories stayed open after reload;
+successful archive removed its pin, restore through search stayed unpinned, and
+Escape returned focus to Search.
 
 ## Right-hand Workspace audit
 

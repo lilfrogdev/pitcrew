@@ -69,9 +69,11 @@ configuration, deployment approval, shared repository selection and live Bryan
 onboarding remain parent integration steps. Execution remains off. No managed
 runtime, production auth, real invitations, mail, model calls or deployment changed.
 
-The later production execution contract has been received, but its unreviewed
-implementation was not imported here. The existing landing control remains
-fixture-only. Production `artifacts` approval/landing receipts and task completion
-must be integrated after the reviewed execution checkpoint; proposal/patch status
-must not be treated as completion. Approval uses exact target/candidate/config
-and idempotency bindings; landing and reconciliation use the authorization ID.
+The reviewed execution checkpoint has now been integrated through the ten exact
+approved commits ending at `003c363`. The frontend accepts project-scoped
+`artifacts` capabilities and exact approval/landing receipts. Proposal or patch
+status alone cannot mark a task completed. Approval uses exact target, candidate,
+configuration and idempotency bindings; landing and reconciliation use the
+authorization ID. See [Artifacts frontend integration](artifacts-frontend.md)
+for completion and interrupted-receipt recovery checks, and
+[layout/sidebar QA](frontend-layout-qa.md) for the subsequent visual refinements.

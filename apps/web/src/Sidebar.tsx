@@ -3,6 +3,7 @@ import type { Api, Project, Thread, Run } from "./api";
 import { Icon, type IconKind } from "./icons";
 import { useSidebarData } from "./useSidebarData";
 import { ConversationTitle } from "./ConversationTitle";
+import { runDisplayStatus } from "./landing-receipt";
 
 const legacyExpansionKey = "pitcrew.sidebar.collapsed.v1";
 const folderKey = (id: string, pinned = false) => `${pinned ? "pinned" : "repositories"}:${id}`;
@@ -162,10 +163,10 @@ export function Sidebar({
                 ? "Execution unavailable"
                 : "Execution failed",
         }
-      : runIcons[run.status];
+      : runIcons[runDisplayStatus(run)];
     return (
       <span
-        className={`conversation-state state-${run.error ? "failed" : run.status}`}
+        className={`conversation-state state-${run.error ? "failed" : runDisplayStatus(run)}`}
         role="img"
         aria-label={label}
         title={label}

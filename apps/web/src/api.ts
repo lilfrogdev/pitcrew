@@ -27,7 +27,7 @@ export type Snapshot = {
   turns?: { id: string; status: "queued" | "running" | "completed" | "failed"; error?: string }[];
 };
 export type LandingCapabilities = {
-  landing: { enabled: boolean; backend: "fixture" | null };
+  landing: { enabled: boolean; backend: LandingAuthorizationReceipt["backend"] | null };
   /** Enables durable human messages without claiming agent execution. */
   notesEnabled?: boolean;
   composer?: {
