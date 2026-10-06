@@ -78,7 +78,7 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  const password = "synthetic-visualization-password-only";
+  let password = "synthetic-visualization-password-only";
   const login = async (viewer: number) => {
     const result = await request("/api/auth/sign-in/email", viewer, "POST", {
       email: emails[viewer],
@@ -150,6 +150,12 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
           content: unknown,
         ): Promise<{ content: { text: string }[] }>;
         finish(turn: string): Promise<void>;
+        armSessionPause(skip: number, kind?: "publisher" | "read" | "delete"): Promise<void>;
+        waitForSessionPause(): Promise<void>;
+        releaseSessionPause(): Promise<void>;
+        artifactCount(): Promise<number>;
+        failSessionDelete(): Promise<void>;
+        authorityPending(): Promise<number>;
       };
     const content = {
       kind: "bars",
@@ -229,7 +235,25 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
     expect(
       await stub.tool(turn.id, "spoof", { ...content, threadId: "other", actor: colleague.actor }),
     ).toMatchObject({ denied: true });
-    expect((await request("/api/auth/sign-out", 0, "POST", {})).status).toBe(200);
+    // Capture the final active D1 result. Revocation must wait until the
+    // admitted publication commits and constructs its successful receipt.
+    const beforeRace = await stub.artifactCount();
+    await stub.armSessionPause(1);
+    const racingPublication = stub.tool(revocationTurn.id, "racing-signout", content);
+    await stub.waitForSessionPause();
+    let signoutCompleted = false;
+    const racingSignout = request("/api/auth/sign-out", 0, "POST", {}).then((result) => {
+      signoutCompleted = true;
+      return result;
+    });
+    for (let i = 0; i < 100 && (await stub.authorityPending()) !== 2; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await stub.authorityPending()).toBe(2);
+    expect(signoutCompleted).toBe(false);
+    await stub.releaseSessionPause();
+    expect((await racingPublication).content).toBeDefined();
+    expect((await racingSignout).status).toBe(200);
+    expect(await stub.artifactCount()).toBe(beforeRace + 1);
     expect(await stub.tool(revocationTurn.id, "after-signout", content)).toMatchObject({
       denied: true,
       code: "visualization_session_revoked",
@@ -243,6 +267,151 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
     // Existing artifacts remain available to a newly verified same-account session,
     // while old admitted publisher authority cannot be revived by signing in again.
     expect((await request(path)).status).toBe(200);
+    // The native library swallows this DELETE failure. The application must
+    // report failure and keep the existing cookie usable for a safe retry.
+    await stub.failSessionDelete();
+    expect((await request("/api/auth/sign-out", 0, "POST", {})).status).toBe(503);
+    expect((await request(path)).status).toBe(200);
+    await stub.finish(revocationTurn.id);
+
+    // Read disclosure wins: freeze the last of the seven real cookie-session
+    // reads (entry identity, then three pairs in the scoped read adapter).
+    // Its response is constructed before queued revocation can delete session.
+    await stub.armSessionPause(6, "read");
+    const racingRead = request(path);
+    await stub.waitForSessionPause();
+    const afterReadRevocation = request("/api/auth/sign-out", 0, "POST", {});
+    for (let i = 0; i < 100 && (await stub.authorityPending()) !== 2; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await stub.authorityPending()).toBe(2);
+    await stub.releaseSessionPause();
+    expect((await racingRead).status).toBe(200);
+    expect((await afterReadRevocation).status).toBe(200);
+    expect((await request(path)).status).toBe(401);
+    await login(0);
+
+    // Grant capture wins: enqueue only after an ordered live session check and
+    // binding. Subsequent revocation makes this captured publisher unusable.
+    await stub.armSessionPause(0);
+    const racingAdmission = request(`/api/threads/${thread.id}/messages`, 0, "POST", {
+      content: "Grant capture ordering",
+      idempotencyKey: "grant-race",
+    });
+    await stub.waitForSessionPause();
+    const afterGrantRevocation = request("/api/auth/sign-out", 0, "POST", {});
+    for (let i = 0; i < 100 && (await stub.authorityPending()) !== 2; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await stub.authorityPending()).toBe(2);
+    await stub.releaseSessionPause();
+    const admitted = await racingAdmission;
+    expect(admitted.status).toBe(201);
+    const admittedTurn = ((await admitted.json()) as { turn: { id: string } }).turn;
+    expect((await afterGrantRevocation).status).toBe(200);
+    expect(await stub.tool(admittedTurn.id, "revoked-admission", content)).toMatchObject({
+      denied: true,
+    });
+    await stub.finish(admittedTurn.id);
+    await db.prepare("DELETE FROM auth_admission").run();
+    await db.prepare("DELETE FROM rate_limit").run();
+    await login(0);
+
+    // Revocation wins: pause after the actual DELETE, queue publication behind
+    // it, then assert no artifact/capacity effect after completed revocation.
+    for (const action of ["sign-out", "revoke-sessions", "change-password", "reset-password"]) {
+      await db.prepare("DELETE FROM auth_admission").run();
+      await db.prepare("DELETE FROM rate_limit").run();
+      const queued = await request(`/api/threads/${thread.id}/messages`, 0, "POST", {
+        content: "Revocation ordering",
+        idempotencyKey: `race-${action}`,
+      });
+      expect(queued.status).toBe(201);
+      const currentTurn = ((await queued.json()) as { turn: { id: string } }).turn;
+      const baseline = await stub.artifactCount();
+      let body: Record<string, unknown> = {};
+      if (action === "change-password") {
+        const next = "synthetic-replacement-password-only";
+        body = { currentPassword: password, newPassword: next, revokeOtherSessions: true };
+        password = next;
+      }
+      if (action === "reset-password") {
+        expect(
+          (await request("/api/auth/request-password-reset", 0, "POST", { email: emails[0] }))
+            .status,
+        ).toBe(200);
+        const mail = await db
+          .prepare("SELECT body FROM test_mail WHERE recipient=? ORDER BY rowid DESC LIMIT 1")
+          .bind(emails[0])
+          .first<{ body: string }>();
+        body = {
+          token: new URL(mail!.body.slice(mail!.body.indexOf("http://"))).hash.slice(
+            "#token=".length,
+          ),
+          newPassword: "synthetic-reset-password-only",
+        };
+        password = "synthetic-reset-password-only";
+      }
+      await stub.armSessionPause(0, "delete");
+      const revocation = request(`/api/auth/${action}`, 0, "POST", body);
+      await stub.waitForSessionPause();
+      const publication = stub.tool(currentTurn.id, `after-${action}`, content);
+      for (let i = 0; i < 100 && (await stub.authorityPending()) !== 2; i++)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(await stub.authorityPending()).toBe(2);
+      await stub.releaseSessionPause();
+      expect((await revocation).status).toBe(200);
+      expect(await publication).toMatchObject({
+        denied: true,
+        code: "visualization_session_revoked",
+      });
+      expect(await stub.artifactCount()).toBe(baseline);
+      expect((await request(path)).status).toBe(401);
+      await login(0);
+      expect((await request(path)).status).toBe(200);
+      expect(await stub.tool(currentTurn.id, `new-session-${action}`, content)).toMatchObject({
+        denied: true,
+      });
+      await stub.finish(currentTurn.id);
+    }
+    // A direct Worker caller can hold a body open past the relay timeout.
+    // Ingestion must not hold the shared revocation/read/publication queue.
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const admissionKey = JSON.stringify(["access:viewer-1", "sign-up/email"]);
+    const slowAuth = mf.dispatchFetch(base + "/api/auth/sign-up/email", {
+      method: "POST",
+      headers: {
+        "cf-access-jwt-assertion": tokens[1],
+        origin: base,
+        "content-type": "application/json",
+      },
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          stream = controller;
+          controller.enqueue(new TextEncoder().encode("{"));
+        },
+      }),
+      duplex: "half",
+    });
+    try {
+      let seen = false;
+      for (let i = 0; i < 100 && !seen; i++) {
+        seen = !!(await db
+          .prepare("SELECT count FROM auth_admission WHERE key=?")
+          .bind(admissionKey)
+          .first());
+        if (!seen) await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(seen).toBe(true);
+      expect(
+        await Promise.race([
+          request(path).then((response) => response.status),
+          new Promise((resolve) => setTimeout(() => resolve("blocked by unfinished body"), 2000)),
+        ]),
+      ).toBe(200);
+      expect(await stub.authorityPending()).toBe(0);
+    } finally {
+      stream.close();
+      expect((await slowAuth).status).toBe(400);
+    }
     await stub.finish(turn.id);
     expect(await stub.tool(turn.id, "completed-turn", content)).toMatchObject({ denied: true });
   } finally {

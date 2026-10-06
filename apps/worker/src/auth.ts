@@ -225,7 +225,12 @@ const bodyKeys: Record<string, string[]> = {
   "request-password-reset": ["email"],
   "reset-password": ["token", "newPassword"],
 };
-export async function authRequest(auth: Auth, request: Request, access: AccessIdentity) {
+export async function authRequest(
+  auth: Auth,
+  request: Request,
+  access: AccessIdentity,
+  exclusive: (operation: () => Promise<Response>) => Promise<Response>,
+) {
   const url = new URL(request.url),
     path = url.pathname;
   if (!admitted(access)) return failure("identity_mismatch", 403);
@@ -286,78 +291,92 @@ export async function authRequest(auth: Auth, request: Request, access: AccessId
         return failure("invalid_profile", 400);
     }
   }
-  const context = await auth.$context;
-  // No path, including token redemption, can act on a differently bound subject.
-  if (typeof body.email === "string") {
-    const existing = await context.internalAdapter.findUserByEmail(body.email.toLowerCase());
-    if (existing && !bound(existing.user, access)) return failure("identity_mismatch", 403);
-  }
-  if (action === "verify-email") {
-    try {
-      const token = url.searchParams.get("token");
-      if (!token || token.length > 4096) throw Error();
-      const { payload } = await jwtVerify(token, new TextEncoder().encode(context.secret), {
-        algorithms: ["HS256"],
-      });
-      if (typeof payload.email !== "string" || payload.updateTo || payload.requestType)
-        throw Error();
-      const found = await context.internalAdapter.findUserByEmail(payload.email);
-      if (!found || !bound(found.user, access)) return failure("identity_mismatch", 403);
-    } catch {
-      return failure("invalid_token", 400);
+  // Ingest and bound caller-controlled streams before acquiring the shared
+  // authority queue. Resolve all session/token authority again inside it.
+  return exclusive(async () => {
+    const context = await auth.$context;
+    // No path, including token redemption, can act on a differently bound subject.
+    if (typeof body.email === "string") {
+      const existing = await context.internalAdapter.findUserByEmail(body.email.toLowerCase());
+      if (existing && !bound(existing.user, access)) return failure("identity_mismatch", 403);
     }
-  } else if (action === "reset-password") {
-    if (typeof body.token !== "string" || body.token.length > 256)
-      return failure("invalid_token", 400);
-    const verification = await context.internalAdapter.findVerificationValue(
-      `reset-password:${body.token}`,
-    );
-    if (!verification || verification.expiresAt.getTime() <= Date.now())
-      return failure("invalid_token", 400);
-    const user = await context.internalAdapter.findUserById(verification.value);
-    if (!user || !bound(user, access)) return failure("identity_mismatch", 403);
-  } else if (
-    ![
-      "sign-up/email",
-      "sign-in/email",
-      "request-password-reset",
-      "send-verification-email",
-      "get-session",
-    ].includes(action) &&
-    !(await authUser(auth, request, access))
-  )
-    return failure("unauthorized", 401);
-  let response: Response;
-  try {
-    response = await auth.handler(request);
-  } catch {
-    return failure("auth_unavailable", 503);
-  }
-  const headers = new Headers(response.headers);
-  headers.set("Cache-Control", "private, no-store");
-  if (!response.ok) {
-    // Preserve throttling status and Retry-After, including on sign-in.
-    return Response.json(
-      {
-        error:
-          response.status === 429
-            ? "rate_limited"
-            : action === "sign-in/email"
-              ? "invalid_credentials"
-              : "auth_request_failed",
-      },
-      { status: response.status, headers },
-    );
-  }
-  if (action === "get-session") {
-    const user = await authUser(auth, request, access);
-    return Response.json(user ? { user: publicUser(user) } : null, { headers });
-  }
-  if (action === "sign-in/email") {
-    // Better Auth's response includes a raw session token. Only its HttpOnly
-    // cookie crosses this boundary and is retained by the local relay server.
+    if (action === "verify-email") {
+      try {
+        const token = url.searchParams.get("token");
+        if (!token || token.length > 4096) throw Error();
+        const { payload } = await jwtVerify(token, new TextEncoder().encode(context.secret), {
+          algorithms: ["HS256"],
+        });
+        if (typeof payload.email !== "string" || payload.updateTo || payload.requestType)
+          throw Error();
+        const found = await context.internalAdapter.findUserByEmail(payload.email);
+        if (!found || !bound(found.user, access)) return failure("identity_mismatch", 403);
+      } catch {
+        return failure("invalid_token", 400);
+      }
+    } else if (action === "reset-password") {
+      if (typeof body.token !== "string" || body.token.length > 256)
+        return failure("invalid_token", 400);
+      const verification = await context.internalAdapter.findVerificationValue(
+        `reset-password:${body.token}`,
+      );
+      if (!verification || verification.expiresAt.getTime() <= Date.now())
+        return failure("invalid_token", 400);
+      const user = await context.internalAdapter.findUserById(verification.value);
+      if (!user || !bound(user, access)) return failure("identity_mismatch", 403);
+    } else if (
+      ![
+        "sign-up/email",
+        "sign-in/email",
+        "request-password-reset",
+        "send-verification-email",
+        "get-session",
+      ].includes(action) &&
+      !(await authUser(auth, request, access))
+    )
+      return failure("unauthorized", 401);
+    let response: Response;
+    try {
+      response = await auth.handler(request);
+    } catch {
+      return failure("auth_unavailable", 503);
+    }
+    const headers = new Headers(response.headers);
+    headers.set("Cache-Control", "private, no-store");
+    if (!response.ok) {
+      // Preserve throttling status and Retry-After, including on sign-in.
+      return Response.json(
+        {
+          error:
+            response.status === 429
+              ? "rate_limited"
+              : action === "sign-in/email"
+                ? "invalid_credentials"
+                : "auth_request_failed",
+        },
+        { status: response.status, headers },
+      );
+    }
+    if (action === "sign-out") {
+      // Better Auth catches a failed DELETE and can still return 200. Verify the
+      // original session is gone before advertising completed revocation.
+      try {
+        if (await auth.api.getSession({ headers: request.headers }))
+          return failure("auth_unavailable", 503);
+      } catch {
+        return failure("auth_unavailable", 503);
+      }
+    }
+    if (action === "get-session") {
+      const user = await authUser(auth, request, access);
+      return Response.json(user ? { user: publicUser(user) } : null, { headers });
+    }
+    if (action === "sign-in/email") {
+      // Better Auth's response includes a raw session token. Only its HttpOnly
+      // cookie crosses this boundary and is retained by the local relay server.
+      return Response.json({ status: true }, { headers });
+    }
+    if (action === "sign-up/email") return Response.json({ status: true }, { headers });
     return Response.json({ status: true }, { headers });
-  }
-  if (action === "sign-up/email") return Response.json({ status: true }, { headers });
-  return Response.json({ status: true }, { headers });
+  });
 }

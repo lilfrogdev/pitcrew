@@ -41,8 +41,15 @@ by other members. Storage assigns immutable ownership/provenance and enforces 64
 repository. The client mounts two frames maximum, retains one thread in memory, expires
 leases within five seconds, and removes frames and private fallback on known access loss,
 hidden/offline state or replaced scope/transport. Unobserved remote revocation is bounded by
-revalidation/lease expiry; it is not instantaneous. Session and coordinator SQL are separate
-stores, so publication/session revocation cannot be advertised as a distributed atomic write.
+revalidation/lease expiry; it is not instantaneous for bytes already delivered. Server access
+has a separate boundary: all supported auth routes, scoped reads, grant binding and publication
+share one bounded FIFO in the singleton RepositoryAgent. Publication commit and read response
+construction finish before a queued revocation proceeds, or successful revocation completes
+before those operations can resolve live session authority. Old sessions and grants cannot
+start new accepted reads/publications after that boundary. Sign-out verifies the deleted
+session instead of trusting the library's success response. Session and coordinator SQL remain
+separate stores: this ordering covers app-supported auth routes, not out-of-band D1 changes or
+future callers that bypass the shared gate, and is not a distributed atomic transaction.
 
 The isolated branch also registers the actual verified-session adapter, current Collaboration
 membership, admitted-turn tool RPC, bounded relay read route and one App/Workspace mount.

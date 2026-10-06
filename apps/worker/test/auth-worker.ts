@@ -55,7 +55,7 @@ export default {
           ? Response.json({ actor: `account:${user.id}`, credentialActor: access.actor })
           : new Response(null, { status: 401 });
       }
-      return authRequest(auth, request, access);
+      return authRequest(auth, request, access, (operation) => operation());
     } catch {
       return new Response(null, { status: 403 });
     }
