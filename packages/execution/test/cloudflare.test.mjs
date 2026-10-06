@@ -173,13 +173,46 @@ test("unexpected authenticated or external Git remote rejected before minting to
   assert.equal(f.calls.tokens.length, 0);
 });
 
-test("publish pushes exact SHA to fork only with expiring write lease, then revokes", async () => {
+test("publish requires a trusted publisher before resolving artifacts or issuing any credential", async () => {
   const f = fixture();
-  await f.sandbox.publish(workspace, candidateSha);
-  assert.deepEqual(f.calls.tokens, [{ name: "fork-1", scope: "write", ttl: 300 }]);
-  assert.ok(f.calls.exec[0].argv.includes(`${candidateSha}:refs/heads/candidate`));
-  assert.ok(!f.calls.exec[0].argv.includes("canonical"));
-  assert.equal(f.calls.revoke.length, 1);
+  const sandbox = new CloudflareSandbox(
+    {
+      get: async () => {
+        assert.fail("publish must not acquire an artifact capability");
+      },
+    },
+    () => {
+      assert.fail("publish must not resolve a candidate container");
+    },
+    "registered-tests-image",
+  );
+  await assert.rejects(sandbox.publish(workspace, candidateSha), {
+    code: "TRUSTED_PUBLISHER_REQUIRED",
+  });
+  await assert.rejects(f.sandbox.publish(workspace, candidateSha), {
+    code: "TRUSTED_PUBLISHER_REQUIRED",
+  });
+  assert.equal(f.calls.get.length, 0);
+  assert.equal(f.calls.tokens.length, 0);
+  assert.equal(f.calls.exec.length, 0);
+  assert.equal(f.calls.revoke.length, 0);
+});
+
+test("replaced candidate tools cannot receive a publish lease", async () => {
+  const f = fixture();
+  await f.sandbox.prepare(workspace);
+  await f.sandbox.run(workspace, {
+    ...cmd,
+    argv: ["sh", "-c", "replace git, timeout and hooks"],
+  });
+  const before = structuredClone(f.calls);
+  f.container.exec = async () => {
+    assert.fail("no process may be started in the compromised container during publish");
+  };
+  await assert.rejects(f.sandbox.publish(workspace, candidateSha), {
+    code: "TRUSTED_PUBLISHER_REQUIRED",
+  });
+  assert.deepEqual(f.calls, before);
 });
 
 test("streams stdout and stderr concurrently within a shared output budget", async () => {

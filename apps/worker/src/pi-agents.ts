@@ -292,17 +292,28 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     if (prior && prior.value !== serialized) throw Error("context_conflict");
     void this.sql`INSERT OR IGNORE INTO task_models VALUES(1,${serialized})`;
   }
+  protected abstract stopForToolBudget(runId: string): void;
   protected countTool() {
     this.assertTaskActive();
     void this
       .sql`CREATE TABLE IF NOT EXISTS tool_budget(id INTEGER PRIMARY KEY CHECK(id=1),calls INTEGER NOT NULL)`;
     void this.sql`INSERT OR IGNORE INTO tool_budget VALUES(1,0)`;
     const [budget] = this.sql<{ calls: number }>`SELECT calls FROM tool_budget WHERE id=1`;
-    if (budget.calls >= 32) throw Error("tool_budget");
+    if (budget.calls >= 32) {
+      // Pi treats tool errors as model input and can otherwise keep generating.
+      // Persist denial synchronously, then close the harness outside this tool:
+      // Harness.close joins its tools, so awaiting it here would join ourselves.
+      // Recovered wake jobs must not reopen saved generation/tool tasks.
+      this.stopForToolBudget(this.context().workspace.runId);
+      throw Error("tool_budget");
+    }
     void this.sql`UPDATE tool_budget SET calls=calls+1 WHERE id=1`;
   }
 }
 export class ChangeAgent extends TaskAgent {
+  protected stopForToolBudget(runId: string) {
+    this.ctx.waitUntil(this.stop(runId));
+  }
   private readonly knowledgeOutbox: KnowledgeOutbox;
   private readonly knowledgeJobs: DurableJobs;
   protected async enqueueKnowledge(delivery: KnowledgeDelivery) {
@@ -740,6 +751,9 @@ export class ChangeAgent extends TaskAgent {
   }
 }
 export class ReviewAgent extends TaskAgent {
+  protected stopForToolBudget(runId: string) {
+    this.ctx.waitUntil(this.abortReview(runId));
+  }
   protected installTools() {
     const Read = Type.Object({
       path: Type.String({ maxLength: 1024 }),
