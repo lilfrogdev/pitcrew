@@ -59,8 +59,8 @@ export function ProfileProviders({
       if (mounted.current) {
         setStatus(result);
         setMessage(action === "store" ? "Saved" : "Removed");
-        onChange?.();
       }
+      onChange?.();
     } catch {
       if (mounted.current)
         setError(

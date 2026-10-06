@@ -129,6 +129,73 @@ it("refreshes capabilities after setup and removal without treating a saved key 
   expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
   expect(screen.getByLabelText("Message your crew")).toHaveProperty("value", "Draft after setup");
 });
+it.each(["store", "remove"] as const)(
+  "refreshes capabilities when a delayed provider %s finishes after navigating to Work",
+  async (action) => {
+    const api = createFixtureApi();
+    const connected = await api.capabilities();
+    let available = action === "remove";
+    const ready = {
+      available: true,
+      storageAvailable: true,
+      configured: available,
+      executionEnabled: false,
+    };
+    let finish!: () => void;
+    const pending = () =>
+      new Promise<typeof ready>((resolve) => {
+        finish = () => {
+          available = action === "store";
+          resolve({ ...ready, configured: available });
+        };
+      });
+    api.openrouter = {
+      status: vi.fn(async () => ready),
+      store: vi.fn(pending),
+      remove: vi.fn(pending),
+    };
+    api.capabilities = vi.fn(async () => (available ? connected : { landing: connected.landing }));
+    api.send = vi.fn(api.send);
+    const user = userEvent.setup();
+    render(<App api={api} demo />);
+    await screen.findByRole("heading", { name: "Make agent work visible" });
+    if (available) await screen.findByRole("combobox", { name: "Repo agent model" });
+    else await screen.findByRole("button", { name: "Set up a provider" });
+    await user.type(screen.getByLabelText("Message your crew"), "Pending provider draft");
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    await user.click(within(rail).getByRole("button", { name: "Profile" }));
+    const field = screen.getByLabelText("API key") as HTMLInputElement;
+    await waitFor(() => expect(field.disabled).toBe(false));
+    if (action === "store") await user.type(field, "synthetic");
+    await user.click(screen.getByRole("button", { name: action === "store" ? "Save" : "Remove" }));
+    expect(api.openrouter[action]).toHaveBeenCalledOnce();
+    await user.click(within(rail).getByRole("button", { name: "Work" }));
+    expect(screen.queryByRole("heading", { name: "Providers", level: 1 })).toBeNull();
+    expect(field.value).toBe("");
+    const previousRequests = vi.mocked(api.capabilities).mock.calls.length;
+    await act(async () => finish());
+    await waitFor(() =>
+      expect(vi.mocked(api.capabilities).mock.calls.length).toBeGreaterThan(previousRequests),
+    );
+    if (action === "store") {
+      expect(await screen.findByRole("combobox", { name: "Repo agent model" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    } else {
+      expect(await screen.findByRole("button", { name: "Set up a provider" })).toBeTruthy();
+      expect(screen.queryByRole("combobox", { name: "Repo agent model" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
+      fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
+      expect(api.send).not.toHaveBeenCalled();
+    }
+    expect(screen.getByLabelText("Message your crew")).toHaveProperty(
+      "value",
+      "Pending provider draft",
+    );
+  },
+);
 it("blocks sends while capabilities are loading even with a restored selection", async () => {
   const api = createFixtureApi();
   const capabilities = await api.capabilities();
