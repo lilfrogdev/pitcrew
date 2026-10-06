@@ -4,6 +4,7 @@ import { IconCheck, IconChevronDown, IconSearch, IconStar } from "@tabler/icons-
 import type { ModelChoice } from "@pitcrew/protocol";
 import { ProviderIcon, providerName } from "./ProviderIcon";
 import { ModelIcon } from "./ModelIcon";
+import { modelLabel } from "./model-label";
 import { useUpwardPopup } from "./useUpwardPopup";
 import { favoriteKey, useModelFavorites } from "./model-favorites";
 import styles from "./ModelCatalogPicker.module.css";
@@ -125,7 +126,9 @@ export function ModelCatalogPicker({
         }}
       >
         <ModelIcon model={selected} size={16} />
-        <span className={styles.triggerLabel}>{selected?.label ?? "Choose model"}</span>
+        <span className={styles.triggerLabel}>
+          {selected ? modelLabel(selected.label) : "Choose model"}
+        </span>
         <IconChevronDown size={13} stroke={1.5} aria-hidden="true" />
       </button>
       {expanded &&
@@ -234,7 +237,7 @@ export function ModelCatalogPicker({
                     <div
                       id={`${id}-${model.id}`}
                       role="gridcell"
-                      aria-label={model.label}
+                      aria-label={modelLabel(model.label)}
                       aria-disabled={!model.efforts.length || undefined}
                       className={styles.option}
                       onPointerMove={() => {
@@ -243,8 +246,8 @@ export function ModelCatalogPicker({
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => choose(model)}
                     >
-                      <span className={styles.modelName} title={model.label}>
-                        {model.label}
+                      <span className={styles.modelName} title={modelLabel(model.label)}>
+                        {modelLabel(model.label)}
                       </span>
                       <span className={styles.provider}>
                         <ProviderIcon provider={model.provider} size={12} />
@@ -263,7 +266,7 @@ export function ModelCatalogPicker({
                       <button
                         type="button"
                         className={styles.favorite}
-                        aria-label={`${favorites.includes(favoriteKey(model)) ? "Remove" : "Add"} ${model.label} ${favorites.includes(favoriteKey(model)) ? "from" : "to"} favorites`}
+                        aria-label={`${favorites.includes(favoriteKey(model)) ? "Remove" : "Add"} ${modelLabel(model.label)} ${favorites.includes(favoriteKey(model)) ? "from" : "to"} favorites`}
                         aria-pressed={favorites.includes(favoriteKey(model))}
                         disabled={!model.efforts.length}
                         onClick={() => {

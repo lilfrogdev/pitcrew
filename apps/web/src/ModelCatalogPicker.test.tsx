@@ -127,6 +127,50 @@ it("uses a neutral trigger for unknown or missing selections even when the label
   expect(trigger.getAttribute("aria-invalid")).toBe("true");
   expect(within(trigger).getByRole("img", { name: "Model" })).toBeTruthy();
 });
+it("presents concise catalog names for search, keyboard selection, and favorites without changing identity", async () => {
+  const user = userEvent.setup();
+  const change = vi.fn();
+  const catalog: ModelChoice[] = [
+    { ...models[0], model: "qwen/qwen3.8-flash", label: "Qwen: Qwen3.8 Flash" },
+    {
+      ...models[1],
+      model: "deepseek/deepseek-v4-flash-0731",
+      label: "DeepSeek: DeepSeek V4 Flash 0731",
+    },
+  ];
+  const view = render(
+    <ModelCatalogPicker
+      models={catalog}
+      label="Model"
+      value="a"
+      disabled={false}
+      onChange={change}
+    />,
+  );
+  const trigger = screen.getByRole("combobox", { name: "Model" });
+  expect(trigger.textContent).toBe("Qwen3.8 Flash");
+  await user.click(trigger);
+  expect(screen.getByRole("gridcell", { name: "Qwen3.8 Flash" })).toBeTruthy();
+  expect(screen.queryByText("Qwen: Qwen3.8 Flash")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Add DeepSeek V4 Flash 0731 to favorites" }));
+  await user.click(screen.getByRole("button", { name: "Favorites" }));
+  expect(screen.getByRole("gridcell", { name: "DeepSeek V4 Flash 0731" })).toBeTruthy();
+  await user.type(screen.getByLabelText("Search models"), "deepseek 0731");
+  await user.keyboard("{Enter}");
+  expect(change).toHaveBeenCalledExactlyOnceWith(catalog[1]);
+  expect(catalog[1].label).toBe("DeepSeek: DeepSeek V4 Flash 0731");
+  expect(document.activeElement).toBe(trigger);
+  view.rerender(
+    <ModelCatalogPicker
+      models={catalog}
+      label="Model"
+      value="b"
+      disabled={false}
+      onChange={change}
+    />,
+  );
+  expect(trigger.textContent).toBe("DeepSeek V4 Flash 0731");
+});
 it("keeps favorite toggles keyboard-accessible and independent of model selection", async () => {
   const user = userEvent.setup();
   const change = vi.fn();

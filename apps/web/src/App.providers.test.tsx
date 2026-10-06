@@ -50,7 +50,7 @@ it("allows selecting and reloading display models while Send and server executio
   fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
   expect(api.send).not.toHaveBeenCalled();
   expect(api.setThreadModelSelection).not.toHaveBeenCalled();
-  expect(screen.getByText("Execution is disabled.")).toBeTruthy();
+  expect(screen.queryByText("Execution is disabled.")).toBeNull();
   cleanup();
   render(<App api={api} />);
   await waitFor(() =>
