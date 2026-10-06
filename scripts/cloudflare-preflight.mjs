@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 // Offline inspection only. Never reads credentials, calls Cloudflare, or deploys.
 const path = process.argv[2] ?? "apps/worker/wrangler.backend.json";
 const config = JSON.parse(await readFile(path, "utf8"));
+const workerPackage = JSON.parse(await readFile("apps/worker/package.json", "utf8"));
+const sandbox = JSON.parse(await readFile("config/cloudflare-sandbox-build.json", "utf8"));
 const vars = config.vars ?? {};
 const blockers = [];
 for (const [binding, className, tag] of [
@@ -45,6 +47,21 @@ if (config.assets || config.site) blockers.push("Remove frontend assets from the
 if (config.workers_dev !== false || config.preview_urls !== false)
   blockers.push("Disable public workers.dev and preview URLs.");
 if (vars.EXECUTION_MODE !== "cloud") blockers.push("Cloud execution remains disabled.");
+for (const [name, range] of [
+  ["agents", workerPackage.dependencies?.agents],
+  ["@earendil-works/pi-durable", workerPackage.dependencies?.["@earendil-works/pi-durable"]],
+  ["@earendil-works/pi-ai", workerPackage.dependencies?.["@earendil-works/pi-ai"]],
+]) {
+  if (!range) blockers.push(`Pin ${name} before enabling PiHarness execution.`);
+}
+if (config.observability?.enabled !== true || config.observability?.traces?.enabled !== true)
+  blockers.push("Enable Workers logs and traces before live execution.");
+if (!sandbox.registeredCloudflareImage)
+  blockers.push("Register the digest-pinned sandbox image before live execution.");
+if (vars.ARTIFACT_REPOSITORY && vars.ARTIFACT_REPOSITORY !== "pitcrew-baseline")
+  blockers.push("Pin ARTIFACT_REPOSITORY to the pitcrew-baseline repository.");
+if (sandbox.cloudSmokeVerified !== true)
+  blockers.push("The sandbox smoke probe has not been verified.");
 if (!/^[a-f0-9]{40}$/.test(vars.PROJECT_BASE_SHA ?? ""))
   blockers.push("Pin PROJECT_BASE_SHA to the imported Artifacts repository commit.");
 if (!vars.CONFIGURATION_REVISION) blockers.push("Set CONFIGURATION_REVISION.");
@@ -66,7 +83,7 @@ if (model?.provider === "cloudflare") {
 for (const className of ["ChangeAgent", "ReviewAgent"]) {
   const container = config.containers?.find((item) => item.class_name === className);
   const image = container?.images?.[vars.SANDBOX_IMAGE]?.image;
-  if (container?.max_instances !== 1)
+  if (container?.max_instances !== undefined && container.max_instances !== 1)
     blockers.push(`Limit ${className} to one running instance for initial rollout.`);
   if (
     container?.scheduling_policy !== "durable_object" ||

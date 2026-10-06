@@ -1,5 +1,10 @@
 import { userModelEnv, type CredentialEnv } from "./user-credentials";
-import { pinPlan, executePlan } from "../../../packages/verification/src/index.ts";
+import {
+  pinPlan,
+  executePlan,
+  materializeContract,
+  assertMaterializedContract,
+} from "../../../packages/verification/src/index.ts";
 import { Agent, getAgentByName } from "agents";
 import {
   LifecycleCapability,
@@ -537,6 +542,8 @@ export class ChangeAgent extends TaskAgent {
               bootstrapDependencies(transport, workspace),
             );
             this.bind({ workspace, input });
+            if (input.contractSnapshot)
+              await materializeContract(input.contractSnapshot, workspace, transport);
             // PiHarness opens on lifecycle startup, before a new pipeline is admitted.
             // Publish reporting tools once the frozen request and task context are bound.
             this.installKnowledgeReporting();
@@ -548,8 +555,10 @@ export class ChangeAgent extends TaskAgent {
               throw error;
             }
           },
-          publish: (workspace, candidate) => {
+          publish: async (workspace, candidate) => {
             this.assertTaskActive();
+            const snapshot = this.pipeline.status()?.input.contractSnapshot;
+            if (snapshot) await assertMaterializedContract(snapshot, workspace, transport);
             return coordinator.publish(workspace, candidate);
           },
           test: (workspace, candidate) => {

@@ -164,9 +164,18 @@ export class RepositoryAgent extends Agent<Env> {
     if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
   }
   async delegateRepoTurn(turnId: string) {
-    const run = this.getCoordinator().delegateConversation(turnId);
+    const run = await this.getCoordinator().delegateApprovedMission(turnId);
     await this.dispatchRun(run.id);
     return run;
+  }
+  askMission(turnId: string, prompts: string[]) {
+    return this.getCoordinator().askMission(turnId, prompts);
+  }
+  proposeMission(
+    turnId: string,
+    input: { summary: string; affectedArea: string; criterion: string },
+  ) {
+    return this.getCoordinator().proposeMission(turnId, input);
   }
   async readConversationAttachment(turnId: string, reference: StoredImageAttachment) {
     const turn = this.getCoordinator().conversationTurn(turnId);

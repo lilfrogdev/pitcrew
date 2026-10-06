@@ -9,7 +9,13 @@ export * from "./attachments.ts";
 export * from "./models.ts";
 import type { ModelSelection, ModelSettings, FrozenRunModels } from "./models.ts";
 import type { MessageAttachment, SubmittedAttachment } from "./attachments.ts";
-import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
+import type {
+  VerificationPlan,
+  CheckOutcome,
+  ContractSnapshot,
+  Check,
+  AcceptanceCriteria,
+} from "../../verification/src/index.ts";
 export interface Project {
   modelSettings?: ModelSettings;
   id: string;
@@ -112,9 +118,46 @@ export interface Event {
     | "run.awaiting_review"
     | "run.completed"
     | "run.failed"
-    | "review.created";
+    | "review.created"
+    | "mission.updated";
   entityId: string;
   createdAt: string;
+}
+export type MissionStatus =
+  | "clarifying"
+  | "proposed"
+  | "approved"
+  | "running"
+  | "awaiting_review"
+  | "completed"
+  | "failed"
+  | "stopped";
+export interface MissionQuestion {
+  id: string;
+  prompt: string;
+  answer?: string;
+}
+export interface MissionProposal {
+  revision: string;
+  summary: string;
+  affectedArea: string;
+  acceptance: AcceptanceCriteria;
+  checks: Check[];
+  digest: string;
+}
+export interface Mission {
+  id: string;
+  projectId: string;
+  threadId: string;
+  messageId: string;
+  status: MissionStatus;
+  request: string;
+  questions: MissionQuestion[];
+  proposal?: MissionProposal;
+  approvedRevision?: string;
+  changeId?: string;
+  runId?: string;
+  contract?: ContractSnapshot;
 }
 export interface SubmitMessage {
   attachments?: SubmittedAttachment[];
@@ -133,6 +176,7 @@ export interface ExecutionInput {
   runModels?: FrozenRunModels;
   knowledgeContext?: WorkerKnowledgeContext;
   verificationPlan?: VerificationPlan;
+  contractSnapshot?: ContractSnapshot;
   changeId?: string;
   repositoryContext?: RepositoryContext;
   runId: string;

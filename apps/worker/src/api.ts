@@ -168,6 +168,70 @@ export function api(
     await dispatch(result.runId);
     return c.json(result, 201);
   });
+  app.post("/api/projects/:projectId/missions", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    const body = c.get("body");
+    return c.json(
+      coordinator.createMission(
+        body.threadId as string,
+        body.request as string,
+        body.idempotencyKey as string,
+        identity.actor,
+      ),
+      201,
+    );
+  });
+  app.get("/api/threads/:threadId/mission", (c) =>
+    c.json({ mission: coordinator.threadMission(c.req.param("threadId")) ?? null }),
+  );
+  app.post("/api/missions/:missionId/answers", async (c) => {
+    const body = c.get("body");
+    return c.json(
+      await coordinator.answerMission(
+        c.req.param("missionId"),
+        body.questionId as string,
+        body.answer as string,
+        body.idempotencyKey as string,
+        identity.actor,
+      ),
+    );
+  });
+  app.post("/api/missions/:missionId/proposal", async (c) => {
+    const body = c.get("body");
+    return c.json(
+      await coordinator.reviseMission(
+        c.req.param("missionId"),
+        {
+          summary: body.summary as string,
+          affectedArea: body.affectedArea as string,
+          criterion: body.criterion as string,
+        },
+        body.idempotencyKey as string,
+        identity.actor,
+      ),
+    );
+  });
+  app.post("/api/missions/:missionId/approval", (c) => {
+    const body = c.get("body");
+    return c.json(
+      coordinator.approveMission(
+        c.req.param("missionId"),
+        body.revision as string,
+        body.idempotencyKey as string,
+        identity.actor,
+      ),
+    );
+  });
+  app.post("/api/missions/:missionId/start", async (c) => {
+    const run = await coordinator.startMission(
+      c.req.param("missionId"),
+      c.get("body").idempotencyKey as string,
+      identity.actor,
+    );
+    await dispatch(run.id);
+    return c.json({ mission: coordinator.mission(c.req.param("missionId")), run }, 201);
+  });
   app.get("/api/projects", (c) => c.json([coordinator.state.project]));
   app.get("/api/projects/:projectId/threads", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)

@@ -3,6 +3,7 @@ import { NavigationRail, WorkspacePlaceholder, type WorkspaceSection } from "./N
 import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
+import { MissionPanel } from "./MissionPanel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities } from "./api";
 import "./styles.css";
@@ -570,6 +571,15 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             </div>
             {latest && <span className={`status ${latest.status}`}>{labels[latest.status]}</span>}
           </header>
+          {threadId && projectId && (
+            <MissionPanel
+              api={api}
+              projectId={projectId}
+              threadId={threadId}
+              evidence={snapshot.evidence}
+              executionEnabled={executionEnabled}
+            />
+          )}
           {!demo && projectId && (
             <details className="intake-panel" open={!threadId}>
               <summary>Collect and group reports</summary>

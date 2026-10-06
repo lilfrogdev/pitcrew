@@ -56,10 +56,22 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
           }
 
           this.registry.install(
-            repositoryConversationTools(() => {
-              this.assertConversationAllowed();
-              return this.repository().delegateRepoTurn(this.input().turnId);
-            }),
+            repositoryConversationTools(
+              () => {
+                this.assertConversationAllowed();
+                return this.repository().delegateRepoTurn(this.input().turnId);
+              },
+              {
+                ask: (prompts) => {
+                  this.assertConversationAllowed();
+                  return this.repository().askMission(this.input().turnId, prompts);
+                },
+                propose: (input) => {
+                  this.assertConversationAllowed();
+                  return this.repository().proposeMission(this.input().turnId, input);
+                },
+              },
+            ),
           );
           const harness = await this.openHarness(
             storage,

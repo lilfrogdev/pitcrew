@@ -13,6 +13,7 @@ import type {
   ModelChoice,
   ModelSelection,
   ModelSettings,
+  Mission,
 } from "@pitcrew/protocol";
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
@@ -71,6 +72,18 @@ export interface Api {
     attachments?: SubmittedAttachment[],
     selection?: ModelSelection,
   ): Promise<unknown>;
+  missions: {
+    current(threadId: string): Promise<Mission | null>;
+    create(projectId: string, threadId: string, request: string, key: string): Promise<Mission>;
+    answer(missionId: string, questionId: string, answer: string, key: string): Promise<Mission>;
+    revise(
+      missionId: string,
+      input: { summary: string; affectedArea: string; criterion: string },
+      key: string,
+    ): Promise<Mission>;
+    approve(missionId: string, revision: string, key: string): Promise<Mission>;
+    start(missionId: string, key: string): Promise<{ mission: Mission; run: Run }>;
+  };
 }
 export class ApiError extends Error {
   constructor(public status: number) {
@@ -268,6 +281,32 @@ export const httpApi: Api = {
     ),
   setModelSettings: (projectId, settings) =>
     request(`/projects/${encodeURIComponent(projectId)}/model-settings`, { settings }),
+  missions: {
+    current: async (threadId) =>
+      (
+        await request<{ mission: Mission | null }>(
+          `/threads/${encodeURIComponent(threadId)}/mission`,
+        )
+      ).mission,
+    create: (projectId, threadId, featureRequest, idempotencyKey) =>
+      request(`/projects/${encodeURIComponent(projectId)}/missions`, {
+        threadId,
+        request: featureRequest,
+        idempotencyKey,
+      }),
+    answer: (missionId, questionId, answer, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/answers`, {
+        questionId,
+        answer,
+        idempotencyKey,
+      }),
+    revise: (missionId, input, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/proposal`, { ...input, idempotencyKey }),
+    approve: (missionId, revision, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/approval`, { revision, idempotencyKey }),
+    start: (missionId, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/start`, { idempotencyKey }),
+  },
   send: (id, content, idempotencyKey, attachments, modelSelection) =>
     request(`/threads/${encodeURIComponent(id)}/messages`, {
       content,

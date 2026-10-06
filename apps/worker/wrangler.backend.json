@@ -6,6 +6,22 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "containers": [
+    {
+      "class_name": "ChangeAgent",
+      "scheduling_policy": "durable_object"
+    },
+    {
+      "class_name": "ReviewAgent",
+      "scheduling_policy": "durable_object"
+    }
+  ],
   "limits": {
     "cpu_ms": 1000,
     "subrequests": 20

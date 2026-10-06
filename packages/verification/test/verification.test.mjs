@@ -10,6 +10,12 @@ import {
   verificationGaps,
   recordGapReview,
   verificationMetrics,
+  pinContract,
+  contractDocument,
+  assertContractDocument,
+  materializeContract,
+  assertMaterializedContract,
+  CONTRACT_PATH,
 } from "../src/index.ts";
 const baseSha = "a".repeat(40),
   candidateSha = "b".repeat(40);
@@ -303,4 +309,50 @@ test("real executor enforces timeout and output limits", async () => {
     );
     assert.equal(result[0].status, "failed");
   }
+});
+test("contract snapshots exclude the candidate SHA and reject tampering", async () => {
+  const source = input();
+  const snapshot = await pinContract({
+    projectId: source.projectId,
+    missionId: "mission",
+    baseSha,
+    configurationRevision: source.configurationRevision,
+    proposalRevision: "proposal",
+    checks: source.profile.checks,
+    acceptance: source.acceptance,
+  });
+  assert.equal(JSON.stringify(snapshot).includes(candidateSha), false);
+  const again = await pinContract({
+    projectId: source.projectId,
+    missionId: "mission",
+    baseSha,
+    configurationRevision: source.configurationRevision,
+    proposalRevision: "proposal",
+    checks: source.profile.checks,
+    acceptance: source.acceptance,
+  });
+  assert.equal(again.digest, snapshot.digest);
+  const files = new Map();
+  const transport = {
+    async writeFile(_workspace, path, content) {
+      files.set(path, content);
+    },
+    async readFile(_workspace, path) {
+      return files.get(path);
+    },
+  };
+  await materializeContract(snapshot, workspace, transport);
+  await assertMaterializedContract(snapshot, workspace, transport);
+  assert.equal(files.has(CONTRACT_PATH), true);
+  const tampered = JSON.parse(contractDocument(snapshot));
+  tampered.acceptance.criteria[0].text = "changed";
+  await assert.rejects(
+    () => assertContractDocument(snapshot, JSON.stringify(tampered)),
+    /CONTRACT_TAMPERED/,
+  );
+  files.set(CONTRACT_PATH, JSON.stringify(tampered));
+  await assert.rejects(
+    () => assertMaterializedContract(snapshot, workspace, transport),
+    /CONTRACT_TAMPERED/,
+  );
 });

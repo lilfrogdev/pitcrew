@@ -36,15 +36,21 @@ import {
   pendingOutcomes,
   verificationMetrics,
   verificationGaps,
+  pinContract,
+  fingerprint,
   type VerificationProfile,
   type AcceptanceCriteria,
   type VerificationPlan,
+  type Check,
 } from "../../../packages/verification/src/index.ts";
 import type { VerificationEvidence } from "@pitcrew/protocol";
 import { AttachmentValidationError, validateMessageAttachments } from "@pitcrew/protocol";
 import type {
   Change,
   Event,
+  Mission,
+  MissionProposal,
+  MissionStatus,
   ExecutionAdapter,
   Message,
   Project,
@@ -87,6 +93,7 @@ export interface State {
   changes?: Change[];
   requests?: Record<string, ExecutionInput>;
   credentialActors?: Record<string, string>;
+  missions?: Mission[];
 }
 export const initialState = (overrides: Partial<Project> = {}): State => {
   const project: Project = {
@@ -743,7 +750,16 @@ export class Coordinator {
     const conversation = type.startsWith("conversation.")
       ? this.state.conversationTurns?.find((item) => item.id === entityId)
       : undefined;
+    const mission =
+      type === "mission.updated"
+        ? this.state.missions?.find((item) => item.id === entityId)
+        : undefined;
+    if (mission)
+      console.log(
+        JSON.stringify({ event: "mission.stage", missionId: mission.id, status: mission.status }),
+      );
     const threadId =
+      mission?.threadId ??
       conversation?.threadId ??
       run?.threadId ??
       change?.threadId ??
@@ -1147,6 +1163,347 @@ export class Coordinator {
       return structuredClone(run);
     });
   }
+  mission(missionId: string): Mission {
+    const mission = this.state.missions?.find((item) => item.id === missionId);
+    if (!mission) throw new AdmissionError("not_found", 404);
+    return mission;
+  }
+  threadMission(threadId: string): Mission | undefined {
+    this.thread(threadId);
+    return [...(this.state.missions ?? [])].reverse().find((item) => item.threadId === threadId);
+  }
+  private activeMission(): Mission | undefined {
+    return this.state.missions?.find((item) =>
+      ["clarifying", "proposed", "approved", "running", "awaiting_review"].includes(item.status),
+    );
+  }
+  private syncMission(runId: string, status: MissionStatus) {
+    const mission = this.state.missions?.find((item) => item.runId === runId);
+    if (!mission || mission.status === status) return;
+    mission.status = status;
+    this.event("mission.updated", mission.id);
+  }
+  private requireText(value: unknown, code: string, max: number): string {
+    if (typeof value !== "string" || !value.trim() || value.length > max)
+      throw new AdmissionError(code);
+    return value.trim();
+  }
+  private async draftProposal(
+    mission: Mission,
+    summary: string,
+    affectedArea: string,
+    criterion: string,
+  ) {
+    const checks: Check[] = this.profile().checks.filter((check) => check.kind === "command");
+    if (!checks.length) throw new AdmissionError("invalid_proposal");
+    const acceptance: AcceptanceCriteria = {
+      revision: "mission",
+      criteria: [{ id: "behavior", text: criterion, checkIds: checks.map((check) => check.id) }],
+    };
+    const proposalRevision = await fingerprint({ summary, affectedArea, acceptance, checks });
+    const contract = await pinContract({
+      projectId: this.state.project.id,
+      missionId: mission.id,
+      baseSha: this.state.project.baseSha,
+      configurationRevision: this.state.project.configurationRevision,
+      proposalRevision,
+      checks,
+      acceptance,
+    });
+    const proposal: MissionProposal = {
+      revision: contract.digest,
+      digest: contract.digest,
+      summary,
+      affectedArea,
+      acceptance,
+      checks,
+    };
+    return { proposal, contract };
+  }
+  createMission(threadId: string, request: string, key: string, actor = "local-fixture"): Mission {
+    this.validateKey(key);
+    const content = this.requireText(request, "invalid_content", 8000);
+    return this.transaction(
+      `mission_${JSON.stringify([actor, key])}`,
+      { threadId, request: content },
+      () => {
+        this.thread(threadId);
+        if (this.activeMission()) throw new AdmissionError("mission_busy", 409);
+        const message: Message = {
+          id: this.id(),
+          threadId,
+          role: "user",
+          content,
+          createdAt: this.now(),
+        };
+        const mission: Mission = {
+          id: this.id(),
+          projectId: this.state.project.id,
+          threadId,
+          messageId: message.id,
+          status: "clarifying",
+          request: content,
+          questions: [
+            {
+              id: "observable-behavior",
+              prompt: "What observable behavior should the tests assert?",
+            },
+          ],
+        };
+        this.state.messages.push(message);
+        (this.state.missions ??= []).push(mission);
+        this.event("message.created", message.id, { kind: "principal", id: actor });
+        this.event("mission.updated", mission.id, { kind: "principal", id: actor });
+        return structuredClone(mission);
+      },
+    );
+  }
+  async answerMission(
+    missionId: string,
+    questionId: string,
+    answer: string,
+    key: string,
+    actor = "local-fixture",
+  ): Promise<Mission> {
+    this.validateKey(key);
+    const content = this.requireText(answer, "invalid_content", 2000);
+    const body = { missionId, questionId, answer: content };
+    const storageKey = `mission_answer_${JSON.stringify([actor, key])}`;
+    const saved = this.state.keys[storageKey];
+    if (saved) {
+      if (saved.body !== JSON.stringify(body))
+        throw new AdmissionError("idempotency_conflict", 409);
+      return structuredClone(saved.result) as Mission;
+    }
+    const mission = this.mission(missionId);
+    if (mission.status !== "clarifying") throw new AdmissionError("mission_state", 409);
+    const question = mission.questions.find((item) => item.id === questionId);
+    if (!question || question.answer) throw new AdmissionError("invalid_question");
+    const questions = mission.questions.map((item) =>
+      item.id === questionId ? { ...item, answer: content } : item,
+    );
+    const drafted = questions.every((item) => item.answer)
+      ? await this.draftProposal(mission, mission.request, "src", content)
+      : undefined;
+    if (this.mission(missionId).status !== "clarifying")
+      throw new AdmissionError("mission_state", 409);
+    return this.transaction(storageKey, body, () => {
+      const current = this.mission(missionId);
+      if (current.status !== "clarifying") throw new AdmissionError("mission_state", 409);
+      current.questions = structuredClone(questions);
+      if (drafted) {
+        current.proposal = drafted.proposal;
+        current.contract = drafted.contract;
+        current.status = "proposed";
+      }
+      this.event("mission.updated", current.id, { kind: "principal", id: actor });
+      return structuredClone(current);
+    });
+  }
+  async reviseMission(
+    missionId: string,
+    input: { summary: string; affectedArea: string; criterion: string },
+    key: string,
+    actor = "local-fixture",
+  ): Promise<Mission> {
+    this.validateKey(key);
+    const summary = this.requireText(input.summary, "invalid_proposal", 4000);
+    const affectedArea = this.requireText(input.affectedArea, "invalid_proposal", 200);
+    const criterion = this.requireText(input.criterion, "invalid_proposal", 2000);
+    const body = { missionId, summary, affectedArea, criterion };
+    const storageKey = `mission_revise_${JSON.stringify([actor, key])}`;
+    const saved = this.state.keys[storageKey];
+    if (saved) {
+      if (saved.body !== JSON.stringify(body))
+        throw new AdmissionError("idempotency_conflict", 409);
+      return structuredClone(saved.result) as Mission;
+    }
+    const mission = this.mission(missionId);
+    if (!["proposed", "approved"].includes(mission.status))
+      throw new AdmissionError("mission_state", 409);
+    const drafted = await this.draftProposal(mission, summary, affectedArea, criterion);
+    return this.transaction(storageKey, body, () => {
+      const current = this.mission(missionId);
+      if (!["proposed", "approved"].includes(current.status))
+        throw new AdmissionError("mission_state", 409);
+      current.proposal = drafted.proposal;
+      current.contract = drafted.contract;
+      current.approvedRevision = undefined;
+      current.status = "proposed";
+      this.event("mission.updated", current.id, { kind: "principal", id: actor });
+      return structuredClone(current);
+    });
+  }
+  approveMission(
+    missionId: string,
+    revision: string,
+    key: string,
+    actor = "local-fixture",
+  ): Mission {
+    this.validateKey(key);
+    const approved = this.requireText(revision, "stale_approval", 128);
+    return this.transaction(
+      `mission_approve_${JSON.stringify([actor, key])}`,
+      { missionId, revision: approved },
+      () => {
+        const mission = this.mission(missionId);
+        if (mission.status !== "proposed" || !mission.proposal || !mission.contract)
+          throw new AdmissionError("mission_state", 409);
+        if (approved !== mission.proposal.revision || approved !== mission.contract.digest)
+          throw new AdmissionError("stale_approval", 409);
+        if (
+          mission.contract.baseSha !== this.state.project.baseSha ||
+          mission.contract.configurationRevision !== this.state.project.configurationRevision
+        )
+          throw new AdmissionError("stale_configuration", 409);
+        mission.approvedRevision = approved;
+        mission.status = "approved";
+        this.event("mission.updated", mission.id, { kind: "principal", id: actor });
+        return structuredClone(mission);
+      },
+    );
+  }
+  async activateMission(missionId: string, actor: string): Promise<Run> {
+    const mission = this.mission(missionId);
+    if (mission.runId) return structuredClone(this.evidence(mission.runId).run);
+    if (
+      mission.status !== "approved" ||
+      !mission.proposal ||
+      !mission.contract ||
+      mission.approvedRevision !== mission.proposal.revision ||
+      mission.approvedRevision !== mission.contract.digest
+    )
+      throw new AdmissionError("mission_approval_required", 409);
+    if (
+      mission.contract.baseSha !== this.state.project.baseSha ||
+      mission.contract.configurationRevision !== this.state.project.configurationRevision
+    )
+      throw new AdmissionError("stale_configuration", 409);
+    if (this.state.runs.some((run) => ["queued", "running"].includes(run.status)))
+      throw new AdmissionError("mission_busy", 409);
+    const changeId = this.id();
+    const runId = this.id();
+    const plan = await pinPlan({
+      projectId: this.state.project.id,
+      changeId,
+      baseSha: this.state.project.baseSha,
+      candidateSha: this.state.project.baseSha,
+      configurationRevision: this.state.project.configurationRevision,
+      profile: {
+        projectId: this.state.project.id,
+        revision: mission.approvedRevision,
+        checks: mission.proposal.checks,
+      },
+      acceptance: mission.proposal.acceptance,
+      reproduceBaseline: false,
+    });
+    return this.durableUpdate(() => {
+      const current = this.mission(missionId);
+      if (current.runId) return structuredClone(this.evidence(current.runId).run);
+      if (current.status !== "approved" || current.approvedRevision !== mission.approvedRevision)
+        throw new AdmissionError("mission_approval_required", 409);
+      if (this.state.runs.some((run) => ["queued", "running"].includes(run.status)))
+        throw new AdmissionError("mission_busy", 409);
+      const change: Change = {
+        id: changeId,
+        threadId: current.threadId,
+        originMessageIds: [current.messageId],
+        contextRevision: this.repositoryContext().revision,
+      };
+      const run: Run = {
+        id: runId,
+        threadId: current.threadId,
+        messageId: current.messageId,
+        changeId,
+        status: "queued",
+        baseSha: this.state.project.baseSha,
+        configurationRevision: this.state.project.configurationRevision,
+      };
+      this.state.changes!.push(change);
+      this.state.runs.push(run);
+      (this.state.plans ??= {})[run.id] = plan;
+      (this.state.credentialActors ??= {})[run.id] = actor;
+      current.changeId = change.id;
+      current.runId = run.id;
+      current.status = "running";
+      this.event("change.created", change.id, { kind: "principal", id: actor });
+      this.event("run.queued", run.id);
+      this.event("mission.updated", current.id, { kind: "principal", id: actor });
+      return structuredClone(run);
+    });
+  }
+  startMission(missionId: string, key: string, actor = "local-fixture"): Promise<Run> {
+    this.validateKey(key);
+    const saved = this.state.keys[`mission_start_${JSON.stringify([actor, key])}`];
+    if (saved) {
+      if (saved.body !== JSON.stringify({ missionId }))
+        throw new AdmissionError("idempotency_conflict", 409);
+      return Promise.resolve(structuredClone(saved.result) as Run);
+    }
+    return this.activateMission(missionId, actor).then((run) =>
+      this.transaction(`mission_start_${JSON.stringify([actor, key])}`, { missionId }, () => run),
+    );
+  }
+  async delegateApprovedMission(turnId: string): Promise<Run> {
+    const turn = this.conversationTurn(turnId);
+    if (turn.status !== "running" || !turn.input)
+      throw new AdmissionError("conversation_not_running", 409);
+    const mission = this.activeMission();
+    if (!mission || mission.threadId !== turn.threadId)
+      throw new AdmissionError("mission_approval_required", 409);
+    if (mission.runId) return structuredClone(this.evidence(mission.runId).run);
+    return this.activateMission(mission.id, turn.actor);
+  }
+  askMission(turnId: string, prompts: string[]): Mission {
+    const turn = this.conversationTurn(turnId);
+    const mission = this.activeMission();
+    if (!mission || mission.threadId !== turn.threadId)
+      throw new AdmissionError("mission_required", 409);
+    if (mission.status !== "clarifying" || mission.questions.some((item) => item.answer))
+      throw new AdmissionError("mission_state", 409);
+    if (
+      !Array.isArray(prompts) ||
+      prompts.length < 1 ||
+      prompts.length > 5 ||
+      prompts.some((prompt) => typeof prompt !== "string" || !prompt.trim() || prompt.length > 500)
+    )
+      throw new AdmissionError("invalid_question");
+    return this.durableUpdate(() => {
+      mission.questions = prompts.map((prompt, index) => ({
+        id: `q${index + 1}`,
+        prompt: prompt.trim(),
+      }));
+      this.event("mission.updated", mission.id);
+      return structuredClone(mission);
+    });
+  }
+  async proposeMission(
+    turnId: string,
+    input: { summary: string; affectedArea: string; criterion: string },
+  ): Promise<Mission> {
+    const turn = this.conversationTurn(turnId);
+    const mission = this.activeMission();
+    if (!mission || mission.threadId !== turn.threadId)
+      throw new AdmissionError("mission_required", 409);
+    if (mission.status === "clarifying" && mission.questions.some((item) => !item.answer))
+      throw new AdmissionError("questions_pending", 409);
+    if (!["clarifying", "proposed", "approved"].includes(mission.status))
+      throw new AdmissionError("mission_state", 409);
+    const summary = this.requireText(input.summary, "invalid_proposal", 4000);
+    const affectedArea = this.requireText(input.affectedArea, "invalid_proposal", 200);
+    const criterion = this.requireText(input.criterion, "invalid_proposal", 2000);
+    const drafted = await this.draftProposal(mission, summary, affectedArea, criterion);
+    return this.durableUpdate(() => {
+      if (!["clarifying", "proposed", "approved"].includes(mission.status))
+        throw new AdmissionError("mission_state", 409);
+      mission.proposal = drafted.proposal;
+      mission.contract = drafted.contract;
+      mission.approvedRevision = undefined;
+      mission.status = "proposed";
+      this.event("mission.updated", mission.id);
+      return structuredClone(mission);
+    });
+  }
   submit(
     threadId: string,
     content: string,
@@ -1360,6 +1717,9 @@ export class Coordinator {
           contextRevision: this.repositoryContext().revision,
         },
         verificationPlan: this.state.plans?.[runId],
+        contractSnapshot: structuredClone(
+          this.state.missions?.find((mission) => mission.runId === runId)?.contract,
+        ),
         runId,
         changeId: run.changeId,
         projectId: this.state.project.id,
@@ -1413,6 +1773,7 @@ export class Coordinator {
         this.state.reviews.push(review);
         this.event("review.created", review.id);
       }
+      this.syncMission(run.id, "awaiting_review");
     });
   }
   confirmFixtureLanding(runId: string, result: LandingResultReceipt) {
@@ -1427,6 +1788,7 @@ export class Coordinator {
       run.landing = structuredClone(result);
       run.status = "completed";
       this.event("run.completed", run.id);
+      this.syncMission(run.id, "completed");
     });
   }
   blockModelConfiguration(runId: string) {
@@ -1445,6 +1807,7 @@ export class Coordinator {
       run.status = reconcile ? "waiting_user" : "failed";
       run.error = reconcile ? "reconciliation_required" : "execution_failed";
       this.event("run.failed", run.id);
+      this.syncMission(run.id, "failed");
     });
   }
   async dispatch(runId: string, adapter: ExecutionAdapter) {

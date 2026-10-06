@@ -1,0 +1,9 @@
+{
+  "name": "pitcrew-baseline",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/greet.test.mjs",
+    "typecheck": "node --check src/greet.js"
+  }
+}

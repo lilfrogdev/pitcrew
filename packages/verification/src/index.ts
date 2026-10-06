@@ -102,9 +102,105 @@ function canonical(value: unknown): string {
       .join(",")}}`;
   return JSON.stringify(value);
 }
-async function digest(input: PlanInput): Promise<string> {
+async function digest(input: unknown): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical(input)));
   return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+export function fingerprint(value: unknown): Promise<string> {
+  return digest(value);
+}
+export interface ContractSnapshotInput {
+  projectId: string;
+  missionId: string;
+  baseSha: string;
+  configurationRevision: string;
+  proposalRevision: string;
+  checks: Check[];
+  acceptance: AcceptanceCriteria;
+}
+export interface ContractSnapshot extends ContractSnapshotInput {
+  version: 1;
+  digest: string;
+}
+function validateContract(input: ContractSnapshotInput): void {
+  assertSha(input.baseSha);
+  [input.projectId, input.missionId, input.configurationRevision, input.proposalRevision].forEach(
+    requireText,
+  );
+  if (!input.checks.length || input.checks.length > 32) throw new Error("INVALID_CONTRACT");
+  const checks = new Set<string>();
+  for (const check of input.checks) {
+    requireText(check.id);
+    if (checks.has(check.id)) throw new Error("DUPLICATE_CHECK");
+    checks.add(check.id);
+    if (check.kind === "command") assertCommand({ ...check.command, commandId: check.id });
+    else if (check.kind === "runtime") {
+      requireText(check.capability);
+      requireText(check.description);
+    } else throw new Error("INVALID_CHECK");
+  }
+  const criteria = new Set<string>();
+  if (!input.acceptance.criteria.length || input.acceptance.criteria.length > 64)
+    throw new Error("INVALID_CONTRACT");
+  requireText(input.acceptance.revision);
+  for (const criterion of input.acceptance.criteria) {
+    requireText(criterion.id);
+    requireText(criterion.text);
+    if (
+      criteria.has(criterion.id) ||
+      !criterion.checkIds.length ||
+      new Set(criterion.checkIds).size !== criterion.checkIds.length ||
+      criterion.checkIds.some((id) => !checks.has(id))
+    )
+      throw new Error("INVALID_CRITERION");
+    criteria.add(criterion.id);
+  }
+}
+export async function pinContract(input: ContractSnapshotInput): Promise<ContractSnapshot> {
+  const snapshot = structuredClone(input);
+  validateContract(snapshot);
+  return freeze({ version: 1, ...snapshot, digest: await digest(snapshot) });
+}
+export function contractDocument(snapshot: ContractSnapshot): string {
+  return JSON.stringify({
+    version: snapshot.version,
+    digest: snapshot.digest,
+    projectId: snapshot.projectId,
+    missionId: snapshot.missionId,
+    baseSha: snapshot.baseSha,
+    configurationRevision: snapshot.configurationRevision,
+    proposalRevision: snapshot.proposalRevision,
+    checks: snapshot.checks,
+    acceptance: snapshot.acceptance,
+  });
+}
+export async function assertContractDocument(
+  snapshot: ContractSnapshot,
+  document: string,
+): Promise<void> {
+  const parsed = JSON.parse(document) as ContractSnapshot;
+  if (parsed.version !== 1 || parsed.digest !== snapshot.digest)
+    throw new Error("CONTRACT_TAMPERED");
+  const { version: _version, digest: _digest, ...input } = parsed;
+  const pinned = await pinContract(input);
+  if (pinned.digest !== snapshot.digest || contractDocument(pinned) !== contractDocument(snapshot))
+    throw new Error("CONTRACT_TAMPERED");
+}
+export const CONTRACT_PATH = ".agent_context/ASSERTIONS.json";
+export async function materializeContract(
+  snapshot: ContractSnapshot,
+  workspace: Workspace,
+  transport: Pick<WorkspaceTransport, "writeFile">,
+): Promise<void> {
+  await assertContractDocument(snapshot, contractDocument(snapshot));
+  await transport.writeFile(workspace, CONTRACT_PATH, contractDocument(snapshot));
+}
+export async function assertMaterializedContract(
+  snapshot: ContractSnapshot,
+  workspace: Workspace,
+  transport: Pick<WorkspaceTransport, "readFile">,
+): Promise<void> {
+  await assertContractDocument(snapshot, await transport.readFile(workspace, CONTRACT_PATH));
 }
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") {

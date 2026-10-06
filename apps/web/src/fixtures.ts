@@ -5,6 +5,7 @@ import {
   type ModelChoice,
   type ModelSettings,
   type MessageAttachment,
+  type Mission,
 } from "@pitcrew/protocol";
 const baseSha = "851b619d31a4f1b769b8046a3d306122097ac036";
 const candidateSha = "2a456c88e1d6489d17c1684bfb7f9e0e2a915a04";
@@ -146,6 +147,49 @@ export function createFixtureApi(): Api {
   };
   const sent = new Set<string>();
   const authorizations = new Map<string, Authorization>();
+  const missions: Mission[] = [];
+  const active = () =>
+    missions.find((item) =>
+      ["clarifying", "proposed", "approved", "running", "awaiting_review"].includes(item.status),
+    );
+  const proposalFor = (
+    mission: Mission,
+    summary: string,
+    affectedArea: string,
+    criterion: string,
+  ) => {
+    const revision = `rev-${summary.length}-${affectedArea}-${criterion.length}`;
+    mission.proposal = {
+      revision,
+      digest: revision,
+      summary,
+      affectedArea,
+      acceptance: {
+        revision: "mission",
+        criteria: [{ id: "behavior", text: criterion, checkIds: ["tests"] }],
+      },
+      checks: [
+        {
+          id: "tests",
+          kind: "command",
+          command: { argv: ["pnpm", "test"], timeoutMs: 60000, maxOutputBytes: 16384 },
+        },
+      ],
+    };
+    mission.contract = {
+      version: 1,
+      digest: revision,
+      projectId: mission.projectId,
+      missionId: mission.id,
+      baseSha,
+      configurationRevision: "fixture-v1",
+      proposalRevision: revision,
+      checks: mission.proposal.checks,
+      acceptance: mission.proposal.acceptance,
+    };
+    mission.approvedRevision = undefined;
+    mission.status = "proposed";
+  };
   return {
     capabilities: async () => ({
       landing: { enabled: true, backend: "fixture" },
@@ -237,6 +281,94 @@ export function createFixtureApi(): Api {
       threads.push(thread);
       data[key] = { messages: [], runs: [], reviews: [], evidence: [] };
       return thread;
+    },
+    missions: {
+      current: async (threadId) =>
+        [...missions].reverse().find((item) => item.threadId === threadId) ?? null,
+      create: async (projectId, threadId, request) => {
+        if (active()) throw Error("A mission is already active.");
+        const mission: Mission = {
+          id: crypto.randomUUID(),
+          projectId,
+          threadId,
+          messageId: crypto.randomUUID(),
+          status: "clarifying",
+          request,
+          questions: [
+            {
+              id: "observable-behavior",
+              prompt: "What observable behavior should the tests assert?",
+            },
+          ],
+        };
+        missions.push(mission);
+        return structuredClone(mission);
+      },
+      answer: async (missionId, questionId, reply) => {
+        const mission = missions.find((item) => item.id === missionId);
+        if (!mission || mission.status !== "clarifying") throw Error("Answer the question first.");
+        const question = mission.questions.find((item) => item.id === questionId);
+        if (!question) throw Error("Question not found.");
+        question.answer = reply;
+        proposalFor(mission, mission.request, "src", reply);
+        return structuredClone(mission);
+      },
+      revise: async (missionId, input) => {
+        const mission = missions.find((item) => item.id === missionId);
+        if (!mission?.proposal) throw Error("Proposal not found.");
+        proposalFor(mission, input.summary, input.affectedArea, input.criterion);
+        return structuredClone(mission);
+      },
+      approve: async (missionId, revision) => {
+        const mission = missions.find((item) => item.id === missionId);
+        if (!mission?.proposal || mission.proposal.revision !== revision)
+          throw Error("This approval is stale. Review the updated proposal.");
+        mission.approvedRevision = revision;
+        mission.status = "approved";
+        return structuredClone(mission);
+      },
+      start: async (missionId) => {
+        const mission = missions.find((item) => item.id === missionId);
+        if (!mission || mission.status !== "approved") throw Error("Approve the plan first.");
+        const run = {
+          id: `run-${mission.id}`,
+          threadId: mission.threadId,
+          status: "awaiting_review" as const,
+          baseSha,
+          candidateSha,
+          configurationRevision: "fixture-v1",
+        };
+        mission.status = "awaiting_review";
+        mission.runId = run.id;
+        data[mission.threadId].runs.push(run);
+        data[mission.threadId].evidence.push({
+          run,
+          tests: {
+            baseSha,
+            candidateSha,
+            configurationRevision: "fixture-v1",
+            status: "passed",
+            argv: ["pnpm", "test"],
+            exitCode: 0,
+            stdout: "baseline tests passed",
+            stderr: "",
+            truncated: false,
+          },
+          reviews: [
+            {
+              id: `review-${mission.id}`,
+              runId: run.id,
+              decision: "approve",
+              summary: "The candidate matches the approved mission.",
+              actor: "reviewer",
+              baseSha,
+              candidateSha,
+              configurationRevision: "fixture-v1",
+            },
+          ],
+        });
+        return { mission: structuredClone(mission), run };
+      },
     },
     send: async (threadId, content, key, attachments, selection = settings.default) => {
       if (sent.has(key)) return;
