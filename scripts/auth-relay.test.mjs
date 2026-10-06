@@ -297,3 +297,26 @@ test("Access redirects, malformed upstream, throttles and expiration sanitize fa
   assert.equal(plugin.name, "pitcrew-auth-relay");
   assert.equal(typeof plugin.sessionHeaders, "function");
 });
+test("malformed and absolute request targets fail safely without token reads", async () => {
+  for (const options of [{}, { enabled: true, userAccessSession: true }]) {
+    let tokens = 0;
+    const relay = createAuthRelayMiddleware({
+      ...options,
+      tokenProvider: async () => {
+        tokens++;
+        return jwt();
+      },
+    });
+    for (const target of [
+      "/\\[",
+      "//evil.example/api/auth/get-session",
+      "https://evil.example/api/auth/get-session",
+      "/api/auth/get-session#secret",
+    ]) {
+      const result = await call(relay, request(target));
+      assert.equal(result.status, 400);
+      assert.deepEqual(result.value, { error: "invalid_request" });
+    }
+    assert.equal(tokens, 0);
+  }
+});

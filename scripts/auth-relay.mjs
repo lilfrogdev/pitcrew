@@ -175,7 +175,15 @@ export function createAuthRelayMiddleware({
     }
   };
   const handler = async (req, res, next = () => {}) => {
-    const url = new URL(req.url ?? "/", origin);
+    const raw = req.url ?? "";
+    if (!raw.startsWith("/") || raw.startsWith("//") || /[\\#]/.test(raw))
+      return reply(res, 400, { error: "invalid_request" });
+    let url;
+    try {
+      url = new URL(raw, origin);
+    } catch {
+      return reply(res, 400, { error: "invalid_request" });
+    }
     if (!url.pathname.startsWith("/api/auth/")) return next();
     if (!enabled || !userAccessSession) return reply(res, 503, { error: "auth_relay_disabled" });
     if (!admitted(req, origin)) return reply(res, 403, { error: "auth_relay_denied" });
