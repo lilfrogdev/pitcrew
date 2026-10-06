@@ -15,6 +15,13 @@ export interface TrustedPublisherEnv {
   TRUSTED_PUBLISHER_AUTH_KEY?: string;
   ARTIFACTS?: Artifacts;
   REPOSITORY: DurableObjectNamespace<PublisherAdmissionReceiver>;
+  TRUSTED_PUBLISHER?: DurableObjectNamespace<TrustedPublisherAgent>;
+}
+
+export function assertPublisherObjectIdentity(id: DurableObjectId,
+  namespace: Pick<DurableObjectNamespace, "idFromName"> | undefined, operationId: string): void {
+  if (!namespace || typeof operationId !== "string" || !id.equals(namespace.idFromName(`publisher:${operationId}`)))
+    throw new ExecutionError("PUBLISHER_OBJECT_IDENTITY_MISMATCH");
 }
 export interface PublishedBundleIdentity {
   runId: string;
@@ -113,6 +120,7 @@ export class TrustedPublisherAgent extends DurableObject<TrustedPublisherEnv> {
   private async execute(raw: PublisherRequest): Promise<PublisherResult> {
     const input = structuredClone(raw);
     this.enabled();
+    assertPublisherObjectIdentity(this.ctx.id, this.env.TRUSTED_PUBLISHER, input.operationId);
     await verifyPublisherAuthorization(input, this.env.TRUSTED_PUBLISHER_AUTH_KEY!);
     if (input.bundleDigest !== await publisherBundleDigest(input.bundleBase64))
       throw new ExecutionError("BUNDLE_DIGEST_MISMATCH");

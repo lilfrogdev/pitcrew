@@ -66,6 +66,9 @@ terminal result. Backend names are `publisher:publish:<runId>` and
 `publisher:land:<authorizationId>`, preventing delayed cleanup of an old operation
 from destroying a new owner's container. Bundle storage and alarm changes occur
 only after input validation and the atomic ownership claim.
+The agent also compares its physical `ctx.id` with the namespace ID derived from
+`publisher:<operationId>` before claiming ownership, so the same signed tuple cannot
+start another container through a different DO name.
 
 Successful publication stores the inert bundle in 64 KiB SQLite chunks. The private
 `publishedBundle(operationId, exactTuple)` accessor checks all run, fork, SHA, digest

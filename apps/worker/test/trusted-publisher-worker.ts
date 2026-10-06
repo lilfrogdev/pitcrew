@@ -1,12 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
-import { SqlitePublisherJournal } from "../src/trusted-publisher-agent.ts";
+import { SqlitePublisherJournal, assertPublisherObjectIdentity } from "../src/trusted-publisher-agent.ts";
 import type { PublisherRecord } from "../../../packages/execution/src/trusted-publisher.ts";
 
 // Test-only SQLite fixture. This class never starts a container or creates a token.
-export class PublisherJournalFixture extends DurableObject {
+export class PublisherJournalFixture extends DurableObject<{ JOURNAL: DurableObjectNamespace<PublisherJournalFixture> }> {
   private readonly journal = new SqlitePublisherJournal(this.ctx.storage);
   async exercise(body: { operation: string; id: string; fingerprint?: string; bundle?: string }) {
     const fingerprint = body.fingerprint ?? "fingerprint";
+    if (body.operation === "identity") {
+      assertPublisherObjectIdentity(this.ctx.id, this.env.JOURNAL, body.id);
+      return { matched: true };
+    }
     if (body.operation === "claim") return this.journal.claim(body.id, {
       fingerprint, state: "pending", executionSettled: false, cancelled: false, containerOwned: false, writeAttempted: false,
       input: { kind: "publish", operationId: body.id, runId: "run", repositoryAgentName: "pitcrew",
@@ -35,7 +39,7 @@ export default {
   async fetch(request: Request, env: { JOURNAL: DurableObjectNamespace<PublisherJournalFixture> }) {
     try {
       const body = await request.json() as { operation: string; id: string };
-      const result = await env.JOURNAL.get(env.JOURNAL.idFromName("fixture")).exercise(body);
+      const result = await env.JOURNAL.get(env.JOURNAL.idFromName("publisher:fixture")).exercise(body);
       return Response.json(result ?? null);
     } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "fixture_error" }, { status: 409 }); }
   },

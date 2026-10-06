@@ -14,6 +14,8 @@ it("native SQLite publisher journal persists pending operations, immutable ident
     (await mf.dispatchFetch("http://fixture/", { method: "POST", body: JSON.stringify({ operation, id, ...data }) })).json() as
       Promise<{ claimed?: boolean; error?: string; record?: { state: string; cancelled: boolean }; bundle?: string; cancelled?: boolean }>;
   try {
+    expect(await request("identity", "fixture")).toEqual({ matched: true });
+    expect(await request("identity", "spoof")).toEqual({ error: "PUBLISHER_OBJECT_IDENTITY_MISMATCH" });
     const claims = await Promise.all([request("claim", "one"), request("claim", "one")]);
     expect(claims.filter((claim) => claim.claimed)).toHaveLength(1);
     expect(await request("claim", "two")).toMatchObject({ error: "PUBLISHER_DO_ALREADY_USED" });
