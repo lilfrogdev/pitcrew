@@ -14,6 +14,7 @@ import type {
   ModelSelection,
   ModelSettings,
 } from "@pitcrew/protocol";
+import type { SourceApi } from "@pitcrew/protocol";
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
 export type SharedMessage = Message & {
@@ -91,6 +92,7 @@ export interface CollaborationApi {
   removeThreadMember(threadId: string, actor: string): Promise<unknown>;
 }
 export interface Api {
+  source?: SourceApi;
   openrouter?: OpenRouterConnectionApi;
   repositories?: RepositoryApi;
   collaboration?: CollaborationApi;
@@ -185,6 +187,7 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
         // own upstream deadline. Don't free a client slot before that work ends.
         signal: AbortSignal.timeout(body ? 10000 : 45000),
         headers,
+        ...(path.includes("/source/") ? { cache: "no-store" as const } : {}),
         body: body ? JSON.stringify(body) : undefined,
       });
     const response = body ? await perform() : await readWithBudget(perform);
@@ -273,7 +276,28 @@ async function connectionMutation(
     body: JSON.stringify(body),
   });
 }
+const sourceQuery = (values: Record<string, string | undefined>) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) if (value !== undefined) query.set(key, value);
+  return query.toString();
+};
 export const httpApi: Api = {
+  source: {
+    tree: (id, path = "", version, cursor) =>
+      request(
+        `/threads/${encodeURIComponent(id)}/source/tree?${sourceQuery({ path, version, cursor })}`,
+      ),
+    file: (id, path, version) =>
+      request(`/threads/${encodeURIComponent(id)}/source/file?${sourceQuery({ path, version })}`),
+    diff: (id, runId, version, cursor) =>
+      request(
+        `/threads/${encodeURIComponent(id)}/source/diff?${sourceQuery({ runId, version, cursor })}`,
+      ),
+    patch: (id, runId, path, version) =>
+      request(
+        `/threads/${encodeURIComponent(id)}/source/diff?${sourceQuery({ runId, path, version })}`,
+      ),
+  },
   collaboration: {
     account: () => request("/account"),
     repositories: async () => {

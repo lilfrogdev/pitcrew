@@ -54,7 +54,7 @@ it("supports keyboard tabs, submitted text files, truthful diff states and safe 
   expect(screen.getByRole("tab", { name: "Files" })).toBe(document.activeElement);
   expect(screen.getByText("<script>plain text only</script>")).toBeTruthy();
   await user.keyboard("{ArrowRight}");
-  expect(screen.getByText("Patch content unavailable")).toBeTruthy();
+  expect(screen.getByText(/Patch content unavailable/)).toBeTruthy();
   expect(screen.getByText(snapshot.runs[0].candidateSha!)).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Inspect review evidence" }));
   expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Review / PR" }));
