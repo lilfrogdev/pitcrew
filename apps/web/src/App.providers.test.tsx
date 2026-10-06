@@ -7,7 +7,15 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
 });
-it.each(["missing", "failed", "empty", "unsupported", "disabled", "fixture"] as const)(
+it.each([
+  "missing",
+  "failed",
+  "empty",
+  "unsupported",
+  "disabled",
+  "fixture",
+  "pitcrew-fixture",
+] as const)(
   "requires setup for %s capabilities and guards direct submissions while retaining drafts",
   async (mode) => {
     const api = createFixtureApi();
@@ -27,13 +35,18 @@ it.each(["missing", "failed", "empty", "unsupported", "disabled", "fixture"] as 
                     ? []
                     : mode === "unsupported"
                       ? capabilities.composer!.models.map((model) => ({ ...model, efforts: [] }))
-                      : capabilities.composer!.models,
+                      : mode === "pitcrew-fixture"
+                        ? capabilities.composer!.models.map((model) => ({
+                            ...model,
+                            provider: "pitcrew-fixture",
+                          }))
+                        : capabilities.composer!.models,
               },
       };
     });
     api.send = vi.fn(api.send);
     const user = userEvent.setup();
-    render(<App api={api} demo={mode !== "fixture"} />);
+    render(<App api={api} demo={mode !== "fixture" && mode !== "pitcrew-fixture"} />);
     const setup = await screen.findByRole("button", { name: "Set up a provider" });
     await screen.findByRole("heading", { name: "Make agent work visible" });
     const composer = screen.getByLabelText("Message your crew") as HTMLTextAreaElement;

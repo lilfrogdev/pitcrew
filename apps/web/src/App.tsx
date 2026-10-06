@@ -231,7 +231,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     composerCapabilities?.settings.default;
   const usableModels = composerCapabilities?.conversation
     ? composerCapabilities.models.filter(
-        (model) => model.efforts.length && (demo || model.provider !== "fixture"),
+        (model) =>
+          model.efforts.length &&
+          (demo || !["fixture", "pitcrew-fixture"].includes(model.provider)),
       )
     : [];
   const providerConnected = usableModels.length > 0;
