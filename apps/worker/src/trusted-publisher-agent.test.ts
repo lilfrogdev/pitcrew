@@ -16,7 +16,7 @@ it("native SQLite publisher journal persists pending operations, immutable ident
   try {
     const claims = await Promise.all([request("claim", "one"), request("claim", "one")]);
     expect(claims.filter((claim) => claim.claimed)).toHaveLength(1);
-    expect(await request("claim", "two")).toMatchObject({ error: "PUBLISHER_BUSY_RECONCILIATION" });
+    expect(await request("claim", "two")).toMatchObject({ error: "PUBLISHER_DO_ALREADY_USED" });
     const encoded = "safe-inert-bundle-data".repeat(10_000);
     expect(await request("bundle", "one", { bundle: encoded })).toEqual({ bundle: encoded });
     expect(await request("bundle", "one", { bundle: "spoof" })).toMatchObject({ error: "PUBLISHER_REPLAY_CONFLICT" });
@@ -25,9 +25,9 @@ it("native SQLite publisher journal persists pending operations, immutable ident
     expect(await request("uncancel", "one")).toMatchObject({ error: "PUBLISHER_CANCELLED" });
     await mf.setOptions(convertV4MiniflareOptions({ ...options, script: options.script + "\n// reload" }));
     expect(await request("claim", "one")).toMatchObject({ claimed: false, record: { state: "pending", cancelled: true } });
-    expect(await request("claim", "two")).toMatchObject({ error: "PUBLISHER_BUSY_RECONCILIATION" });
+    expect(await request("claim", "two")).toMatchObject({ error: "PUBLISHER_DO_ALREADY_USED" });
     expect(await request("bundle", "one", { bundle: encoded })).toEqual({ bundle: encoded });
     await request("complete", "one");
-    expect(await request("claim", "two")).toMatchObject({ claimed: true });
+    expect(await request("claim", "two")).toMatchObject({ error: "PUBLISHER_DO_ALREADY_USED" });
   } finally { await mf.dispose(); }
 }, 30_000);

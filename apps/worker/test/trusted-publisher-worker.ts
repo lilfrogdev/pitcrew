@@ -8,7 +8,7 @@ export class PublisherJournalFixture extends DurableObject {
   async exercise(body: { operation: string; id: string; fingerprint?: string; bundle?: string }) {
     const fingerprint = body.fingerprint ?? "fingerprint";
     if (body.operation === "claim") return this.journal.claim(body.id, {
-      fingerprint, state: "pending", cancelled: false, containerOwned: false, writeAttempted: false,
+      fingerprint, state: "pending", executionSettled: false, cancelled: false, containerOwned: false, writeAttempted: false,
       input: { kind: "publish", operationId: body.id, runId: "run", repositoryAgentName: "pitcrew",
         admissionFingerprint: "admission", artifactId: "fork", artifactRepositoryId: "fork-id",
         artifactRemote: "https://fixture.artifacts.cloudflare.net/git/ns/fork.git", sourceId: "source",
@@ -25,7 +25,7 @@ export class PublisherJournalFixture extends DurableObject {
     if (body.operation === "uncancel") return this.journal.update(body.id, fingerprint, { cancelled: false });
     if (body.operation === "mutate") return this.journal.update(body.id, fingerprint,
       { input: { operationId: "spoof" } as PublisherRecord["input"] });
-    if (body.operation === "complete") return this.journal.update(body.id, fingerprint, { state: "complete",
+    if (body.operation === "complete") return this.journal.update(body.id, fingerprint, { state: "complete", executionSettled: true,
       result: { status: "published", fingerprint, cleanupVerified: true } });
     throw Error("fixture_unknown_operation");
   }

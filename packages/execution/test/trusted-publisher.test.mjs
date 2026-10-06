@@ -245,3 +245,46 @@ test("unknown resource cleanup never claims proof", async () => {
   try { assert.equal(await f.publisher.cleanup("unknown"), false); }
   finally { f.close(); }
 });
+
+test("cleanup cannot release a pending continuation even before any observed resource", async () => {
+  let resume, reached; const blocked = new Promise((resolve) => { resume = resolve; });
+  const admitted = new Promise((resolve) => { reached = resolve; });
+  const f = await publisherFixture({ admitted: async () => { reached(); await blocked; } });
+  try {
+    const execution = f.publisher.execute(f.input); await admitted;
+    assert.equal(await f.publisher.cleanup(f.input.operationId), false);
+    assert.equal((await f.journal.read(f.input.operationId)).executionSettled, false);
+    resume(); const result = await execution;
+    assert.equal(result.code, "PUBLISHER_CANCELLED"); assert.equal(result.cleanupVerified, true);
+    assert.equal(f.execs.length, 0); assert.equal(f.tokens.length, 0);
+    assert.equal(await f.publisher.cleanup(f.input.operationId), true);
+  } finally { resume(); f.close(); }
+});
+
+test("timed-out issuance plus concurrent cleanup cannot attest an unknown lease revoked", async () => {
+  let issue, reached; const token = new Promise((resolve) => { issue = resolve; });
+  const issuing = new Promise((resolve) => { reached = resolve; });
+  const f = await publisherFixture({ token: async () => { reached(); return token; } });
+  try {
+    const input = await signed({ ...f.input, deadline: Date.now() + 800 });
+    const execution = f.publisher.execute(input); await issuing;
+    assert.equal((await f.journal.read(input.operationId)).lease.state, "creating");
+    assert.equal(await f.publisher.cleanup(input.operationId), false);
+    const result = await execution;
+    assert.equal(result.cleanupVerified, false); assert.equal(result.status, "uncertain");
+    assert.equal(result.code, "PUBLISHER_CLEANUP_UNVERIFIED"); assert.deepEqual(f.revoked, []);
+    const record = await f.journal.read(input.operationId);
+    assert.equal(record.executionSettled, true); assert.equal(record.lease.state, "uncertain");
+    assert.equal(record.lease.id, undefined);
+    // Until the provider supplies an ID, even a stopped container is insufficient.
+    assert.equal(await f.publisher.cleanup(input.operationId), false);
+    issue({ id: "late-fake-lease", plaintext: "fixture-late-not-a-real-token", scope: "write",
+      expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(f.revoked, ["late-fake-lease"]);
+    assert.equal((await f.journal.read(input.operationId)).lease.state, "revoked");
+    assert.equal(await f.publisher.cleanup(input.operationId), true);
+    assert.equal(f.execs.some(({ argv }) => argv.includes("push")), false);
+  } finally { issue({ id: "late-fake-lease", plaintext: "fake", scope: "write",
+    expiresAt: new Date(Date.now() + 60_000).toISOString() }); f.close(); }
+});

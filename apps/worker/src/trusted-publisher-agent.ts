@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { ExecutionError } from "../../../packages/execution/src/contracts.ts";
 import {
-  NativeTrustedPublisher, publisherBundleDigest, publisherFingerprint, verifyPublisherAuthorization,
+  NativeTrustedPublisher, publisherBundleDigest, verifyPublisherAuthorization,
   type PublisherInput, type PublisherLandingInput, type PublisherJournal,
   type PublisherRecord, type PublisherRequest, type PublisherResult,
 } from "../../../packages/execution/src/trusted-publisher.ts";
@@ -35,11 +35,7 @@ export class SqlitePublisherJournal implements PublisherJournal {
       const existing = this.get(id);
       if (existing) return { claimed: false, record: existing };
       const records = this.storage.sql.exec<{ record: string }>("SELECT record FROM publisher_operations").toArray();
-      if (records.some((row) => {
-        const item: PublisherRecord = JSON.parse(row.record);
-        return item.state === "pending" || item.containerOwned ||
-          (item.lease && item.lease.state !== "revoked") || item.result?.status === "uncertain";
-      })) throw new ExecutionError("PUBLISHER_BUSY_RECONCILIATION");
+      if (records.length) throw new ExecutionError("PUBLISHER_DO_ALREADY_USED");
       this.storage.sql.exec("INSERT INTO publisher_operations VALUES(?,?)", id, JSON.stringify(record));
       return { claimed: true, record: structuredClone(record) };
     });
@@ -107,6 +103,11 @@ export class TrustedPublisherAgent extends DurableObject<TrustedPublisherEnv> {
         // configuration and source approval; the HMAC authenticates the frozen tuple.
         const stub = this.env.REPOSITORY.get(this.env.REPOSITORY.idFromName("pitcrew"));
         await stub.assertPublisherAdmission(input);
+      }, undefined, async (input, fingerprint) => {
+        // The native verifier has validated and atomically claimed this single-use
+        // DO before payload storage or alarm changes are permitted.
+        this.journal.storeBundle(input.operationId, fingerprint, input.bundleBase64);
+        await this.ctx.storage.setAlarm(input.deadline);
       });
   }
   private async execute(raw: PublisherRequest): Promise<PublisherResult> {
@@ -115,10 +116,6 @@ export class TrustedPublisherAgent extends DurableObject<TrustedPublisherEnv> {
     await verifyPublisherAuthorization(input, this.env.TRUSTED_PUBLISHER_AUTH_KEY!);
     if (input.bundleDigest !== await publisherBundleDigest(input.bundleBase64))
       throw new ExecutionError("BUNDLE_DIGEST_MISMATCH");
-    // Native validation will independently reject the bundle before a container starts.
-    const fingerprint = await publisherFingerprint(input);
-    this.journal.storeBundle(input.operationId, fingerprint, input.bundleBase64);
-    await this.ctx.storage.setAlarm(input.deadline);
     return this.publisher().execute(input);
   }
   publish(input: PublisherInput) { return this.execute({ ...input, kind: "publish" }); }
@@ -129,7 +126,8 @@ export class TrustedPublisherAgent extends DurableObject<TrustedPublisherEnv> {
     const record = await this.journal.read(operationId);
     if (!record || record.input.kind !== "publish" || record.result?.status !== "published" ||
         !record.result.cleanupVerified ||
-        Object.entries(expected).some(([key, value]) => record.input[key as keyof typeof record.input] !== value))
+        (["runId", "artifactId", "baseSha", "candidateSha", "bundleDigest", "configurationRevision"] as const)
+          .some((key) => record.input[key] !== expected[key]))
       throw new ExecutionError("PUBLISHED_BUNDLE_UNAVAILABLE");
     // This is inert data access. Landing requires its own fresh signed authority and reservation.
     const bundleBase64 = this.journal.bundle(operationId);

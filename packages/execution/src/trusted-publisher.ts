@@ -45,6 +45,7 @@ export interface PublisherRecord {
   fingerprint: string;
   input: PublisherIdentity;
   state: "pending" | "complete";
+  executionSettled: boolean;
   cancelled: boolean;
   containerOwned: boolean;
   lease?: { repository: string; id?: string; state: "creating" | "active" | "revoked" | "uncertain" };
@@ -55,6 +56,7 @@ export type PublisherIdentity =
   | Omit<PublisherInput & { kind: "publish" }, "bundleBase64">
   | Omit<PublisherLandingInput & { kind: "land" }, "bundleBase64">;
 // claim/update/cancel must be SQLite transactions in the separate publisher DO.
+// The DO is single-use: a different operation ID must never own its container.
 export interface PublisherJournal {
   claim(id: string, record: PublisherRecord): Promise<{ claimed: boolean; record: PublisherRecord }>;
   read(id: string): Promise<PublisherRecord | undefined>;
@@ -175,7 +177,8 @@ const GIT_PREFIX = ["git", "--no-replace-objects", "-c", "core.hooksPath=/dev/nu
 export class NativeTrustedPublisher {
   constructor(private readonly artifacts: ArtifactsBinding, private readonly container: PublisherContainer,
     private readonly image: string, private readonly journal: PublisherJournal,
-    private readonly admitted: PublisherAdmission, private readonly now = () => Date.now()) {
+    private readonly admitted: PublisherAdmission, private readonly now = () => Date.now(),
+    private readonly onClaim?: (input: Readonly<PublisherRequest>, fingerprint: string) => Promise<void>) {
   }
 
   async execute(raw: PublisherRequest): Promise<PublisherResult> {
@@ -189,7 +192,7 @@ export class NativeTrustedPublisher {
     const fingerprint = await publisherFingerprint(input);
     const { bundleBase64: _bundle, ...identity } = input;
     const claimed = await this.journal.claim(input.operationId, { fingerprint, input: identity,
-      state: "pending", cancelled: false, containerOwned: false, writeAttempted: false });
+      state: "pending", executionSettled: false, cancelled: false, containerOwned: false, writeAttempted: false });
     if (claimed.record.fingerprint !== fingerprint) throw new ExecutionError("PUBLISHER_REPLAY_CONFLICT");
     if (!claimed.claimed) return claimed.record.result ?? { status: "uncertain", fingerprint,
       cleanupVerified: false, code: "PUBLISHER_PENDING_RECONCILIATION" };
@@ -218,6 +221,7 @@ export class NativeTrustedPublisher {
       stage(() => this.git(argv, input.deadline, token, remote, stdin));
     try {
       await fence();
+      if (this.onClaim) await stage(() => this.onClaim!(input, fingerprint));
       const artifact = await stage(() => this.artifacts.get(input.artifactId)); repos.push(artifact);
       const source = await stage(() => this.artifacts.get(input.sourceId)); repos.push(source);
       const artifactInfo = await stage(() => artifact.info());
@@ -318,10 +322,10 @@ export class NativeTrustedPublisher {
       }
       const owned = await this.journal.read(input.operationId);
       const stopped = await this.cleanupContainer();
-      result.cleanupVerified = revoked && stopped && owned?.lease?.state !== "creating";
+      result.cleanupVerified = !!owned && revoked && stopped && (!owned.lease || owned.lease.state === "revoked");
       if (!result.cleanupVerified) { result.status = "uncertain"; result.code = "PUBLISHER_CLEANUP_UNVERIFIED"; }
       await this.journal.update(input.operationId, fingerprint, { state: "complete", result,
-        containerOwned: !stopped });
+        executionSettled: true, containerOwned: !stopped });
       for (const repo of repos) repo[Symbol.dispose]();
     }
     return result;
@@ -341,7 +345,10 @@ export class NativeTrustedPublisher {
     const stopped = await this.cleanupContainer();
     await this.journal.update(operationId, record.fingerprint, { containerOwned: !stopped,
       ...(record.lease ? { lease: { ...record.lease, state: revoked ? "revoked" : "uncertain" } } : {}) });
-    return revoked && stopped;
+    // A pending continuation may already hold a pre-cancellation snapshot. Its
+    // finalizer owns the last cleanup; cancellation alone is not a release proof.
+    // Unsettled records survive a cold crash and require reconciliation, never replay.
+    return record.executionSettled === true && revoked && stopped;
   }
 
   private destination(info: ArtifactsRepoInfo, name: string, id: string, remote: string): void {
