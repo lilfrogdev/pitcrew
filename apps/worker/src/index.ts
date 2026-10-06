@@ -55,9 +55,11 @@ interface Env extends PiEnv, AccessEnv {
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
   private repositoryLifecycle?: RepositoryLifecycle;
-  private getRepositoryLifecycle() {
+  private getRepositoryLifecycle(request: Request) {
+    const listing =
+      request.method === "GET" && new URL(request.url).pathname === "/api/repositories";
     if (
-      this.env.REPOSITORY_LIFECYCLE !== "enabled" ||
+      (!listing && this.env.REPOSITORY_LIFECYCLE !== "enabled") ||
       !this.env.ARTIFACTS ||
       this.env.ENVIRONMENT !== "production"
     )
@@ -478,7 +480,7 @@ export class RepositoryAgent extends Agent<Env> {
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter")
       return providerConnectionRequest(request, this.env, identity.actor);
     if (/^\/api\/repositories(?:\/|$)/.test(new URL(request.url).pathname))
-      return lifecycleRequest(request, this.getRepositoryLifecycle(), (task) =>
+      return lifecycleRequest(request, this.getRepositoryLifecycle(request), (task) =>
         this.ctx.waitUntil(task),
       );
     const bodyLimit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
