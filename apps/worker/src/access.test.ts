@@ -16,7 +16,7 @@ async function fixture() {
   const token = (claims: Record<string, unknown> = {}) =>
     new SignJWT({ email: "owner@example.com", ...claims })
       .setProtectedHeader({ alg: "RS256", kid: "fixture-key" })
-      .setSubject("owner-subject")
+      .setSubject(typeof claims.sub === "string" ? claims.sub : "owner-subject")
       .setIssuer(env.ACCESS_ISSUER!)
       .setAudience(env.ACCESS_AUDIENCE!)
       .setIssuedAt()
@@ -31,6 +31,30 @@ function request(token: string, path = "/api/projects", method = "GET", origin?:
   });
 }
 describe("protected private cloud demo", () => {
+  it("admits only the two configured exact email identities and denies malformed allowlists", async () => {
+    const f = await fixture();
+    const shared = {
+      ...env,
+      ACCESS_EMAILS: JSON.stringify(["dev@lilfrogdev.com", "bryan.aldair.zamora@gmail.com"]),
+    };
+    for (const [email, sub] of [
+      ["dev@lilfrogdev.com", "owner-subject"],
+      ["bryan.aldair.zamora@gmail.com", "bryan-subject"],
+    ])
+      expect(await principal(request(await f.token({ email, sub })), shared, f.keys)).toEqual({
+        actor: `access:${sub}`,
+      });
+    for (const email of [
+      "other@gmail.com",
+      "bryan.aldair.zamora+other@gmail.com",
+      "bryan.aldair.zamora@gmail.com.evil",
+    ])
+      expect(await principal(request(await f.token({ email })), shared, f.keys)).toBeUndefined();
+    for (const ACCESS_EMAILS of ["invalid", "[]", '["*@gmail.com"]', "[null]"])
+      expect(
+        await principal(request(await f.token()), { ...env, ACCESS_EMAILS }, f.keys),
+      ).toBeUndefined();
+  });
   it("verifies a genuine locally signed JWT and routes both assets and API behind it", async () => {
     const f = await fixture(),
       jwt = await f.token();

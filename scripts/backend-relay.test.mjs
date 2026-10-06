@@ -458,8 +458,17 @@ test("locally verifies exact RS256 issuer/audience/email and thirty-minute maxim
       .setProtectedHeader({ alg })
       .sign(privateKey);
   assert.equal(await verifyUserAccessToken(await make(), async () => publicKey), now + 1800);
+  assert.equal(
+    await verifyUserAccessToken(
+      await make({ email: "bryan.aldair.zamora@gmail.com" }),
+      async () => publicKey,
+    ),
+    now + 1800,
+  );
   for (const claims of [
     { email: "other@example.com" },
+    { email: "bryan.aldair.zamora+other@gmail.com" },
+    { email: "bryan.aldair.zamora@gmail.com.evil" },
     { aud: "other" },
     { iss: "https://evil.example" },
     { exp: now - 1 },

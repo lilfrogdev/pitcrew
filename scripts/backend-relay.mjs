@@ -10,6 +10,7 @@ export const BACKEND_ACCESS = Object.freeze({
   issuer: "https://purple-mouse-ee03.cloudflareaccess.com",
   audience: "147a2e216894b65c6445fc8dec1a3347c6b1681e01089dd066f875a581e81683",
   email: "dev@lilfrogdev.com",
+  emails: Object.freeze(["dev@lilfrogdev.com", "bryan.aldair.zamora@gmail.com"]),
 });
 const cookieName = "pitcrew-backend-nonce";
 const lifetime = 30 * 60 * 1000;
@@ -118,7 +119,7 @@ export async function verifyUserAccessToken(token, resolver = keys) {
     typeof payload.sub !== "string" ||
     !payload.sub ||
     typeof payload.email !== "string" ||
-    payload.email.toLowerCase() !== BACKEND_ACCESS.email ||
+    !BACKEND_ACCESS.emails.includes(payload.email.toLowerCase()) ||
     typeof payload.iat !== "number" ||
     typeof payload.exp !== "number" ||
     payload.iat > now ||
