@@ -126,15 +126,15 @@ export class ApiError extends Error {
         ? "Access is unavailable. Ask the project owner to enable protected access."
         : status === 404
           ? "This shared item is no longer available. Refresh your workspace."
-        : status === 410
-          ? "This invitation has expired or was already used. Ask for a new code."
-        : status === 409
-          ? "The thread changed. Refresh before trying again."
-          : status === 413
-            ? "This message is too large. Shorten it and try again."
-            : status === 429
-              ? "The crew is at capacity. Wait for an active change to finish, then try again."
-              : "Could not reach Pitcrew. Your draft is saved here; try again.",
+          : status === 410
+            ? "This invitation has expired or was already used. Ask for a new code."
+            : status === 409
+              ? "The thread changed. Refresh before trying again."
+              : status === 413
+                ? "This message is too large. Shorten it and try again."
+                : status === 429
+                  ? "The crew is at capacity. Wait for an active change to finish, then try again."
+                  : "Could not reach Pitcrew. Your draft is saved here; try again.",
     );
   }
 }
@@ -145,8 +145,9 @@ async function readWithBudget<T>(read: () => Promise<T>): Promise<T> {
   // The local relay admits four product requests. Leave one slot for a write.
   if (activeReads >= 3) await new Promise<void>((resolve) => waitingReads.push(resolve));
   else activeReads++;
-  try { return await read(); }
-  finally {
+  try {
+    return await read();
+  } finally {
     const next = waitingReads.shift();
     if (next) next();
     else activeReads--;
@@ -177,14 +178,15 @@ export async function mutationHeaders(): Promise<Record<string, string>> {
 export async function apiFetch(path: string, body?: unknown): Promise<Response> {
   const send = async () => {
     const headers = body ? await mutationHeaders() : undefined;
-    const perform = () => fetch(`/api${path}`, {
-      method: body ? "POST" : "GET",
-      // Reads include edge admission, cached-token/JWKS checks and the relay's
-      // own upstream deadline. Don't free a client slot before that work ends.
-      signal: AbortSignal.timeout(body ? 10000 : 45000),
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const perform = () =>
+      fetch(`/api${path}`, {
+        method: body ? "POST" : "GET",
+        // Reads include edge admission, cached-token/JWKS checks and the relay's
+        // own upstream deadline. Don't free a client slot before that work ends.
+        signal: AbortSignal.timeout(body ? 10000 : 45000),
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
     const response = body ? await perform() : await readWithBudget(perform);
     return { response, local: !!headers?.["X-Pitcrew-Local-Nonce"] };
   };
@@ -276,11 +278,23 @@ export const httpApi: Api = {
     account: () => request("/account"),
     repositories: async () => {
       const value = await request<unknown>("/repositories");
-      if (!value || typeof value !== "object" || !("repositories" in value) ||
-          !Array.isArray(value.repositories) || value.repositories.some((item) =>
-        !item || typeof item.projectId !== "string" || typeof item.name !== "string" ||
-        !["owner", "editor"].includes(item.role) || item.status !== "present" ||
-        item.lifecycle !== "registered" || item.deletable !== false)) throw new ApiError(0);
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("repositories" in value) ||
+        !Array.isArray(value.repositories) ||
+        value.repositories.some(
+          (item) =>
+            !item ||
+            typeof item.projectId !== "string" ||
+            typeof item.name !== "string" ||
+            !["owner", "editor"].includes(item.role) ||
+            item.status !== "present" ||
+            item.lifecycle !== "registered" ||
+            item.deletable !== false,
+        )
+      )
+        throw new ApiError(0);
       return value.repositories as SharedRepository[];
     },
     projectMembers: (id) => request(`/projects/${encodeURIComponent(id)}/members`),
@@ -308,7 +322,9 @@ export const httpApi: Api = {
   attachmentUrl: (threadId, attachmentId) =>
     `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`,
   async capabilities(projectId) {
-    const capabilities = await request<LandingCapabilities>(`/capabilities${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
+    const capabilities = await request<LandingCapabilities>(
+      `/capabilities${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+    );
     if (
       capabilities.composer?.conversation &&
       capabilities.composer.models.some(

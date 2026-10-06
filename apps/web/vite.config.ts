@@ -27,6 +27,11 @@ export default defineConfig({
       sessionHeaders: authRelay.sessionHeaders,
     }),
   ],
-  server: { host: "127.0.0.1", port: 5173, strictPort: true, proxy: { "/api": "http://127.0.0.1:8787" } },
+  server: {
+    host: "127.0.0.1",
+    port: 5173,
+    strictPort: true,
+    proxy: { "/api": "http://127.0.0.1:8787" },
+  },
   test: { environment: "jsdom", include: ["src/**/*.test.tsx", "src/**/*.test.ts"] },
 });

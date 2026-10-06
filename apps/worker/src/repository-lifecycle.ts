@@ -252,8 +252,12 @@ export async function lifecycleRequest(
       if (body.credentialConsent !== true) throw Error("credential_consent_required");
       const importing = url.pathname.endsWith("/import");
       const source = importing ? publicImportUrl(body.url) : undefined;
-      const task = lifecycle.provision(name, importing ? "import" : "create", source, ownerActor)
-        .then(async (record) => { if (record.status === "ready") await registered?.(record); return record; });
+      const task = lifecycle
+        .provision(name, importing ? "import" : "create", source, ownerActor)
+        .then(async (record) => {
+          if (record.status === "ready") await registered?.(record);
+          return record;
+        });
       waitUntil?.(task.catch(() => {}));
       let timer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([

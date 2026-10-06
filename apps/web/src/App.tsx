@@ -5,7 +5,15 @@ import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities, InvitationPreview } from "./api";
+import type {
+  Api,
+  Project,
+  Run,
+  Snapshot,
+  Thread,
+  LandingCapabilities,
+  InvitationPreview,
+} from "./api";
 import "./styles.css";
 import { LandingControl, type LandingState } from "./LandingControl";
 import { isLandedReceipt, runDisplayStatus } from "./landing-receipt";
@@ -40,15 +48,24 @@ const labels: Record<Run["status"], string> = {
 };
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong. Try again.";
-export function App({ api, auth, viewer, demo = false }: {
-  api: Api; auth?: AuthApi; viewer?: AuthUser; demo?: boolean;
+export function App({
+  api,
+  auth,
+  viewer,
+  demo = false,
+}: {
+  api: Api;
+  auth?: AuthApi;
+  viewer?: AuthUser;
+  demo?: boolean;
 }) {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceWidth, setWorkspaceWidth] = useState(380);
   const keyboardFocus = useKeyboardFocus();
   const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
-  const [landingBackend, setLandingBackend] = useState<LandingCapabilities["landing"]["backend"]>(null);
+  const [landingBackend, setLandingBackend] =
+    useState<LandingCapabilities["landing"]["backend"]>(null);
   const [providerRevision, setProviderRevision] = useState(0);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [composerCapabilities, setComposerCapabilities] =
@@ -57,8 +74,12 @@ export function App({ api, auth, viewer, demo = false }: {
   const [selections, setSelections] = useState<Record<string, ModelSelection>>({});
   const [selectionSaving, setSelectionSaving] = useState<Record<string, boolean>>({});
   const landingAccount = viewer?.id ?? (demo ? "fixture-local" : undefined);
-  const [landingStates, setLandingStates] = useState<Record<string, LandingState>>(() => readLandingStates(landingAccount));
-  useEffect(() => { setLandingStates(readLandingStates(landingAccount)); }, [landingAccount]);
+  const [landingStates, setLandingStates] = useState<Record<string, LandingState>>(() =>
+    readLandingStates(landingAccount),
+  );
+  useEffect(() => {
+    setLandingStates(readLandingStates(landingAccount));
+  }, [landingAccount]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -116,7 +137,10 @@ export function App({ api, auth, viewer, demo = false }: {
     setProvidersLoading(true);
     setComposerCapabilities(undefined);
     setNotesEnabled(false);
-    if (api.collaboration && !projectId) { setProvidersLoading(false); return; }
+    if (api.collaboration && !projectId) {
+      setProvidersLoading(false);
+      return;
+    }
     api
       .capabilities(projectId || undefined)
       .then((capabilities) => {
@@ -125,10 +149,14 @@ export function App({ api, auth, viewer, demo = false }: {
           setNotesEnabled(capabilities.notesEnabled === true);
           setProvidersLoading(false);
           setLandingEnabled(
-            capabilities.landing.enabled && ["fixture", "artifacts"].includes(capabilities.landing.backend ?? ""),
+            capabilities.landing.enabled &&
+              ["fixture", "artifacts"].includes(capabilities.landing.backend ?? ""),
           );
-          setLandingBackend(["fixture", "artifacts"].includes(capabilities.landing.backend ?? "")
-            ? capabilities.landing.backend : null);
+          setLandingBackend(
+            ["fixture", "artifacts"].includes(capabilities.landing.backend ?? "")
+              ? capabilities.landing.backend
+              : null,
+          );
         }
       })
       .catch(() => {
@@ -228,13 +256,22 @@ export function App({ api, auth, viewer, demo = false }: {
           }
         }
       } catch (cause) {
-        if (!cancelled && cause instanceof Error && "status" in cause &&
-            [401, 403, 404].includes(Number(cause.status))) accessLost();
-      } finally { inFlight = false; }
+        if (
+          !cancelled &&
+          cause instanceof Error &&
+          "status" in cause &&
+          [401, 403, 404].includes(Number(cause.status))
+        )
+          accessLost();
+      } finally {
+        inFlight = false;
+      }
     };
     const timer = window.setInterval(() => void revalidate(), 15000);
     const online = () => void revalidate();
-    const visible = () => { if (!document.hidden) void revalidate(); };
+    const visible = () => {
+      if (!document.hidden) void revalidate();
+    };
     window.addEventListener("online", online);
     document.addEventListener("visibilitychange", visible);
     return () => {
@@ -274,7 +311,11 @@ export function App({ api, auth, viewer, demo = false }: {
         }
       } catch (cause) {
         if (!cancelled && current === generation.current && sequence === snapshotSequence.current) {
-          if (cause instanceof Error && "status" in cause && [401, 403, 404].includes(Number(cause.status))) {
+          if (
+            cause instanceof Error &&
+            "status" in cause &&
+            [401, 403, 404].includes(Number(cause.status))
+          ) {
             accessLost();
           } else setSnapshotError(errorText(cause));
           setSnapshotLoading(false);
@@ -491,9 +532,11 @@ export function App({ api, auth, viewer, demo = false }: {
       updateAttachments(selected, () => []);
       setAttachmentErrors((all) => ({ ...all, [selected]: "" }));
       setAnnouncement(
-        humanMessages ? "Message sent." : composerCapabilities?.conversation
-          ? "Message sent and repository agent reply queued."
-          : "Message sent and change queued.",
+        humanMessages
+          ? "Message sent."
+          : composerCapabilities?.conversation
+            ? "Message sent and repository agent reply queued."
+            : "Message sent and change queued.",
       );
       try {
         const next = await api.snapshot(selected);
@@ -651,11 +694,22 @@ export function App({ api, auth, viewer, demo = false }: {
           <header className="conversation-header">
             <div>
               <p className="eyebrow">{project?.name ?? "Workspace"} / Change thread</p>
-              <h1>{thread?.title ?? (projects.length ? "Your repository conversations" : "Your repositories")}</h1>
+              <h1>
+                {thread?.title ??
+                  (projects.length ? "Your repository conversations" : "Your repositories")}
+              </h1>
             </div>
-            <Collaborators api={api.collaboration} projectId={projectId} threadId={threadId}
-              onAccessLost={accessLost} />
-            {latest && <span className={`status ${runDisplayStatus(latest)}`}>{labels[runDisplayStatus(latest)]}</span>}
+            <Collaborators
+              api={api.collaboration}
+              projectId={projectId}
+              threadId={threadId}
+              onAccessLost={accessLost}
+            />
+            {latest && (
+              <span className={`status ${runDisplayStatus(latest)}`}>
+                {labels[runDisplayStatus(latest)]}
+              </span>
+            )}
           </header>
           {!demo && projectId && (
             <details className="intake-panel" open={!threadId}>
@@ -682,66 +736,79 @@ export function App({ api, auth, viewer, demo = false }: {
             ) : !thread ? (
               <div className="empty">
                 <h2>{projects.length ? "A place for every change" : "No repositories yet"}</h2>
-                <p>{projects.length ? "Select a repository and create a thread to work with your crew."
-                  : "Repositories you own or join will appear here."}</p>
+                <p>
+                  {projects.length
+                    ? "Select a repository and create a thread to work with your crew."
+                    : "Repositories you own or join will appear here."}
+                </p>
               </div>
             ) : !snapshot.messages.length ? (
               <div className="empty">
                 <h2>{humanMessages ? "Start the conversation" : "Start with the outcome"}</h2>
-                {humanMessages ? <p>Share a message with the people in this thread.</p> : <p>
-                  Describe what you want changed. Your repository agent will coordinate a separate
-                  worker and reviewer.
-                </p>}
+                {humanMessages ? (
+                  <p>Share a message with the people in this thread.</p>
+                ) : (
+                  <p>
+                    Describe what you want changed. Your repository agent will coordinate a separate
+                    worker and reviewer.
+                  </p>
+                )}
               </div>
             ) : (
               snapshot.messages.map((message) => {
                 const isSelf = !!viewer && message.author?.actor === `account:${viewer.id}`;
-                const authorName = isSelf ? (viewer.username || viewer.name) :
-                  message.author?.displayName || message.author?.email || "Participant";
+                const authorName = isSelf
+                  ? viewer.username || viewer.name
+                  : message.author?.displayName || message.author?.email || "Participant";
                 const authorImage = isSelf ? viewer.image : message.author?.avatar;
-                return <article className={`message ${message.role}`} key={message.id}>
-                  <Avatar className="avatar" name={message.role === "user" ? authorName : message.role}
-                    image={message.role === "user" ? authorImage : undefined} />
-                  <div className="message-body">
-                    <div className="message-meta">
-                      <strong>
-                        {message.role === "user"
-                          ? authorName
-                          : message.role === "coordinator"
-                            ? "Repository agent"
-                            : message.role === "worker"
-                              ? "Change worker"
-                              : "Reviewer"}
-                      </strong>
-                      <time dateTime={message.createdAt}>
-                        {new Date(message.createdAt).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </time>
+                return (
+                  <article className={`message ${message.role}`} key={message.id}>
+                    <Avatar
+                      className="avatar"
+                      name={message.role === "user" ? authorName : message.role}
+                      image={message.role === "user" ? authorImage : undefined}
+                    />
+                    <div className="message-body">
+                      <div className="message-meta">
+                        <strong>
+                          {message.role === "user"
+                            ? authorName
+                            : message.role === "coordinator"
+                              ? "Repository agent"
+                              : message.role === "worker"
+                                ? "Change worker"
+                                : "Reviewer"}
+                        </strong>
+                        <time dateTime={message.createdAt}>
+                          {new Date(message.createdAt).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      </div>
+                      <p>{message.content}</p>
+                      {message.attachments?.map((attachment) => (
+                        <details className="message-attachment" key={attachment.id}>
+                          <summary>
+                            {attachment.name} · Attached{" "}
+                            {attachment.mediaType === "text/plain" ? "text" : "image"}
+                          </summary>
+                          {attachment.mediaType === "text/plain" ? (
+                            <pre>{attachment.text}</pre>
+                          ) : (
+                            <img
+                              alt={`Attached ${attachment.name}`}
+                              src={
+                                api.attachmentUrl?.(message.threadId, attachment.attachmentId) ??
+                                `/api/threads/${encodeURIComponent(message.threadId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`
+                              }
+                            />
+                          )}
+                        </details>
+                      ))}
                     </div>
-                    <p>{message.content}</p>
-                    {message.attachments?.map((attachment) => (
-                      <details className="message-attachment" key={attachment.id}>
-                        <summary>
-                          {attachment.name} · Attached{" "}
-                          {attachment.mediaType === "text/plain" ? "text" : "image"}
-                        </summary>
-                        {attachment.mediaType === "text/plain" ? (
-                          <pre>{attachment.text}</pre>
-                        ) : (
-                          <img
-                            alt={`Attached ${attachment.name}`}
-                            src={
-                              api.attachmentUrl?.(message.threadId, attachment.attachmentId) ??
-                              `/api/threads/${encodeURIComponent(message.threadId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`
-                            }
-                          />
-                        )}
-                      </details>
-                    ))}
-                  </div>
-                </article>;
+                  </article>
+                );
               })
             )}
           </div>
@@ -771,7 +838,9 @@ export function App({ api, auth, viewer, demo = false }: {
               {attachmentCompatibilityError}
             </p>
           )}
-          {humanMessages && <p className="composer-hint">Messages are shared. Agent runs are disabled.</p>}
+          {humanMessages && (
+            <p className="composer-hint">Messages are shared. Agent runs are disabled.</p>
+          )}
           <Composer
             sessionKey={threadId}
             dictationEnabled={section === "work"}
@@ -810,7 +879,9 @@ export function App({ api, auth, viewer, demo = false }: {
                   disabled={!threadId || busy || !!selectionSaving[threadId]}
                   executionEnabled={composerCapabilities ? executionEnabled : null}
                 />
-              ) : !projectId ? null : humanMessages ? <PermissionsMenu executionEnabled={false} /> : providersLoading ? (
+              ) : !projectId ? null : humanMessages ? (
+                <PermissionsMenu executionEnabled={false} />
+              ) : providersLoading ? (
                 <span className="provider-setup" role="status">
                   Checking providers…
                 </span>
@@ -857,7 +928,9 @@ export function App({ api, auth, viewer, demo = false }: {
                 <section className="run-card" key={run.id}>
                   <div className="run-title">
                     <strong>Change run</strong>
-                    <span className={`status ${runDisplayStatus(run)}`}>{labels[runDisplayStatus(run)]}</span>
+                    <span className={`status ${runDisplayStatus(run)}`}>
+                      {labels[runDisplayStatus(run)]}
+                    </span>
                   </div>
                   {run.error && (
                     <p className="run-error">
@@ -997,20 +1070,35 @@ export function App({ api, auth, viewer, demo = false }: {
                     onStateChange={(state) => {
                       const confirmed = isLandedReceipt(run, state.result, landingBackend);
                       let persisted = true;
-                      try { saveLandingState(landingAccount, projectId, run.id, state); }
-                      catch { persisted = false; }
-                      setLandingStates((states) => ({ ...states,
-                        [landingStateKey(landingAccount, projectId, run.id)]: persisted || confirmed ? state
-                          : { ...state, busy: false, persistenceError: true,
-                            error: "Could not save the landing receipt in this browser. Landing is disabled; restore browser storage and reload to check the receipt." },
+                      try {
+                        saveLandingState(landingAccount, projectId, run.id, state);
+                      } catch {
+                        persisted = false;
+                      }
+                      setLandingStates((states) => ({
+                        ...states,
+                        [landingStateKey(landingAccount, projectId, run.id)]:
+                          persisted || confirmed
+                            ? state
+                            : {
+                                ...state,
+                                busy: false,
+                                persistenceError: true,
+                                error:
+                                  "Could not save the landing receipt in this browser. Landing is disabled; restore browser storage and reload to check the receipt.",
+                              },
                       }));
                       if (confirmed) {
-                        setSnapshot((current) => ({ ...current, runs: current.runs.map((item) =>
-                          item.id === run.id && item.baseSha === run.baseSha &&
-                          item.candidateSha === run.candidateSha &&
-                          item.configurationRevision === run.configurationRevision
-                            ? { ...item, landing: state.result, status: "completed" }
-                            : item),
+                        setSnapshot((current) => ({
+                          ...current,
+                          runs: current.runs.map((item) =>
+                            item.id === run.id &&
+                            item.baseSha === run.baseSha &&
+                            item.candidateSha === run.candidateSha &&
+                            item.configurationRevision === run.configurationRevision
+                              ? { ...item, landing: state.result, status: "completed" }
+                              : item,
+                          ),
                         }));
                       }
                       return persisted || confirmed;
@@ -1028,12 +1116,22 @@ export function App({ api, auth, viewer, demo = false }: {
           api={api.openrouter}
           collaboration={api.collaboration}
           viewer={viewer}
-          onSignOut={auth ? async () => {
-            await auth.signOut();
-            window.dispatchEvent(new Event("pitcrew-auth-required"));
-          } : undefined}
-          invitation={<InvitationGate api={api.collaboration} manual fromUrl={false}
-            onAccepted={invitationAccepted} />}
+          onSignOut={
+            auth
+              ? async () => {
+                  await auth.signOut();
+                  window.dispatchEvent(new Event("pitcrew-auth-required"));
+                }
+              : undefined
+          }
+          invitation={
+            <InvitationGate
+              api={api.collaboration}
+              manual
+              fromUrl={false}
+              onAccepted={invitationAccepted}
+            />
+          }
           onChange={() => {
             setComposerCapabilities(undefined);
             setProvidersLoading(true);
@@ -1041,9 +1139,12 @@ export function App({ api, auth, viewer, demo = false }: {
           }}
         />
       )}
-      {section === "repositories" && (api.collaboration
-        ? <AccountRepositories api={api.collaboration} />
-        : <Repositories api={api.repositories} />)}
+      {section === "repositories" &&
+        (api.collaboration ? (
+          <AccountRepositories api={api.collaboration} />
+        ) : (
+          <Repositories api={api.repositories} />
+        ))}
       {section === "tickets" && <WorkspacePlaceholder section={section} />}
     </div>
   );

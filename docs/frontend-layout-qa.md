@@ -39,12 +39,12 @@ Escape returned focus to Search.
 
 ## Right-hand Workspace audit
 
-| View | Implemented | Remaining scope |
-| --- | --- | --- |
-| Browser | Manual HTTP(S) URL validation, sandboxed iframe and open-in-browser link | Connected preview session or browser automation |
-| Files | Authenticated conversation text/image attachments | Repository tree and source content API |
-| Diffs | Run selection and base/candidate/configuration metadata | Actual patch files and content |
-| Review / PR | Run evidence, test/review details and landing controls | GitHub PR metadata/status/viewer |
+| View        | Implemented                                                              | Remaining scope                                 |
+| ----------- | ------------------------------------------------------------------------ | ----------------------------------------------- |
+| Browser     | Manual HTTP(S) URL validation, sandboxed iframe and open-in-browser link | Connected preview session or browser automation |
+| Files       | Authenticated conversation text/image attachments                        | Repository tree and source content API          |
+| Diffs       | Run selection and base/candidate/configuration metadata                  | Actual patch files and content                  |
+| Review / PR | Run evidence, test/review details and landing controls                   | GitHub PR metadata/status/viewer                |
 
 The tab shell, keyboard navigation, scoped selection, collapse and resize work.
 The Files/Diffs/PR limitations are stated in the UI. A separate follow-up can own

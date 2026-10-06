@@ -9,19 +9,48 @@ const bryan = { actor: "bryan", email: "bryan@example.com", role: "editor" as co
 function collaboration(): CollaborationApi {
   return {
     account: vi.fn(async () => ({ actor: owner.actor, email: owner.email })),
-    repositories: vi.fn(async () => [{ projectId: "repo-1", status: "present" as const, lifecycle: "registered" as const, deletable: false as const, name: "Empty repository", role: "owner" as const }]),
+    repositories: vi.fn(async () => [
+      {
+        projectId: "repo-1",
+        status: "present" as const,
+        lifecycle: "registered" as const,
+        deletable: false as const,
+        name: "Empty repository",
+        role: "owner" as const,
+      },
+    ]),
     projectMembers: vi.fn(async () => [owner, bryan]),
     threadMembers: vi.fn(async () => [owner]),
     inviteProject: vi.fn(async (_id, email) => ({
       token: "a".repeat(64),
-      invitation: { id: "invite-1", scope: "project" as const, email,
-        role: "editor" as const, expiresAt: "2026-10-07T12:00:00Z", projectId: "repo-1" },
+      invitation: {
+        id: "invite-1",
+        scope: "project" as const,
+        email,
+        role: "editor" as const,
+        expiresAt: "2026-10-07T12:00:00Z",
+        projectId: "repo-1",
+      },
     })),
-    inviteThread: vi.fn(async () => { throw Error("Join the repository first."); }),
-    invitation: vi.fn(async () => ({ id: "invite-1", scope: "project" as const,
-      email: bryan.email, role: "editor" as const, expiresAt: "2026-10-07T12:00:00Z", projectId: "repo-1" })),
-    acceptInvitation: vi.fn(async () => ({ id: "invite-1", scope: "project" as const,
-      email: bryan.email, role: "editor" as const, expiresAt: "2026-10-07T12:00:00Z", projectId: "repo-1" })),
+    inviteThread: vi.fn(async () => {
+      throw Error("Join the repository first.");
+    }),
+    invitation: vi.fn(async () => ({
+      id: "invite-1",
+      scope: "project" as const,
+      email: bryan.email,
+      role: "editor" as const,
+      expiresAt: "2026-10-07T12:00:00Z",
+      projectId: "repo-1",
+    })),
+    acceptInvitation: vi.fn(async () => ({
+      id: "invite-1",
+      scope: "project" as const,
+      email: bryan.email,
+      role: "editor" as const,
+      expiresAt: "2026-10-07T12:00:00Z",
+      projectId: "repo-1",
+    })),
     revokeInvitation: vi.fn(async () => ({})),
     removeProjectMember: vi.fn(async () => ({})),
     removeThreadMember: vi.fn(async () => ({})),
@@ -34,10 +63,16 @@ afterEach(() => {
 
 it("finishes loading when a reconnect supersedes the opening request", async () => {
   const api = collaboration();
-  let finishOpening!: (members: typeof owner[]) => void;
-  vi.mocked(api.projectMembers).mockResolvedValueOnce([owner]).mockImplementationOnce(
-    () => new Promise((resolve) => { finishOpening = resolve; }),
-  ).mockResolvedValue([owner, bryan]);
+  let finishOpening!: (members: (typeof owner)[]) => void;
+  vi.mocked(api.projectMembers)
+    .mockResolvedValueOnce([owner])
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOpening = resolve;
+        }),
+    )
+    .mockResolvedValue([owner, bryan]);
   const user = userEvent.setup();
   render(<Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={vi.fn()} />);
   await waitFor(() => expect(api.projectMembers).toHaveBeenCalledOnce());
@@ -60,9 +95,12 @@ it("loads server members, creates a recipient-specific code and removes a member
   await user.type(screen.getByLabelText("Email"), "new@example.com");
   await user.click(screen.getByRole("button", { name: "Create invite code" }));
   expect(api.inviteProject).toHaveBeenCalledWith("repo-1", "new@example.com");
-  expect((await screen.findByLabelText("Invite code for new@example.com") as HTMLInputElement).value)
-    .toBe("a".repeat(64));
-  await user.click(within(repository).getByRole("button", { name: "Remove bryan@example.com from repository" }));
+  expect(
+    ((await screen.findByLabelText("Invite code for new@example.com")) as HTMLInputElement).value,
+  ).toBe("a".repeat(64));
+  await user.click(
+    within(repository).getByRole("button", { name: "Remove bryan@example.com from repository" }),
+  );
   expect(api.removeProjectMember).toHaveBeenCalledWith("repo-1", "bryan");
 });
 
@@ -104,19 +142,30 @@ it("drops the share view when access is revoked during refresh", async () => {
 it("lets a thread owner invite there without granting repository controls", async () => {
   const api = collaboration();
   vi.mocked(api.projectMembers).mockResolvedValue([
-    { ...owner, role: "editor" }, { ...bryan, role: "owner" },
+    { ...owner, role: "editor" },
+    { ...bryan, role: "owner" },
   ]);
   vi.mocked(api.threadMembers).mockResolvedValue([{ ...owner, role: "owner" }]);
-  vi.mocked(api.inviteThread).mockResolvedValue({ token: "b".repeat(64), invitation: {
-    id: "invite-2", scope: "thread", email: "new@example.com", role: "editor",
-    expiresAt: "2026-10-07T12:00:00Z", threadId: "thread-1", projectId: "repo-1",
-  } });
+  vi.mocked(api.inviteThread).mockResolvedValue({
+    token: "b".repeat(64),
+    invitation: {
+      id: "invite-2",
+      scope: "thread",
+      email: "new@example.com",
+      role: "editor",
+      expiresAt: "2026-10-07T12:00:00Z",
+      threadId: "thread-1",
+      projectId: "repo-1",
+    },
+  });
   const user = userEvent.setup();
   render(<Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "Share" }));
-  const access = await screen.findByLabelText("Access") as HTMLSelectElement;
+  const access = (await screen.findByLabelText("Access")) as HTMLSelectElement;
   expect(access.value).toBe("thread");
-  expect(screen.queryByRole("button", { name: "Remove bryan@example.com from repository" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Remove bryan@example.com from repository" }),
+  ).toBeNull();
   await user.type(screen.getByLabelText("Email"), "new@example.com");
   await user.click(screen.getByRole("button", { name: "Create invite code" }));
   expect(api.inviteThread).toHaveBeenCalledWith("thread-1", "new@example.com");
@@ -124,20 +173,38 @@ it("lets a thread owner invite there without granting repository controls", asyn
 
 it("ignores an invitation response after switching its repository and thread", async () => {
   const api = collaboration();
-  let resolve!: (value: Awaited<ReturnType<CollaborationApi['inviteProject']>>) => void;
-  vi.mocked(api.inviteProject).mockImplementation(() => new Promise((done) => { resolve = done; }));
+  let resolve!: (value: Awaited<ReturnType<CollaborationApi["inviteProject"]>>) => void;
+  vi.mocked(api.inviteProject).mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
   const lost = vi.fn();
   const user = userEvent.setup();
-  const view = render(<Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={lost} />);
+  const view = render(
+    <Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={lost} />,
+  );
   await user.click(screen.getByRole("button", { name: "Share" }));
   await screen.findByLabelText("Email");
   await user.type(screen.getByLabelText("Email"), "new@example.com");
   await user.click(screen.getByRole("button", { name: "Create invite code" }));
   expect(screen.getByLabelText("Access")).toHaveProperty("disabled", true);
-  view.rerender(<Collaborators api={api} projectId="repo-2" threadId="thread-2" onAccessLost={lost} />);
+  view.rerender(
+    <Collaborators api={api} projectId="repo-2" threadId="thread-2" onAccessLost={lost} />,
+  );
   await screen.findByLabelText("Email");
-  resolve({ token: "c".repeat(64), invitation: { id: "old", projectId: "repo-1", scope: "project",
-    email: "new@example.com", role: "editor", expiresAt: "2026-10-07T12:00:00Z" } });
+  resolve({
+    token: "c".repeat(64),
+    invitation: {
+      id: "old",
+      projectId: "repo-1",
+      scope: "project",
+      email: "new@example.com",
+      role: "editor",
+      expiresAt: "2026-10-07T12:00:00Z",
+    },
+  });
   await waitFor(() => expect(screen.getByLabelText("Access")).toHaveProperty("disabled", false));
   expect(screen.queryByLabelText("Invite code for new@example.com")).toBeNull();
 });
@@ -145,10 +212,21 @@ it("ignores an invitation response after switching its repository and thread", a
 it("shows an expired invitation once and prevents an acceptance attempt", async () => {
   history.replaceState(null, "", `/?invitation=${"a".repeat(64)}`);
   const api = collaboration();
-  vi.mocked(api.invitation).mockResolvedValue({ id: "expired", projectId: "repo-1", scope: "project",
-    email: bryan.email, role: "editor", expiresAt: "2000-01-01T00:00:00Z" });
+  vi.mocked(api.invitation).mockResolvedValue({
+    id: "expired",
+    projectId: "repo-1",
+    scope: "project",
+    email: bryan.email,
+    role: "editor",
+    expiresAt: "2000-01-01T00:00:00Z",
+  });
   render(<InvitationGate api={api} onAccepted={vi.fn()} />);
-  expect(await screen.findByText("This invitation is no longer available. Ask for a new code.")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Accept invitation" })).toHaveProperty("disabled", true);
+  expect(
+    await screen.findByText("This invitation is no longer available. Ask for a new code."),
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Accept invitation" })).toHaveProperty(
+    "disabled",
+    true,
+  );
   expect(api.acceptInvitation).not.toHaveBeenCalled();
 });

@@ -30,10 +30,16 @@ export function NavigationRail({
           aria-current={section === item.id ? "page" : undefined}
           onClick={() => onSelect(item.id)}
         >
-          {item.id === "account" && viewer ?
-            <Avatar name={viewer.username || viewer.name} image={viewer.image}
-              className={styles.avatar} fallback="icon" /> :
-            <Icon kind={item.icon} />}
+          {item.id === "account" && viewer ? (
+            <Avatar
+              name={viewer.username || viewer.name}
+              image={viewer.image}
+              className={styles.avatar}
+              fallback="icon"
+            />
+          ) : (
+            <Icon kind={item.icon} />
+          )}
         </button>
       ))}
     </nav>

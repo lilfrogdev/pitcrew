@@ -37,6 +37,15 @@ backend/SHA/authorization mismatch, disabled capabilities, authorization-only
 reload, interrupted reload with the actual server snapshot shape (no uncertain
 `run.landing`), account isolation, pre-send interruption and storage failure.
 
+After the separate repository formatter cleanup, the full `pnpm typecheck` and
+`pnpm test` gates passed, including verification/evaluation packages. `vp check`
+passed with zero errors and six pre-existing backend lint warnings. Both
+`build:worker` and `build:backend` completed their explicit Wrangler dry runs.
+Parsed auth migration JSON values were identical before/after formatting; active
+backend settings were not modified. Local checks reused the existing dependency
+trees with pnpm dependency verification set to warn, avoiding an automatic
+replacement of the shared dependency directory.
+
 Independent frontend review identified the two reload edges above; both were
 fixed and re-reviewed with no actionable findings remaining.
 

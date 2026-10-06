@@ -79,26 +79,36 @@ it("persists independent Pinned and Repositories folders through selection and r
   const user = userEvent.setup();
   const api = createFixtureApi();
   const mountApp = () => render(<App api={api} demo />);
-  const folder = (pinned: boolean) => within(screen.getByRole(pinned ? "region" : "navigation", {
-    name: pinned ? "Pinned" : "Repositories",
-  })).getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" });
+  const folder = (pinned: boolean) =>
+    within(
+      screen.getByRole(pinned ? "region" : "navigation", {
+        name: pinned ? "Pinned" : "Repositories",
+      }),
+    ).getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" });
   mountApp();
   await screen.findByRole("heading", { name: "Make agent work visible" });
   await user.type(screen.getByLabelText("Message your crew"), "Keep this draft");
-  await user.click(screen.getByRole("button", { name: "Pin conversation Make agent work visible" }));
+  await user.click(
+    screen.getByRole("button", { name: "Pin conversation Make agent work visible" }),
+  );
   await user.click(folder(false));
   expect(folder(false).getAttribute("aria-expanded")).toBe("false");
   expect(folder(true).getAttribute("aria-expanded")).toBe("true");
-  await user.click(within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", {
-    name: "Make agent work visible",
-  }));
+  await user.click(
+    within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", {
+      name: "Make agent work visible",
+    }),
+  );
   expect(folder(false).getAttribute("aria-expanded")).toBe("false");
-  expect((screen.getByLabelText("Message your crew") as HTMLTextAreaElement).value).toBe("Keep this draft");
+  expect((screen.getByLabelText("Message your crew") as HTMLTextAreaElement).value).toBe(
+    "Keep this draft",
+  );
   await user.click(folder(true));
   await user.click(folder(false));
   expect(folder(false).getAttribute("aria-expanded")).toBe("true");
   expect(folder(true).getAttribute("aria-expanded")).toBe("false");
-  cleanup(); mountApp();
+  cleanup();
+  mountApp();
   await screen.findByRole("heading", { name: "Make agent work visible" });
   expect(folder(false).getAttribute("aria-expanded")).toBe("true");
   expect(folder(true).getAttribute("aria-expanded")).toBe("false");
@@ -109,10 +119,15 @@ it("persists independent Pinned and Repositories folders through selection and r
   await user.click(screen.getByRole("button", { name: "Playground · synthetic/example" }));
   await screen.findByRole("heading", { name: "Explore an isolated change" });
   expect(folder(false).getAttribute("aria-expanded")).toBe("false");
-  await user.click(within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", { name: "Make agent work visible" }));
+  await user.click(
+    within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", {
+      name: "Make agent work visible",
+    }),
+  );
   await screen.findByRole("heading", { name: "Make agent work visible" });
   expect(folder(false).getAttribute("aria-expanded")).toBe("false");
-  cleanup(); mountApp();
+  cleanup();
+  mountApp();
   await screen.findByRole("heading", { name: "Make agent work visible" });
   expect(folder(false).getAttribute("aria-expanded")).toBe("false");
   expect(folder(true).getAttribute("aria-expanded")).toBe("true");
@@ -122,23 +137,54 @@ it("persists independent Pinned and Repositories folders through selection and r
   expect(screen.getAllByLabelText("Conversation title")).toHaveLength(1);
   expect(folder(false).getAttribute("aria-expanded")).toBe("false");
   await user.type(within(pinned).getByLabelText("Conversation title"), "Keep pending title");
-  await user.click(within(pinned).getByRole("button", { name: "Unpin conversation Make agent work visible" }));
-  expect((within(pinned).getByLabelText("Conversation title") as HTMLInputElement).value).toBe("Keep pending title");
+  await user.click(
+    within(pinned).getByRole("button", { name: "Unpin conversation Make agent work visible" }),
+  );
+  expect((within(pinned).getByLabelText("Conversation title") as HTMLInputElement).value).toBe(
+    "Keep pending title",
+  );
   await user.click(within(pinned).getByRole("button", { name: "Cancel" }));
 });
 
 it("isolates expansion and pins between accounts sharing the same repository ID", async () => {
-  const user = userEvent.setup(), api = createFixtureApi();
-  const viewer = (id: string) => ({ id, email: `${id}@example.com`, emailVerified: true,
-    name: id, username: id, image: null });
+  const user = userEvent.setup(),
+    api = createFixtureApi();
+  const viewer = (id: string) => ({
+    id,
+    email: `${id}@example.com`,
+    emailVerified: true,
+    name: id,
+    username: id,
+    image: null,
+  });
   const view = render(<App api={api} demo viewer={viewer("owner")} />);
   await screen.findByRole("heading", { name: "Make agent work visible" });
-  await user.click(screen.getByRole("button", { name: "Pin conversation Make agent work visible" }));
-  await user.click(within(screen.getByRole("navigation", { name: "Repositories" })).getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" }));
+  await user.click(
+    screen.getByRole("button", { name: "Pin conversation Make agent work visible" }),
+  );
+  await user.click(
+    within(screen.getByRole("navigation", { name: "Repositories" })).getByRole("button", {
+      name: "Pitcrew · lilfrogdev/pitcrew",
+    }),
+  );
   view.rerender(<App api={api} demo viewer={viewer("bryan")} />);
-  expect(within(screen.getByRole("region", { name: "Pinned" })).queryAllByRole("button")).toHaveLength(0);
-  expect(screen.getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" }).getAttribute("aria-expanded")).toBe("true");
+  expect(
+    within(screen.getByRole("region", { name: "Pinned" })).queryAllByRole("button"),
+  ).toHaveLength(0);
+  expect(
+    screen
+      .getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" })
+      .getAttribute("aria-expanded"),
+  ).toBe("true");
   view.rerender(<App api={api} demo viewer={viewer("owner")} />);
-  expect(within(screen.getByRole("navigation", { name: "Repositories" })).getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" }).getAttribute("aria-expanded")).toBe("false");
-  expect(within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", { name: "Make agent work visible" })).toBeTruthy();
+  expect(
+    within(screen.getByRole("navigation", { name: "Repositories" }))
+      .getByRole("button", { name: "Pitcrew · lilfrogdev/pitcrew" })
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+  expect(
+    within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", {
+      name: "Make agent work visible",
+    }),
+  ).toBeTruthy();
 });

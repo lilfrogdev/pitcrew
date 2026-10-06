@@ -5,9 +5,19 @@ import { AccountRepositories } from "./AccountRepositories";
 import type { CollaborationApi } from "./api";
 afterEach(cleanup);
 it("shows only account-scoped repositories and an honest empty state", async () => {
-  const repositories = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([
-    { projectId: "repo-1", status: "present", lifecycle: "registered", deletable: false, name: "Shared empty repo", role: "editor" },
-  ]);
+  const repositories = vi
+    .fn()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([
+      {
+        projectId: "repo-1",
+        status: "present",
+        lifecycle: "registered",
+        deletable: false,
+        name: "Shared empty repo",
+        role: "editor",
+      },
+    ]);
   const api = { repositories } as unknown as CollaborationApi;
   const user = userEvent.setup();
   render(<AccountRepositories api={api} />);

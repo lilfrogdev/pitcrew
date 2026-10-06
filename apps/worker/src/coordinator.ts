@@ -70,7 +70,10 @@ export class AdmissionError extends Error {
 export interface State {
   identityBindings?: Record<string, { userId: string; email: string }>;
   collaboration?: import("./collaboration").CollaborationState;
-  ownedProjects?: Record<string, { state: State; sourceName: string; sourceId: string; ownerActor: string }>;
+  ownedProjects?: Record<
+    string,
+    { state: State; sourceName: string; sourceId: string; ownerActor: string }
+  >;
   conversationTurns?: ConversationTurn[];
   // Latest explicit checkpoint per run; never a per-note causal watermark.
   knowledgeObservations?: Record<string, number>;
@@ -167,7 +170,11 @@ export class Coordinator {
       (this.state.identityBindings ??= {})[accessActor] = { userId, email };
     });
   }
-  addOwnedProject(sourceName: string, sourceId: string, actor: string, email: string,
+  addOwnedProject(
+    sourceName: string,
+    sourceId: string,
+    actor: string,
+    email: string,
     configuration?: Pick<Project, "baseSha" | "configurationRevision">,
   ) {
     return this.durableUpdate(() => {
@@ -177,7 +184,8 @@ export class Coordinator {
       if (Object.keys(directory).length >= 20) throw new AdmissionError("capacity", 429);
       const id = this.id();
       const projectState = initialState({
-        id, name: sourceName,
+        id,
+        name: sourceName,
         repository: `artifact:${sourceName}`,
         // An empty source has no commit. Execution remains gated until an
         // independently verified initial commit supplies a real base SHA.
@@ -187,7 +195,8 @@ export class Coordinator {
       });
       projectState.collaboration = {
         projectMembers: { [actor]: { actor, email, role: "owner" } },
-        threadMembers: {}, invitations: {},
+        threadMembers: {},
+        invitations: {},
       };
       directory[id] = { state: projectState, sourceName, sourceId, ownerActor: actor };
       return projectState.project;
@@ -214,7 +223,8 @@ export class Coordinator {
     private atomic: <T>(operation: () => T) => T = (operation) => operation(),
   ) {
     const needsMigration =
-      Object.keys(state.keys).some((key) => key.startsWith("conversation_") && !key.startsWith("conversation_["),
+      Object.keys(state.keys).some(
+        (key) => key.startsWith("conversation_") && !key.startsWith("conversation_["),
       ) ||
       state.threads.some((thread) => thread.archived === undefined) ||
       !state.changes ||
@@ -351,12 +361,19 @@ export class Coordinator {
       if (previous?.threadId && !this.actorAuthorized(actor, previous.threadId))
         throw new AdmissionError("not_found", 404);
       for (const ref of body.sourceRefs) {
-        const message = ref.kind === "message" && this.state.messages.find((item) => item.id === ref.id);
-        const review = ref.kind === "review" && this.state.reviews.find((item) => item.id === ref.id);
-        const run = ref.kind === "artifact" ? this.state.runs.find((item) => item.artifactId === ref.id) :
-          review ? this.state.runs.find((item) => item.id === review.runId) : undefined;
+        const message =
+          ref.kind === "message" && this.state.messages.find((item) => item.id === ref.id);
+        const review =
+          ref.kind === "review" && this.state.reviews.find((item) => item.id === ref.id);
+        const run =
+          ref.kind === "artifact"
+            ? this.state.runs.find((item) => item.artifactId === ref.id)
+            : review
+              ? this.state.runs.find((item) => item.id === review.runId)
+              : undefined;
         const threadId = message ? message.threadId : run?.threadId;
-        if (threadId && !this.actorAuthorized(actor, threadId)) throw new AdmissionError("not_found", 404);
+        if (threadId && !this.actorAuthorized(actor, threadId))
+          throw new AdmissionError("not_found", 404);
       }
       if ((previous?.version ?? 0) !== body.expectedVersion)
         throw new AdmissionError("knowledge_version_conflict", 409);
@@ -396,8 +413,8 @@ export class Coordinator {
       context.configurationRevision !== this.state.project.configurationRevision
     )
       return { status: "stale" };
-    const currentKnowledge = this.repositoryContext(this.state.runActors?.[context.runId] ??
-      this.state.credentialActors?.[context.runId],
+    const currentKnowledge = this.repositoryContext(
+      this.state.runActors?.[context.runId] ?? this.state.credentialActors?.[context.runId],
     ).currentKnowledge!;
     this.durableUpdate(() => {
       (this.state.knowledgeObservations ??= {})[context.runId] = currentKnowledge.revision;
@@ -508,7 +525,10 @@ export class Coordinator {
       },
     );
   }
-  async updateProfile(profile: VerificationProfile, expectedRevision: string, authorize = () => {},
+  async updateProfile(
+    profile: VerificationProfile,
+    expectedRevision: string,
+    authorize = () => {},
   ) {
     const old = this.profile();
     if (old.revision !== expectedRevision || profile.revision === old.revision)
@@ -852,7 +872,8 @@ export class Coordinator {
           ? review.decision === "approve"
             ? "review_approved"
             : "review_changes_requested"
-          : type === "run.completed" && run?.landing?run.landing.backend === "artifacts"
+          : type === "run.completed" && run?.landing
+            ? run.landing.backend === "artifacts"
               ? "source_landed"
               : "fixture_landed"
             : undefined;
@@ -1214,7 +1235,12 @@ export class Coordinator {
       this.event(error ? "conversation.failed" : "conversation.completed", id);
     });
   }
-  appendNote(threadId: string, content: string, key: string, actor: string, author?: Message["author"],
+  appendNote(
+    threadId: string,
+    content: string,
+    key: string,
+    actor: string,
+    author?: Message["author"],
   ): Message {
     this.validateKey(key);
     return this.transaction(`note_${JSON.stringify([actor, key])}`, { threadId, content }, () => {
@@ -1223,7 +1249,11 @@ export class Coordinator {
         throw new AdmissionError("invalid_content");
       if (this.state.messages.length >= 500) throw new AdmissionError("capacity", 429);
       const message: Message = {
-        id: this.id(), threadId, role: "user", content: content.trim(), createdAt: this.now(),
+        id: this.id(),
+        threadId,
+        role: "user",
+        content: content.trim(),
+        createdAt: this.now(),
         ...(author ? { author: structuredClone(author) } : {}),
       };
       this.state.messages.push(message);
@@ -1352,7 +1382,12 @@ export class Coordinator {
     if (!change) throw new AdmissionError("not_found", 404);
     return change;
   }
-  retryChange(changeId: string, key: string, catalog?: ModelCatalog, actor = "local-fixture", membershipActor = actor,
+  retryChange(
+    changeId: string,
+    key: string,
+    catalog?: ModelCatalog,
+    actor = "local-fixture",
+    membershipActor = actor,
   ): Run {
     this.validateKey(key);
     return this.transaction(`retry_${JSON.stringify([actor, key])}`, { changeId, actor }, () => {
@@ -1425,12 +1460,14 @@ export class Coordinator {
   }
   repositoryContext(actor?: string): RepositoryContext {
     const currentKnowledge = this.currentKnowledge();
-    if (actor !== undefined) currentKnowledge.entries = currentKnowledge.entries.filter((entry) =>
-      !entry.threadId || this.actorAuthorized(actor, entry.threadId),
+    if (actor !== undefined)
+      currentKnowledge.entries = currentKnowledge.entries.filter(
+        (entry) => !entry.threadId || this.actorAuthorized(actor, entry.threadId),
       );
-    const active = this.state.runs.filter((run) =>
-      ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status) &&
-      (actor === undefined || this.actorAuthorized(actor, run.threadId)),
+    const active = this.state.runs.filter(
+      (run) =>
+        ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status) &&
+        (actor === undefined || this.actorAuthorized(actor, run.threadId)),
     );
     return {
       revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}:${currentKnowledge.revision}`,
@@ -1445,18 +1482,16 @@ export class Coordinator {
           sourceRevision: entry.configurationRevision,
         })),
       activeWorkOmitted: Math.max(0, active.length - 20),
-      activeWork: active
-        .slice(0, 20)
-        .map((run) => ({
-          runId: run.id,
-          threadId: run.threadId,
-          title: this.thread(run.threadId).title,
-          status: run.status,
-          intent:
-            this.state.messages
-              .find((message) => message.id === run.messageId)
-              ?.content.slice(0, 512) ?? "",
-        })),
+      activeWork: active.slice(0, 20).map((run) => ({
+        runId: run.id,
+        threadId: run.threadId,
+        title: this.thread(run.threadId).title,
+        status: run.status,
+        intent:
+          this.state.messages
+            .find((message) => message.id === run.messageId)
+            ?.content.slice(0, 512) ?? "",
+      })),
     };
   }
   recover(durable = false) {
@@ -1471,14 +1506,17 @@ export class Coordinator {
   actorAuthorized(actor: string | undefined, threadId: string) {
     const access = this.state.collaboration;
     return (
-      !access || !!(actor && access.projectMembers[actor] && access.threadMembers[threadId]?.[actor])
+      !access ||
+      !!(actor && access.projectMembers[actor] && access.threadMembers[threadId]?.[actor])
     );
   }
   runAuthorized(runId: string) {
     const run = this.state.runs.find((item) => item.id === runId);
     return (
-      !!run && this.actorAuthorized(this.state.runActors?.[runId] ??
-      this.state.credentialActors?.[runId], run.threadId,
+      !!run &&
+      this.actorAuthorized(
+        this.state.runActors?.[runId] ?? this.state.credentialActors?.[runId],
+        run.threadId,
       )
     );
   }
@@ -1513,7 +1551,8 @@ export class Coordinator {
         repository: this.state.project.repository,
         baseSha: run.baseSha,
         configurationRevision: run.configurationRevision,
-        repositoryContext: this.repositoryContext(this.state.runActors?.[runId] ?? this.state.credentialActors?.[runId],
+        repositoryContext: this.repositoryContext(
+          this.state.runActors?.[runId] ?? this.state.credentialActors?.[runId],
         ),
         conversationContext: structuredClone(this.change(run.changeId!).conversationContext),
         messages: structuredClone(

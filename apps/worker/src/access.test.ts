@@ -59,7 +59,10 @@ describe("protected private cloud demo", () => {
   it("verifies a genuine locally signed JWT and routes both assets and API behind it", async () => {
     const f = await fixture(),
       jwt = await f.token();
-    expect(await principal(request(jwt), env, f.keys)).toEqual({ actor: "access:owner-subject", email: "owner@example.com" });
+    expect(await principal(request(jwt), env, f.keys)).toEqual({
+      actor: "access:owner-subject",
+      email: "owner@example.com",
+    });
     let assetCalls = 0,
       apiCalls = 0;
     const api = async () => {

@@ -5,17 +5,46 @@ import { App } from "./App";
 import { createFixtureApi } from "./fixtures";
 import { ApiError, type Snapshot } from "./api";
 
-afterEach(() => { cleanup(); localStorage.clear(); });
-const viewer = { id: "owner", name: "Owner name", username: "owner_handle", email: "owner@example.com", emailVerified: true, image: "/avatars/owner.svg" };
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
+const viewer = {
+  id: "owner",
+  name: "Owner name",
+  username: "owner_handle",
+  email: "owner@example.com",
+  emailVerified: true,
+  image: "/avatars/owner.svg",
+};
 
 it("sends an explicitly enabled shared message with no provider and never claims a task ran", async () => {
   const api = createFixtureApi();
-  api.capabilities = vi.fn(async () => ({ landing: { enabled: false, backend: null }, notesEnabled: true }));
+  api.capabilities = vi.fn(async () => ({
+    landing: { enabled: false, backend: null },
+    notesEnabled: true,
+  }));
   let snapshot: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
   api.snapshot = vi.fn(async () => snapshot);
   api.send = vi.fn(async (threadId, content) => {
-    snapshot = { ...snapshot, messages: [{ id: "note-1", threadId, content, role: "user", createdAt: "2026-10-06T12:00:00Z",
-      author: { actor: "account:owner", email: viewer.email, displayName: viewer.name, avatar: viewer.image } }] };
+    snapshot = {
+      ...snapshot,
+      messages: [
+        {
+          id: "note-1",
+          threadId,
+          content,
+          role: "user",
+          createdAt: "2026-10-06T12:00:00Z",
+          author: {
+            actor: "account:owner",
+            email: viewer.email,
+            displayName: viewer.name,
+            avatar: viewer.image,
+          },
+        },
+      ],
+    };
   });
   const user = userEvent.setup();
   render(<App api={api} viewer={viewer} />);
@@ -34,10 +63,26 @@ it("sends an explicitly enabled shared message with no provider and never claims
 
 it("renders peer authors from server identity and clears their transcript after permission removal", async () => {
   const api = createFixtureApi();
-  const snapshot: Snapshot = { messages: [{ id: "peer-note", threadId: "welcome", role: "user",
-    content: "Private shared note", createdAt: "2026-10-06T12:00:00Z", author: {
-      actor: "account:bryan", email: "bryan@example.com", displayName: "Bryan", avatar: "/avatars/bryan.svg",
-    } }], runs: [], reviews: [], evidence: [] };
+  const snapshot: Snapshot = {
+    messages: [
+      {
+        id: "peer-note",
+        threadId: "welcome",
+        role: "user",
+        content: "Private shared note",
+        createdAt: "2026-10-06T12:00:00Z",
+        author: {
+          actor: "account:bryan",
+          email: "bryan@example.com",
+          displayName: "Bryan",
+          avatar: "/avatars/bryan.svg",
+        },
+      },
+    ],
+    runs: [],
+    reviews: [],
+    evidence: [],
+  };
   api.snapshot = vi.fn(async () => snapshot);
   render(<App api={api} viewer={viewer} />);
   await screen.findByText("Private shared note");

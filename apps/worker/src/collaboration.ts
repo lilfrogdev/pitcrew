@@ -18,10 +18,20 @@ export type CollaborationState = {
   threadMembers: Record<string, Record<string, Member>>;
   invitations: Record<string, Invitation>;
 };
-export type Identity = { actor: string; email: string; displayName?: string; username?: string; avatar?: string | null };
+export type Identity = {
+  actor: string;
+  email: string;
+  displayName?: string;
+  username?: string;
+  avatar?: string | null;
+};
 const emailPattern = /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/;
-const missing = (): never => { throw new AdmissionError("not_found", 404); };
-const forbidden = (): never => { throw new AdmissionError("forbidden", 403); };
+const missing = (): never => {
+  throw new AdmissionError("not_found", 404);
+};
+const forbidden = (): never => {
+  throw new AdmissionError("forbidden", 403);
+};
 const normalizedEmail = (value: unknown) => {
   if (typeof value !== "string" || value.length > 254 || !emailPattern.test(value))
     throw new AdmissionError("invalid_email");
@@ -46,16 +56,21 @@ export class Collaboration {
   // allowlisted colleague cannot claim it by being the first request after deploy.
   bootstrap() {
     if (this.identity.email !== this.ownerEmail) return;
-    if (this.core.state.collaboration && !Object.keys(this.core.state.keys)
-        .some((key) => key.startsWith("thread_") && !key.startsWith("thread_["))) return;
+    if (
+      this.core.state.collaboration &&
+      !Object.keys(this.core.state.keys).some(
+        (key) => key.startsWith("thread_") && !key.startsWith("thread_["),
+      )
+    )
+      return;
     this.core.updateCollaboration((state) => {
       if (!state.collaboration) {
         const owner: Member = { ...this.identity, role: "owner" };
         state.collaboration = {
           projectMembers: { [owner.actor]: owner },
-          threadMembers: Object.fromEntries(state.threads.map((thread) => [
-            thread.id, { [owner.actor]: owner },
-          ])),
+          threadMembers: Object.fromEntries(
+            state.threads.map((thread) => [thread.id, { [owner.actor]: owner }]),
+          ),
           invitations: {},
         };
       }
@@ -67,8 +82,12 @@ export class Collaboration {
       }
     });
   }
-  private state() { return this.core.state.collaboration; }
-  account() { return { ...this.identity }; }
+  private state() {
+    return this.core.state.collaboration;
+  }
+  account() {
+    return { ...this.identity };
+  }
   rebindLegacy(accessActor: string) {
     if (accessActor === this.identity.actor || !this.core.state.collaboration) return;
     const project = this.core.state.collaboration.projectMembers[accessActor];
@@ -101,7 +120,9 @@ export class Collaboration {
       }
     });
   }
-  projectRole() { return this.state()?.projectMembers[this.identity.actor]?.role; }
+  projectRole() {
+    return this.state()?.projectMembers[this.identity.actor]?.role;
+  }
   threadRole(threadId: string) {
     return this.projectRole() && this.state()?.threadMembers[threadId]?.[this.identity.actor]?.role;
   }
@@ -110,12 +131,17 @@ export class Collaboration {
     if (owner && this.projectRole() !== "owner") forbidden();
   }
   requireThread(threadId: string, owner = false) {
-    if (!this.core.state.threads.some((thread) => thread.id === threadId) || !this.threadRole(threadId))
+    if (
+      !this.core.state.threads.some((thread) => thread.id === threadId) ||
+      !this.threadRole(threadId)
+    )
       missing();
     if (owner && this.threadRole(threadId) !== "owner" && this.projectRole() !== "owner")
       forbidden();
   }
-  visibleThread(threadId: string) { return !!this.threadRole(threadId); }
+  visibleThread(threadId: string) {
+    return !!this.threadRole(threadId);
+  }
   projectMembers(projectId: string) {
     this.requireProject(projectId);
     return Object.values(this.state()!.projectMembers);
@@ -130,20 +156,30 @@ export class Collaboration {
     if (role !== "editor") throw new AdmissionError("invalid_role");
     const email = normalizedEmail(emailValue);
     if (email === this.identity.email) throw new AdmissionError("already_member", 409);
-    const token = tokenString(), id = crypto.randomUUID(), hashed = await digest(token);
+    const token = tokenString(),
+      id = crypto.randomUUID(),
+      hashed = await digest(token);
     const invitation: Invitation = {
-      id, digest: hashed, scope, ...(scope === "thread" ? { threadId: scopeId } : {}),
-      email, role, invitedBy: this.identity.actor,
+      id,
+      digest: hashed,
+      scope,
+      ...(scope === "thread" ? { threadId: scopeId } : {}),
+      email,
+      role,
+      invitedBy: this.identity.actor,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     };
     this.core.updateCollaboration((state) => {
       const access = state.collaboration!;
       if (scope === "project") {
         if (access.projectMembers[this.identity.actor]?.role !== "owner") forbidden();
-      } else if (!access.projectMembers[this.identity.actor] ||
-                 !access.threadMembers[scopeId]?.[this.identity.actor] ||
-                 (access.threadMembers[scopeId][this.identity.actor].role !== "owner" &&
-                  access.projectMembers[this.identity.actor].role !== "owner")) forbidden();
+      } else if (
+        !access.projectMembers[this.identity.actor] ||
+        !access.threadMembers[scopeId]?.[this.identity.actor] ||
+        (access.threadMembers[scopeId][this.identity.actor].role !== "owner" &&
+          access.projectMembers[this.identity.actor].role !== "owner")
+      )
+        forbidden();
       if (Object.keys(access.invitations).length >= 100) throw new AdmissionError("capacity", 429);
       access.invitations[id] = invitation;
     });
@@ -156,7 +192,9 @@ export class Collaboration {
   private async find(token: string) {
     if (!/^[a-f0-9]{64}$/.test(token)) missing();
     const hashed = await digest(token);
-    const invitation = Object.values(this.state()?.invitations ?? {}).find((item) => item.digest === hashed);
+    const invitation = Object.values(this.state()?.invitations ?? {}).find(
+      (item) => item.digest === hashed,
+    );
     return invitation ?? missing();
   }
   async preview(token: string) {
@@ -169,17 +207,32 @@ export class Collaboration {
     if (invite.email !== this.identity.email) missing();
     return this.core.updateCollaboration((state) => {
       const current = state.collaboration?.invitations[invite.id];
-      if (!current || current.digest !== invite.digest || current.revokedAt || current.acceptedBy ||
-          Date.parse(current.expiresAt) <= Date.now()) throw new AdmissionError("invitation_unavailable", 410);
+      if (
+        !current ||
+        current.digest !== invite.digest ||
+        current.revokedAt ||
+        current.acceptedBy ||
+        Date.parse(current.expiresAt) <= Date.now()
+      )
+        throw new AdmissionError("invitation_unavailable", 410);
       const inviter = state.collaboration!.projectMembers[current.invitedBy];
-      const threadInviter = current.threadId && state.collaboration!.threadMembers[current.threadId]?.[current.invitedBy];
-      if (!inviter || (current.scope === "project" ? inviter.role !== "owner" :
-          !threadInviter || (threadInviter.role !== "owner" && inviter.role !== "owner")))
+      const threadInviter =
+        current.threadId &&
+        state.collaboration!.threadMembers[current.threadId]?.[current.invitedBy];
+      if (
+        !inviter ||
+        (current.scope === "project"
+          ? inviter.role !== "owner"
+          : !threadInviter || (threadInviter.role !== "owner" && inviter.role !== "owner"))
+      )
         throw new AdmissionError("invitation_unavailable", 410);
       const member: Member = { ...this.identity, role: current.role };
       if (current.scope === "thread") {
-        if (!state.collaboration?.projectMembers[this.identity.actor] ||
-            !state.threads.some((thread) => thread.id === current.threadId)) missing();
+        if (
+          !state.collaboration?.projectMembers[this.identity.actor] ||
+          !state.threads.some((thread) => thread.id === current.threadId)
+        )
+          missing();
         (state.collaboration!.threadMembers[current.threadId!] ??= {})[member.actor] = member;
       } else {
         state.collaboration!.projectMembers[member.actor] = member;
@@ -190,8 +243,11 @@ export class Collaboration {
   }
   async revoke(token: string) {
     const invite = await this.find(token);
-    if (this.projectRole() !== "owner" &&
-        (invite.scope !== "thread" || this.threadRole(invite.threadId!) !== "owner")) forbidden();
+    if (
+      this.projectRole() !== "owner" &&
+      (invite.scope !== "thread" || this.threadRole(invite.threadId!) !== "owner")
+    )
+      forbidden();
     return this.core.updateCollaboration((state) => {
       const current = state.collaboration?.invitations[invite.id] ?? missing();
       if (current.digest !== invite.digest) missing();
@@ -202,7 +258,8 @@ export class Collaboration {
   remove(scope: "project" | "thread", scopeId: string, actor: string) {
     if (scope === "project") this.requireProject(scopeId, true);
     else this.requireThread(scopeId, true);
-    if (actor === this.identity.actor || actor.length > 256) throw new AdmissionError("invalid_member");
+    if (actor === this.identity.actor || actor.length > 256)
+      throw new AdmissionError("invalid_member");
     return this.core.updateCollaboration((state) => {
       const access = state.collaboration!;
       const members = scope === "project" ? access.projectMembers : access.threadMembers[scopeId];
@@ -211,11 +268,15 @@ export class Collaboration {
       if (target.role === "owner") forbidden();
       delete members[actor];
       if (scope === "project") {
-        for (const threadMembers of Object.values(access.threadMembers)) delete threadMembers[actor];
+        for (const threadMembers of Object.values(access.threadMembers))
+          delete threadMembers[actor];
       }
       for (const invite of Object.values(access.invitations))
-        if (!invite.acceptedBy && (scope === "project" || invite.threadId === scopeId) &&
-            (invite.email === target.email || invite.invitedBy === actor))
+        if (
+          !invite.acceptedBy &&
+          (scope === "project" || invite.threadId === scopeId) &&
+          (invite.email === target.email || invite.invitedBy === actor)
+        )
           invite.revokedAt ??= new Date().toISOString();
       return { removed: actor };
     });

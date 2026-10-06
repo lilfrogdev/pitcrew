@@ -19,23 +19,56 @@ describe("project conversations", () => {
   it("recovers an unconsumed approval after a crash before sending, then requires an explicit landing", async () => {
     const api = createFixtureApi();
     const capabilities = api.capabilities;
-    api.capabilities = async () => ({ ...await capabilities(), landing: { enabled: true, backend: "artifacts" } });
+    api.capabilities = async () => ({
+      ...(await capabilities()),
+      landing: { enabled: true, backend: "artifacts" },
+    });
     const run = (await api.snapshot("welcome")).runs[0];
-    const auth = { authorizationId: "unconsumed", runId: run.id, expectedTargetSha: run.baseSha,
-      candidateSha: run.candidateSha!, configurationRevision: run.configurationRevision,
-      expiresAt: Date.now() + 300000, backend: "artifacts" as const, state: "authorized" as const };
-    const fingerprint = JSON.stringify([run.id, run.baseSha, run.candidateSha, run.configurationRevision, "artifacts"]);
-    saveLandingState("fixture-local", "pitcrew", run.id, { key: "original-key", fingerprint, authorization: auth, busy: true });
+    const auth = {
+      authorizationId: "unconsumed",
+      runId: run.id,
+      expectedTargetSha: run.baseSha,
+      candidateSha: run.candidateSha!,
+      configurationRevision: run.configurationRevision,
+      expiresAt: Date.now() + 300000,
+      backend: "artifacts" as const,
+      state: "authorized" as const,
+    };
+    const fingerprint = JSON.stringify([
+      run.id,
+      run.baseSha,
+      run.candidateSha,
+      run.configurationRevision,
+      "artifacts",
+    ]);
+    saveLandingState("fixture-local", "pitcrew", run.id, {
+      key: "original-key",
+      fingerprint,
+      authorization: auth,
+      busy: true,
+    });
     api.reconcile = vi.fn().mockRejectedValue(Error("LANDING_NOT_STARTED"));
     api.approve = vi.fn().mockResolvedValue(auth);
-    api.land = vi.fn().mockResolvedValue({ authorizationId: auth.authorizationId, backend: "artifacts",
-      status: "landed", landedSha: run.candidateSha });
+    api.land = vi.fn().mockResolvedValue({
+      authorizationId: auth.authorizationId,
+      backend: "artifacts",
+      status: "landed",
+      landedSha: run.candidateSha,
+    });
     await mount(api);
     fireEvent.click(screen.getByRole("tab", { name: "Review / PR" }));
     fireEvent.click(screen.getByRole("button", { name: "Check landing receipt" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Land approved candidate" }).hasAttribute("disabled")).toBe(false));
-    expect(api.approve).toHaveBeenCalledExactlyOnceWith(run.id, { expectedTargetSha: run.baseSha,
-      candidateSha: run.candidateSha, configurationRevision: run.configurationRevision, idempotencyKey: "original-key" });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Land approved candidate" }).hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    expect(api.approve).toHaveBeenCalledExactlyOnceWith(run.id, {
+      expectedTargetSha: run.baseSha,
+      candidateSha: run.candidateSha,
+      configurationRevision: run.configurationRevision,
+      idempotencyKey: "original-key",
+    });
     expect(api.land).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Land approved candidate" }));
     await screen.findByText(/Source repository landed/);
@@ -44,18 +77,40 @@ describe("project conversations", () => {
   it("recovers a lost source receipt on reload for its account without replaying landing", async () => {
     const api = createFixtureApi();
     const capabilities = api.capabilities;
-    api.capabilities = async () => ({ ...await capabilities(), landing: { enabled: true, backend: "artifacts" } });
+    api.capabilities = async () => ({
+      ...(await capabilities()),
+      landing: { enabled: true, backend: "artifacts" },
+    });
     const proposal = await api.snapshot("welcome");
     const run = proposal.runs[0];
-    const owner = { id: "owner", name: "Owner", email: "owner@fixture.example", emailVerified: true, image: null };
-    api.approve = vi.fn().mockResolvedValue({ authorizationId: "pending-source", runId: run.id,
-      expectedTargetSha: run.baseSha, candidateSha: run.candidateSha, configurationRevision: run.configurationRevision,
-      expiresAt: Date.now() + 300000, backend: "artifacts", state: "authorized" });
+    const owner = {
+      id: "owner",
+      name: "Owner",
+      email: "owner@fixture.example",
+      emailVerified: true,
+      image: null,
+    };
+    api.approve = vi.fn().mockResolvedValue({
+      authorizationId: "pending-source",
+      runId: run.id,
+      expectedTargetSha: run.baseSha,
+      candidateSha: run.candidateSha,
+      configurationRevision: run.configurationRevision,
+      expiresAt: Date.now() + 300000,
+      backend: "artifacts",
+      state: "authorized",
+    });
     api.land = vi.fn().mockRejectedValue(Error("Response lost"));
-    api.reconcile = vi.fn().mockResolvedValue({ authorizationId: "pending-source", backend: "artifacts",
-      status: "landed", landedSha: run.candidateSha });
-    const openReview = async () => { await screen.findByRole("heading", { name: "Make agent work visible" });
-      fireEvent.click(screen.getByRole("tab", { name: "Review / PR" })); };
+    api.reconcile = vi.fn().mockResolvedValue({
+      authorizationId: "pending-source",
+      backend: "artifacts",
+      status: "landed",
+      landedSha: run.candidateSha,
+    });
+    const openReview = async () => {
+      await screen.findByRole("heading", { name: "Make agent work visible" });
+      fireEvent.click(screen.getByRole("tab", { name: "Review / PR" }));
+    };
     render(<App api={api} demo viewer={owner} />);
     await openReview();
     fireEvent.click(screen.getByRole("button", { name: "Approve exact candidate" }));
@@ -70,7 +125,9 @@ describe("project conversations", () => {
     cleanup();
     render(<App api={api} demo viewer={owner} />);
     await openReview();
-    expect(screen.getByRole("button", { name: "Land approved candidate" }).hasAttribute("disabled")).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Land approved candidate" }).hasAttribute("disabled"),
+    ).toBe(true);
     expect(screen.queryByText("Completed")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Check landing receipt" }));
     await screen.findByText(/Source repository landed/);
@@ -81,11 +138,17 @@ describe("project conversations", () => {
   it("blocks a source write when its recovery receipt cannot be saved", async () => {
     const api = createFixtureApi();
     const capabilities = api.capabilities;
-    api.capabilities = async () => ({ ...await capabilities(), landing: { enabled: true, backend: "artifacts" } });
-    api.approve = vi.fn(); api.land = vi.fn();
+    api.capabilities = async () => ({
+      ...(await capabilities()),
+      landing: { enabled: true, backend: "artifacts" },
+    });
+    api.approve = vi.fn();
+    api.land = vi.fn();
     await mount(api);
     fireEvent.click(screen.getByRole("tab", { name: "Review / PR" }));
-    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw Error("quota"); });
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw Error("quota");
+    });
     fireEvent.click(screen.getByRole("button", { name: "Approve exact candidate" }));
     await screen.findByText(/Could not save the landing receipt/);
     expect(api.approve).not.toHaveBeenCalled();
@@ -95,15 +158,28 @@ describe("project conversations", () => {
   it("enables reviewed Artifacts landing and updates completion only after its exact receipt", async () => {
     const api = createFixtureApi();
     const capabilities = api.capabilities;
-    api.capabilities = async () => ({ ...await capabilities(), landing: { enabled: true, backend: "artifacts" } });
+    api.capabilities = async () => ({
+      ...(await capabilities()),
+      landing: { enabled: true, backend: "artifacts" },
+    });
     const proposal = await api.snapshot("welcome");
     const run = proposal.runs[0];
-    api.approve = vi.fn().mockResolvedValue({ authorizationId: "source-approval", runId: run.id,
-      expectedTargetSha: run.baseSha, candidateSha: run.candidateSha,
-      configurationRevision: run.configurationRevision, expiresAt: Date.now() + 300000,
-      backend: "artifacts", state: "authorized" });
-    api.land = vi.fn().mockResolvedValue({ authorizationId: "source-approval", backend: "artifacts",
-      status: "landed", landedSha: run.candidateSha });
+    api.approve = vi.fn().mockResolvedValue({
+      authorizationId: "source-approval",
+      runId: run.id,
+      expectedTargetSha: run.baseSha,
+      candidateSha: run.candidateSha,
+      configurationRevision: run.configurationRevision,
+      expiresAt: Date.now() + 300000,
+      backend: "artifacts",
+      state: "authorized",
+    });
+    api.land = vi.fn().mockResolvedValue({
+      authorizationId: "source-approval",
+      backend: "artifacts",
+      status: "landed",
+      landedSha: run.candidateSha,
+    });
     await mount(api);
     fireEvent.click(screen.getByRole("tab", { name: "Review / PR" }));
     expect(screen.queryByText("Completed")).toBeNull();
@@ -119,8 +195,11 @@ describe("project conversations", () => {
   it("never labels a completed proposal without a landed receipt as completed", async () => {
     const api = createFixtureApi();
     const snapshot = api.snapshot;
-    api.snapshot = async (id) => { const value = await snapshot(id);
-      value.runs = value.runs.map((run) => ({ ...run, status: "completed" })); return value; };
+    api.snapshot = async (id) => {
+      const value = await snapshot(id);
+      value.runs = value.runs.map((run) => ({ ...run, status: "completed" }));
+      return value;
+    };
     await mount(api);
     expect(screen.queryByText("Completed")).toBeNull();
     expect(screen.queryByRole("img", { name: "Completed" })).toBeNull();

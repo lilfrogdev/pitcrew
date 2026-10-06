@@ -196,8 +196,12 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
             },
             context,
           );
-          try { await this.assertCurrentAdmission(); }
-          catch { await harness.close(context); throw Error("execution_disabled"); }
+          try {
+            await this.assertCurrentAdmission();
+          } catch {
+            await harness.close(context);
+            throw Error("execution_disabled");
+          }
           if (!this.taskActive()) {
             await harness.close(context);
             throw Error("execution_disabled");
@@ -243,15 +247,17 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
   protected async assertCurrentAdmission() {
     this.assertTaskActive();
     const [row] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
-    const admission = row ? JSON.parse(row.value) as TaskAdmission | null : undefined;
+    const admission = row ? (JSON.parse(row.value) as TaskAdmission | null) : undefined;
     if (!admission?.artifactAdmission) {
       if (this.env.ENVIRONMENT !== "development") throw Error("execution_disabled");
       return; // Explicit local fixtures have no paid resource authority.
     }
     if (!admission.runId) throw Error("admission_identity_conflict");
     try {
-      await this.env.REPOSITORY.get(this.env.REPOSITORY.idFromName("pitcrew"))
-        .assertRunAdmission(admission.runId, admission.artifactAdmission);
+      await this.env.REPOSITORY.get(this.env.REPOSITORY.idFromName("pitcrew")).assertRunAdmission(
+        admission.runId,
+        admission.artifactAdmission,
+      );
     } catch {
       this.recordStop(admission.runId);
       this.ctx.waitUntil(this.harness.dispose());
@@ -430,7 +436,10 @@ export class ChangeAgent extends TaskAgent {
     if (this.pipeline.status()?.input.knowledgeContext) {
       this.registry.install(
         knowledgeReporting({
-          beforeTool: async () => { this.countTool(); await this.assertRunActive(); },
+          beforeTool: async () => {
+            this.countTool();
+            await this.assertRunActive();
+          },
           context: () => {
             const context = this.context().input?.knowledgeContext;
             if (!context) throw Error("knowledge_not_configured");
@@ -510,7 +519,9 @@ export class ChangeAgent extends TaskAgent {
               content: [
                 {
                   type: "text",
-                  text: await this.fenced(() => this.transport().readFile(this.context().workspace, path)),
+                  text: await this.fenced(() =>
+                    this.transport().readFile(this.context().workspace, path),
+                  ),
                 },
               ],
             };
@@ -632,7 +643,13 @@ export class ChangeAgent extends TaskAgent {
             this.installKnowledgeReporting();
             const signal = AbortSignal.timeout(500);
             try {
-              const change = await applyChange(await this.prompt(), transport, workspace, input, signal);
+              const change = await applyChange(
+                await this.prompt(),
+                transport,
+                workspace,
+                input,
+                signal,
+              );
               await this.assertRunActive();
               return change;
             } catch (error) {
@@ -640,13 +657,17 @@ export class ChangeAgent extends TaskAgent {
               throw error;
             }
           },
-          publish: (workspace, candidate) => this.fenced(() => coordinator.publish(workspace, candidate)),
-          test: (workspace, candidate) => this.fenced(() => coordinator.test(workspace, candidate, {
-              commandId: "candidate-tests",
-              argv: ["pnpm", "test"],
-              timeoutMs: 60000,
-              maxOutputBytes: 16384,
-            })),
+          publish: (workspace, candidate) =>
+            this.fenced(() => coordinator.publish(workspace, candidate)),
+          test: (workspace, candidate) =>
+            this.fenced(() =>
+              coordinator.test(workspace, candidate, {
+                commandId: "candidate-tests",
+                argv: ["pnpm", "test"],
+                timeoutMs: 60000,
+                maxOutputBytes: 16384,
+              }),
+            ),
           verify: async (workspace, candidate) => {
             await this.assertRunActive();
             const initial = this.pipeline.status()!.input.verificationPlan;
@@ -701,10 +722,12 @@ export class ChangeAgent extends TaskAgent {
     const sandbox = this.transport();
     const transport: WorkspaceTransport = {
       prepare: (workspace) => this.fenced(() => sandbox.prepare(workspace)),
-      run: (workspace, command, signal) => this.fenced(() => sandbox.run(workspace, command, signal)),
+      run: (workspace, command, signal) =>
+        this.fenced(() => sandbox.run(workspace, command, signal)),
       inspect: (workspace) => this.fenced(() => sandbox.inspect(workspace)),
       readFile: (workspace, path) => this.fenced(() => sandbox.readFile(workspace, path)),
-      writeFile: (workspace, path, content) => this.fenced(() => sandbox.writeFile(workspace, path, content)),
+      writeFile: (workspace, path, content) =>
+        this.fenced(() => sandbox.writeFile(workspace, path, content)),
       stop: (workspace) => sandbox.stop(workspace),
       publish: async (workspace, candidateSha) => {
         if (this.env.TRUSTED_PUBLISHER_ENABLED !== "true" || !this.env.TRUSTED_PUBLISHER)
@@ -807,8 +830,14 @@ export class ChangeAgent extends TaskAgent {
     }
     // The harness lifecycle starts before sandbox preparation. Store the immutable model
     // admission independently; bind the full context when the workspace exists.
-    this.bindModelAdmission(input.runModels, "implementer", undefined, input.credentialActor, input.artifactAdmission,
-      input.artifactAdmission ? input.runId : undefined);
+    this.bindModelAdmission(
+      input.runModels,
+      "implementer",
+      undefined,
+      input.credentialActor,
+      input.artifactAdmission,
+      input.artifactAdmission ? input.runId : undefined,
+    );
     if (!this.taskActive()) return rejected;
     await this.lifecycle.start();
     const state = this.pipeline.start(input);
@@ -955,7 +984,7 @@ export class ReviewAgent extends TaskAgent {
               treeHash = entry.hash;
             }
             const entries = await fork.readTree(treeHash);
-              await this.assertCurrentAdmission();
+            await this.assertCurrentAdmission();
             if (!entries || entries.length > 200) throw Error("review_tree_limit");
             return { content: [{ type: "text", text: JSON.stringify(entries) }] };
           },

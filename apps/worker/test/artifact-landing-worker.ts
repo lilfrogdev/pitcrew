@@ -53,12 +53,15 @@ export class ArtifactLandingFixture extends RepositoryAgent {
       }),
       publishedBundle: async () => ({ bundleBase64: "Zml4dHVyZQ==", bundleDigest: "d".repeat(64) }),
       cleanup: async () => this.landMode !== "cleanup-failure",
-      reconcile: async () => { this.reconciliations++; return ({
-        cleanupVerified: this.landMode !== "cleanup-failure",
-        candidatePresent: this.head() === candidate,
-        head: this.head(),
-        status: "uncertain",
-      }); },
+      reconcile: async () => {
+        this.reconciliations++;
+        return {
+          cleanupVerified: this.landMode !== "cleanup-failure",
+          candidatePresent: this.head() === candidate,
+          head: this.head(),
+          status: "uncertain",
+        };
+      },
       land: async (input: PublisherLandingInput) => {
         const { bundleBase64: _bundle, ...identity } = input;
         this.assertPublisherAdmission({ ...identity, kind: "land" });
@@ -165,11 +168,16 @@ export class ArtifactLandingFixture extends RepositoryAgent {
     );
     return { status: response.status, body: await response.json() };
   }
-  async setActor(value: string) { this.requestActor = value; }
+  async setActor(value: string) {
+    this.requestActor = value;
+  }
   async expireApproval(id: string) {
     const sql = this.ctx.storage.sql;
-    const [row] = sql.exec<{ record: string }>("SELECT record FROM landing_permissions WHERE id=?", id).toArray();
-    const record = JSON.parse(row.record); record.authorization.expiresAt = Date.now() - 1;
+    const [row] = sql
+      .exec<{ record: string }>("SELECT record FROM landing_permissions WHERE id=?", id)
+      .toArray();
+    const record = JSON.parse(row.record);
+    record.authorization.expiresAt = Date.now() - 1;
     sql.exec("UPDATE landing_permissions SET record=? WHERE id=?", JSON.stringify(record), id);
   }
   async mode(mode: string) {
@@ -217,9 +225,15 @@ export default {
         env.REPOSITORY.idFromName(url.searchParams.get("object") ?? "pitcrew"),
       );
     if (url.pathname === "/seed") return Response.json(await stub.seed());
-    if (url.pathname === "/actor") { await stub.setActor(url.searchParams.get("value")!); return Response.json({ ok: true }); }
-  if (url.pathname === "/expire") { await stub.expireApproval(url.searchParams.get("id")!); return Response.json({ ok: true }); }
-  if (url.pathname === "/mode") {
+    if (url.pathname === "/actor") {
+      await stub.setActor(url.searchParams.get("value")!);
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/expire") {
+      await stub.expireApproval(url.searchParams.get("id")!);
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/mode") {
       await stub.mode(url.searchParams.get("value")!);
       return Response.json({ ok: true });
     }

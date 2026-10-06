@@ -12,29 +12,56 @@ export function AccountRepositories({ api }: { api: CollaborationApi }) {
     setLoading(true);
     try {
       const next = await api.repositories();
-      if (current === generation.current) { setItems(next); setError(""); }
+      if (current === generation.current) {
+        setItems(next);
+        setError("");
+      }
     } catch (cause) {
       if (current === generation.current) {
         setItems([]);
         setError(cause instanceof Error ? cause.message : "Could not load repositories.");
       }
-    } finally { if (current === generation.current) setLoading(false); }
+    } finally {
+      if (current === generation.current) setLoading(false);
+    }
   }, [api]);
   useEffect(() => {
     void load();
     const online = () => void load();
     window.addEventListener("online", online);
-    return () => { generation.current++; window.removeEventListener("online", online); };
+    return () => {
+      generation.current++;
+      window.removeEventListener("online", online);
+    };
   }, [load]);
-  return <main id="workspace-content" className={styles.accountRepositories} tabIndex={-1}>
-      <header><h1>Repositories</h1></header>
+  return (
+    <main id="workspace-content" className={styles.accountRepositories} tabIndex={-1}>
+      <header>
+        <h1>Repositories</h1>
+      </header>
       <div className={styles.body}>
-        <button type="button" onClick={() => void load()} disabled={loading}>Refresh</button>
-        {loading ? <p role="status">Loading repositories…</p> : error ?
-          <p role="alert">{error}</p> : items.length ?
-            <ul className={styles.list}>{items.map((item) => <li key={item.projectId}>
-              <div><strong>{item.name}</strong><span>{item.role}</span></div>
-            </li>)}</ul> : <p>No repositories belong to this account yet.</p>}
+        <button type="button" onClick={() => void load()} disabled={loading}>
+          Refresh
+        </button>
+        {loading ? (
+          <p role="status">Loading repositories…</p>
+        ) : error ? (
+          <p role="alert">{error}</p>
+        ) : items.length ? (
+          <ul className={styles.list}>
+            {items.map((item) => (
+              <li key={item.projectId}>
+                <div>
+                  <strong>{item.name}</strong>
+                  <span>{item.role}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>No repositories belong to this account yet.</p>
+        )}
       </div>
-  </main>;
+    </main>
+  );
 }

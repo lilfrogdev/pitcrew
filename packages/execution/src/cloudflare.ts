@@ -15,7 +15,10 @@ export type NativeContainer = Pick<Container, "start" | "exec" | "destroy">;
 export type ContainerResolver = (workerId: string) => NativeContainer;
 
 export class CloudflareArtifacts implements ForkTransport {
-  constructor(private readonly binding: ArtifactsBinding, private readonly fence: () => Promise<void> = async () => {}) {}
+  constructor(
+    private readonly binding: ArtifactsBinding,
+    private readonly fence: () => Promise<void> = async () => {},
+  ) {}
 
   async fork(source: string, target: string, baseSha: string): Promise<void> {
     assertSha(baseSha);

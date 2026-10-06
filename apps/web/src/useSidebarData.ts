@@ -97,7 +97,7 @@ function createScheduler(publish: (data: Data) => void) {
         request(
           entry,
           () => api.threads(project.id),
-          () => api.collaboration ? Date.now() + 15000 : Infinity,
+          () => (api.collaboration ? Date.now() + 15000 : Infinity),
         );
     }
     const latestRun = api.latestRun;
@@ -123,8 +123,12 @@ function createScheduler(publish: (data: Data) => void) {
         request(
           entry,
           () => latestRun.call(api, item.id),
-          (run) => (run && activeStatuses.has(run.status) ? Date.now() + 5000 :
-            api.collaboration ? Date.now() + 15000 : Infinity),
+          (run) =>
+            run && activeStatuses.has(run.status)
+              ? Date.now() + 5000
+              : api.collaboration
+                ? Date.now() + 15000
+                : Infinity,
         );
     }
   };
@@ -183,8 +187,11 @@ function createScheduler(publish: (data: Data) => void) {
           loaded: true,
           pending: false,
           failures: 0,
-          next: activeStatuses.has(next.activeRun.status) ? Date.now() + 5000 :
-            next.api.collaboration ? Date.now() + 15000 : Infinity,
+          next: activeStatuses.has(next.activeRun.status)
+            ? Date.now() + 5000
+            : next.api.collaboration
+              ? Date.now() + 15000
+              : Infinity,
         });
       }
       emit();

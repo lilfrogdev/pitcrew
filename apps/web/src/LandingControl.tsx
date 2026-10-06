@@ -80,11 +80,11 @@ export function LandingControl({
     authorization && (!Number.isFinite(authorization.expiresAt) || authorization.expiresAt <= now),
   );
   const canonical = isLandedReceipt(run, run.landing, backend);
-  const receiptResult = canonical ? run.landing : state.result ?? run.landing;
-  const receiptBound = canonical || !state.result || (
-    (!state.fingerprint || state.fingerprint === fingerprint) &&
-    (!authorization || matches)
-  );
+  const receiptResult = canonical ? run.landing : (state.result ?? run.landing);
+  const receiptBound =
+    canonical ||
+    !state.result ||
+    ((!state.fingerprint || state.fingerprint === fingerprint) && (!authorization || matches));
   const landed = receiptBound && isLandedReceipt(run, receiptResult, backend);
   const reportedState = receiptResult?.status ?? authorization?.state;
   // A consumed authorization alone cannot prove that the source was updated.
@@ -94,15 +94,27 @@ export function LandingControl({
   const capability = enabled && ["fixture", "artifacts"].includes(backend ?? "");
   const canApprove = capability && eligible && !state.busy && !authorization && !receiptResult;
   const canLand =
-    capability && eligible && matches && !expired && receiptState === "authorized" && !state.busy && !state.persistenceError;
-  const validAuthorization = (receipt: Authorization) => Boolean(
-    receipt && receipt.backend === backend &&
-    typeof receipt.authorizationId === "string" && receipt.authorizationId.trim() &&
-    Number.isFinite(receipt.expiresAt) && Number.isFinite(new Date(receipt.expiresAt).getTime()) &&
-    ["authorized", "pending", "landed", "rejected", "uncertain"].includes(receipt.state) &&
-    receipt.runId === run.id && receipt.expectedTargetSha === run.baseSha &&
-    receipt.candidateSha === run.candidateSha && receipt.configurationRevision === run.configurationRevision,
-  );
+    capability &&
+    eligible &&
+    matches &&
+    !expired &&
+    receiptState === "authorized" &&
+    !state.busy &&
+    !state.persistenceError;
+  const validAuthorization = (receipt: Authorization) =>
+    Boolean(
+      receipt &&
+      receipt.backend === backend &&
+      typeof receipt.authorizationId === "string" &&
+      receipt.authorizationId.trim() &&
+      Number.isFinite(receipt.expiresAt) &&
+      Number.isFinite(new Date(receipt.expiresAt).getTime()) &&
+      ["authorized", "pending", "landed", "rejected", "uncertain"].includes(receipt.state) &&
+      receipt.runId === run.id &&
+      receipt.expectedTargetSha === run.baseSha &&
+      receipt.candidateSha === run.candidateSha &&
+      receipt.configurationRevision === run.configurationRevision,
+    );
   async function approve() {
     if (!canApprove || lock.current) return;
     lock.current = true;
@@ -116,8 +128,7 @@ export function LandingControl({
         configurationRevision: run.configurationRevision,
         idempotencyKey: key,
       });
-      if (!validAuthorization(receipt))
-        throw new Error("Receipt mismatch");
+      if (!validAuthorization(receipt)) throw new Error("Receipt mismatch");
       onStateChange({ ...next, busy: false, authorization: receipt });
     } catch {
       onStateChange({
@@ -138,18 +149,31 @@ export function LandingControl({
       if (onStateChange({ ...state, fingerprint, busy: true, error: undefined }) === false) return;
       let result: LandingResult;
       try {
-        result = await (reconcile ? api.reconcile(run.id, authorizationId) : api.land(run.id, authorizationId));
+        result = await (reconcile
+          ? api.reconcile(run.id, authorizationId)
+          : api.land(run.id, authorizationId));
       } catch (error) {
         if (!reconcile || !matches || !state.key || state.fingerprint !== fingerprint) throw error;
         // A crash after saving but before sending may leave permission unconsumed.
         // Recover the original approval receipt; never issue a new key or land
         // automatically. The server's current state controls the next action.
-        const recovered = await api.approve(run.id, { expectedTargetSha: run.baseSha,
-          candidateSha: run.candidateSha!, configurationRevision: run.configurationRevision,
-          idempotencyKey: state.key });
-        if (!validAuthorization(recovered) || recovered.authorizationId !== authorizationId) throw Error("Receipt mismatch");
-        onStateChange({ ...state, fingerprint, busy: false, authorization: recovered,
-          result: undefined, error: undefined, persistenceError: false });
+        const recovered = await api.approve(run.id, {
+          expectedTargetSha: run.baseSha,
+          candidateSha: run.candidateSha!,
+          configurationRevision: run.configurationRevision,
+          idempotencyKey: state.key,
+        });
+        if (!validAuthorization(recovered) || recovered.authorizationId !== authorizationId)
+          throw Error("Receipt mismatch");
+        onStateChange({
+          ...state,
+          fingerprint,
+          busy: false,
+          authorization: recovered,
+          result: undefined,
+          error: undefined,
+          persistenceError: false,
+        });
         return;
       }
       if (
@@ -192,13 +216,15 @@ export function LandingControl({
           <code>{run.baseSha}</code> with configuration <code>{run.configurationRevision}</code>.
         </p>
       )}
-      {!landed && <button disabled={!canApprove} onClick={() => void approve()}>
-        {state.busy && !authorization
-          ? "Requesting approval…"
-          : state.key && !authorization
-            ? "Retry approval receipt"
-            : "Approve exact candidate"}
-      </button>}
+      {!landed && (
+        <button disabled={!canApprove} onClick={() => void approve()}>
+          {state.busy && !authorization
+            ? "Requesting approval…"
+            : state.key && !authorization
+              ? "Retry approval receipt"
+              : "Approve exact candidate"}
+        </button>
+      )}
       {authorization && !landed && (
         <>
           <p>
@@ -230,7 +256,12 @@ export function LandingControl({
       {state.error && <p role="alert">{state.error}</p>}
       {(authorization || receiptResult) &&
         ["pending", "uncertain"].includes(receiptState ?? "") && (
-          <button disabled={state.busy || !capability || (authorization && authorization.runId !== run.id)} onClick={() => void land(true)}>
+          <button
+            disabled={
+              state.busy || !capability || (authorization && authorization.runId !== run.id)
+            }
+            onClick={() => void land(true)}
+          >
             Check landing receipt
           </button>
         )}

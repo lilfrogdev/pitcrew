@@ -86,22 +86,42 @@ it("bounds local observation of a hung cleanup RPC without reporting remote clea
   await expect(boundedCleanupRpc(Promise.resolve("verified"), 5)).resolves.toBe("verified");
 });
 it("binds source landing to a cleaned worker, exact actor and one distinct durable operation", () => {
-  const f = fixture(), gate = f.create();
+  const f = fixture(),
+    gate = f.create();
   const worker = gate.reserve("worker", "worker-fingerprint", true);
   expect(worker.allowed).toBe(true);
-  expect(() => gate.reserveLanding("land:approval", "landing-fingerprint", true,
-    { owningRunId: "worker", authorizationId: "approval", actor: "owner" }))
-    .toThrow("worker_cleanup_not_verified");
+  expect(() =>
+    gate.reserveLanding("land:approval", "landing-fingerprint", true, {
+      owningRunId: "worker",
+      authorizationId: "approval",
+      actor: "owner",
+    }),
+  ).toThrow("worker_cleanup_not_verified");
   gate.release("worker", true);
-  const landing = gate.reserveLanding("land:approval", "landing-fingerprint", true,
-    { owningRunId: "worker", authorizationId: "approval", actor: "owner" });
-  expect(landing).toMatchObject({ allowed: true, reservation: { kind: "landing", owningRunId: "worker", actor: "owner" } });
-  expect(() => gate.reserveLanding("land:approval", "landing-fingerprint", true,
-    { owningRunId: "worker", authorizationId: "approval", actor: "forged" })).toThrow("admission_identity_conflict");
+  const landing = gate.reserveLanding("land:approval", "landing-fingerprint", true, {
+    owningRunId: "worker",
+    authorizationId: "approval",
+    actor: "owner",
+  });
+  expect(landing).toMatchObject({
+    allowed: true,
+    reservation: { kind: "landing", owningRunId: "worker", actor: "owner" },
+  });
+  expect(() =>
+    gate.reserveLanding("land:approval", "landing-fingerprint", true, {
+      owningRunId: "worker",
+      authorizationId: "approval",
+      actor: "forged",
+    }),
+  ).toThrow("admission_identity_conflict");
   if (!landing.allowed) throw Error("expected admission");
-  expect(() => gate.assertActive("land:approval", "landing-fingerprint", landing.reservation.deadline)).not.toThrow();
+  expect(() =>
+    gate.assertActive("land:approval", "landing-fingerprint", landing.reservation.deadline),
+  ).not.toThrow();
   gate.pause();
-  expect(() => gate.assertActive("land:approval", "landing-fingerprint", landing.reservation.deadline)).toThrow("publisher_admission_revoked");
+  expect(() =>
+    gate.assertActive("land:approval", "landing-fingerprint", landing.reservation.deadline),
+  ).toThrow("publisher_admission_revoked");
   expect(() => gate.release("land:approval", false)).toThrow("cleanup_not_verified");
   expect(gate.active()).toHaveLength(1);
 });

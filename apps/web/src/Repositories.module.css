@@ -81,7 +81,9 @@
   background: rgb(0 0 0 / 45%);
 }
 @media (max-width: 650px) {
-  .accountRepositories header { padding: 20px; }
+  .accountRepositories header {
+    padding: 20px;
+  }
   .body {
     padding: 20px;
   }

@@ -11,10 +11,13 @@ function readCollapsed(key: string, migrateLegacy: boolean): Record<string, bool
   try {
     const saved = localStorage.getItem(key);
     const legacy = saved === null && migrateLegacy;
-    const value: unknown = JSON.parse(saved ?? (legacy ? localStorage.getItem(legacyExpansionKey) : null) ?? "{}");
+    const value: unknown = JSON.parse(
+      saved ?? (legacy ? localStorage.getItem(legacyExpansionKey) : null) ?? "{}",
+    );
     return value && typeof value === "object" && !Array.isArray(value)
       ? Object.fromEntries(
-          Object.entries(value).filter(([, collapsed]) => typeof collapsed === "boolean")
+          Object.entries(value)
+            .filter(([, collapsed]) => typeof collapsed === "boolean")
             .map(([id, collapsed]) => [legacy ? folderKey(id) : id, collapsed]),
         )
       : {};
@@ -113,7 +116,9 @@ export function Sidebar({
   accountId?: string;
 }) {
   const expansionKey = `pitcrew.sidebar.collapsed.v2:${encodeURIComponent(accountId ?? "local")}`;
-  const pinsKey = accountId ? `pitcrew.sidebar.pins.v2:${encodeURIComponent(accountId)}` : preferenceKey;
+  const pinsKey = accountId
+    ? `pitcrew.sidebar.pins.v2:${encodeURIComponent(accountId)}`
+    : preferenceKey;
   const searchButton = useRef<HTMLButtonElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -145,8 +150,11 @@ export function Sidebar({
     activeRun,
     revision,
     visibleRepositories: matching
-      .filter((item) => !(collapsed[folderKey(item.id)] ?? item.id !== projectId) ||
-        (pins.repositories.includes(item.id) && !(collapsed[folderKey(item.id, true)] ?? false)))
+      .filter(
+        (item) =>
+          !(collapsed[folderKey(item.id)] ?? item.id !== projectId) ||
+          (pins.repositories.includes(item.id) && !(collapsed[folderKey(item.id, true)] ?? false)),
+      )
       .map((item) => item.id),
     pinnedConversations: pins.conversations,
   });
@@ -265,12 +273,16 @@ export function Sidebar({
               // A committed response survives a failed list revalidation.
               if (updated) {
                 setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
-                if (updated.archived) setPins((all) => {
-                  const conversationRepositories = { ...all.conversationRepositories };
-                  delete conversationRepositories[updated.id];
-                  return { ...all, conversationRepositories,
-                    conversations: all.conversations.filter((id) => id !== updated.id) };
-                });
+                if (updated.archived)
+                  setPins((all) => {
+                    const conversationRepositories = { ...all.conversationRepositories };
+                    delete conversationRepositories[updated.id];
+                    return {
+                      ...all,
+                      conversationRepositories,
+                      conversations: all.conversations.filter((id) => id !== updated.id),
+                    };
+                  });
               }
             }}
           >
@@ -291,17 +303,25 @@ export function Sidebar({
         className="sidebar-item"
         aria-label={`${item.name} · ${item.repository}`}
         title={item.repository}
-        aria-expanded={!(collapsed[folderKey(item.id, pinnedSection)] ?? (!pinnedSection && item.id !== projectId))}
+        aria-expanded={
+          !(
+            collapsed[folderKey(item.id, pinnedSection)] ??
+            (!pinnedSection && item.id !== projectId)
+          )
+        }
         disabled={busy}
         onClick={() => {
-          const wasCollapsed = collapsed[folderKey(item.id, pinnedSection)] ?? (!pinnedSection && item.id !== projectId);
+          const wasCollapsed =
+            collapsed[folderKey(item.id, pinnedSection)] ??
+            (!pinnedSection && item.id !== projectId);
           setCollapsed((all) => ({ ...all, [folderKey(item.id, pinnedSection)]: !wasCollapsed }));
           if (wasCollapsed && item.id !== projectId) onSelect(item.id);
         }}
       >
         <Icon
           kind={
-            (collapsed[folderKey(item.id, pinnedSection)] ?? (!pinnedSection && item.id !== projectId))
+            (collapsed[folderKey(item.id, pinnedSection)] ??
+            (!pinnedSection && item.id !== projectId))
               ? "repository"
               : "folderOpen"
           }

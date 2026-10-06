@@ -4,5 +4,8 @@ export function openRouterConnectionPlugin(options?: {
   userAccessSession?: boolean;
   origin?: string | (() => string | undefined);
   sharedApi?: boolean;
-  sessionHeaders?: (req: import("node:http").IncomingMessage, accessToken: string) => Promise<Record<string, string>>;
+  sessionHeaders?: (
+    req: import("node:http").IncomingMessage,
+    accessToken: string,
+  ) => Promise<Record<string, string>>;
 }): Plugin;

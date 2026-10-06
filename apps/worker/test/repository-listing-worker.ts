@@ -30,12 +30,18 @@ export class RepositoryListingFixture extends RepositoryAgent {
     super(ctx, {
       ...env,
       ARTIFACTS: env.TEST_ARTIFACTS_AVAILABLE === "true" ? artifacts : undefined,
-      EMAIL: env.AUTH_DB ? { async send(message) {
-        const msg = message as EmailMessageBuilder;
-        await env.AUTH_DB!.prepare("INSERT INTO test_mail(recipient,subject,body) VALUES(?,?,?)")
-          .bind(msg.to, msg.subject, msg.text).run();
-        return { messageId: "synthetic-mail" };
-      } } : undefined,
+      EMAIL: env.AUTH_DB
+        ? {
+            async send(message) {
+              const msg = message as EmailMessageBuilder;
+              await env
+                .AUTH_DB!.prepare("INSERT INTO test_mail(recipient,subject,body) VALUES(?,?,?)")
+                .bind(msg.to, msg.subject, msg.text)
+                .run();
+              return { messageId: "synthetic-mail" };
+            },
+          }
+        : undefined,
     });
   }
   calls() {

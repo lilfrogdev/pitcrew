@@ -47,23 +47,48 @@ const safeErrors = new Set([
   "body_too_large",
   "method_not_allowed",
   "not_found",
-  "unauthorized", "execution_disabled", "forbidden", "invitation_unavailable",
-  "invalid_email", "invalid_role", "invalid_member", "already_member", "capacity",
-  "idempotency_conflict", "provider_credential_unavailable", "stale_configuration",
-  "repository_adoption_unavailable", "repository_identity_changed", "repository_already_registered",
-  "repository_verification_failed", "repository_uninitialized", "invalid_event_cursor",
+  "unauthorized",
+  "execution_disabled",
+  "forbidden",
+  "invitation_unavailable",
+  "invalid_email",
+  "invalid_role",
+  "invalid_member",
+  "already_member",
+  "capacity",
+  "idempotency_conflict",
+  "provider_credential_unavailable",
+  "stale_configuration",
+  "repository_adoption_unavailable",
+  "repository_identity_changed",
+  "repository_already_registered",
+  "repository_verification_failed",
+  "repository_uninitialized",
+  "invalid_event_cursor",
 ]);
 // Explicit product API routes. Authentication and credentials have separate
 // relays; unknown paths never become a cloud proxy.
 function sharedRoute(path, method) {
   const id = "[A-Za-z0-9:_-]{1,128}";
   const routes = {
-    GET: ["account", "projects", "capabilities", `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)` ,
+    GET: [
+      "account",
+      "projects",
+      "capabilities",
+      `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
       `threads/${id}/(?:members|messages|changes|runs|turns|attachments/${id})`,
-      `changes/${id}(?:/runs)?`, `runs/${id}/(?:evidence|reviews)`, "invitations/[a-f0-9]{64}"],
-    POST: ["projects", `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/(?:move|dispatch)|threads/${id}/(?:archive|model-selection)|model-settings)`,
-      `threads/${id}/(?:messages|invitations|model-selection)`, `changes/${id}/runs`,
-      `runs/${id}/(?:merge-approval|landing(?:/reconcile)?)`, "invitations/[a-f0-9]{64}/(?:accept|revoke)"],
+      `changes/${id}(?:/runs)?`,
+      `runs/${id}/(?:evidence|reviews)`,
+      "invitations/[a-f0-9]{64}",
+    ],
+    POST: [
+      "projects",
+      `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/(?:move|dispatch)|threads/${id}/(?:archive|model-selection)|model-settings)`,
+      `threads/${id}/(?:messages|invitations|model-selection)`,
+      `changes/${id}/runs`,
+      `runs/${id}/(?:merge-approval|landing(?:/reconcile)?)`,
+      "invitations/[a-f0-9]{64}/(?:accept|revoke)",
+    ],
     DELETE: [`(?:projects|threads)/${id}/members/[A-Za-z0-9:@._%+-]{1,256}`],
   };
   return (routes[method] ?? []).some((route) => new RegExp(`^/api/${route}$`).test(path));
@@ -78,25 +103,34 @@ const equal = (left, right) => {
 
 // This command reads an existing application cache. It never runs access login.
 // Activation and the user-owned login/cache scope are separate runtime gates.
-export function readCachedAccessToken({ spawnProcess = spawn, homeDirectory = homedir(),
-  cloudflaredPath = join(homeDirectory, "Library", "Application Support", "Pitcrew", "bin", "cloudflared") } = {}) {
+export function readCachedAccessToken({
+  spawnProcess = spawn,
+  homeDirectory = homedir(),
+  cloudflaredPath = join(
+    homeDirectory,
+    "Library",
+    "Application Support",
+    "Pitcrew",
+    "bin",
+    "cloudflared",
+  ),
+} = {}) {
   return new Promise((resolve, reject) => {
-    if (!isAbsolute(homeDirectory) || !isAbsolute(cloudflaredPath) ||
-        /[\r\n\0]/.test(homeDirectory + cloudflaredPath)) {
+    if (
+      !isAbsolute(homeDirectory) ||
+      !isAbsolute(cloudflaredPath) ||
+      /[\r\n\0]/.test(homeDirectory + cloudflaredPath)
+    ) {
       reject(Error("backend_sign_in_required"));
       return;
     }
     let child;
     try {
-      child = spawnProcess(
-        cloudflaredPath,
-        ["access", "token", `--app=${BACKEND_ACCESS.origin}`],
-        {
-          shell: false,
-          env: { HOME: homeDirectory, PATH: "/usr/bin:/bin" },
-          stdio: ["ignore", "pipe", "ignore"],
-        },
-      );
+      child = spawnProcess(cloudflaredPath, ["access", "token", `--app=${BACKEND_ACCESS.origin}`], {
+        shell: false,
+        env: { HOME: homeDirectory, PATH: "/usr/bin:/bin" },
+        stdio: ["ignore", "pipe", "ignore"],
+      });
     } catch {
       reject(Error("backend_sign_in_required"));
       return;
@@ -169,7 +203,14 @@ function reply(res, status, value, extra = {}) {
 function admitted(req, origin) {
   const expected = new URL(origin);
   const header = req.headers.origin;
-  const singles = ["host", "origin", "content-type", "x-pitcrew-backend-nonce", "x-pitcrew-local-nonce", "cookie"];
+  const singles = [
+    "host",
+    "origin",
+    "content-type",
+    "x-pitcrew-backend-nonce",
+    "x-pitcrew-local-nonce",
+    "cookie",
+  ];
   const counts = new Map();
   for (let i = 0; i < (req.rawHeaders?.length ?? 0); i += 2) {
     const name = req.rawHeaders[i].toLowerCase();
@@ -337,10 +378,15 @@ function cleanResponse(path, value) {
           name: item.name,
           lifecycle: item.lifecycle,
           deletable: item.deletable,
-          ...(item.lifecycle === "registered" && /^[a-zA-Z0-9_-]{1,128}$/.test(item.projectId ?? "") &&
-              ["owner", "editor"].includes(item.role) ? {
-                projectId: item.projectId, role: item.role, status: "present",
-              } : {}),
+          ...(item.lifecycle === "registered" &&
+          /^[a-zA-Z0-9_-]{1,128}$/.test(item.projectId ?? "") &&
+          ["owner", "editor"].includes(item.role)
+            ? {
+                projectId: item.projectId,
+                role: item.role,
+                status: "present",
+              }
+            : {}),
           ...(safeErrors.has(item.issue) ? { issue: item.issue } : {}),
         };
       }),
@@ -376,7 +422,11 @@ export function createBackendRelayMiddleware({
   const validOrigin = (value) => {
     try {
       const local = new URL(value);
-      return local.protocol === "http:" && ["127.0.0.1", "localhost"].includes(local.hostname) && local.origin === value;
+      return (
+        local.protocol === "http:" &&
+        ["127.0.0.1", "localhost"].includes(local.hostname) &&
+        local.origin === value
+      );
     } catch {
       return false;
     }
@@ -441,19 +491,27 @@ export function createBackendRelayMiddleware({
     const provider = providerOnly && url.pathname === "/api/provider-connection/openrouter";
     const models = providerOnly && url.pathname === "/api/provider-connection/openrouter/models";
     let decodedPath;
-    try { decodedPath = decodeURI(url.pathname).replace(/%3A/gi, ":"); }
-    catch { return reply(res, 400, { error: "invalid_repository_request" }); }
+    try {
+      decodedPath = decodeURI(url.pathname).replace(/%3A/gi, ":");
+    } catch {
+      return reply(res, 400, { error: "invalid_repository_request" });
+    }
     const shared = !providerOnly && sharedApi && sharedRoute(decodedPath, req.method);
     const metadata =
       !providerOnly &&
       (url.pathname === "/api/repositories" || url.pathname.startsWith("/api/repositories/"));
     const session = providerOnly
       ? url.pathname === "/api/provider-connection/openrouter/session"
-      : url.pathname === "/api/backend-session" || (sharedApi && url.pathname === "/api/local-session");
+      : url.pathname === "/api/backend-session" ||
+        (sharedApi && url.pathname === "/api/local-session");
     if (!metadata && !shared && !provider && !models && !(session && enabled && userAccessSession))
-      return sharedApi && !providerOnly && url.pathname.startsWith("/api/") &&
-        !url.pathname.startsWith("/api/auth/") && !url.pathname.startsWith("/api/provider-connection/")
-          ? reply(res, 404, { error: "not_found" }) : next();
+      return sharedApi &&
+        !providerOnly &&
+        url.pathname.startsWith("/api/") &&
+        !url.pathname.startsWith("/api/auth/") &&
+        !url.pathname.startsWith("/api/provider-connection/")
+        ? reply(res, 404, { error: "not_found" })
+        : next();
     if (!admitted(req, origin)) return reply(res, 403, { error: "backend_relay_forbidden" });
     if (!enabled || !userAccessSession)
       return reply(res, 503, { error: "repository_backend_unavailable" });
@@ -478,19 +536,31 @@ export function createBackendRelayMiddleware({
       );
     }
     const read =
-      req.method === "GET" && (shared || provider || models || url.pathname === "/api/repositories");
+      req.method === "GET" &&
+      (shared || provider || models || url.pathname === "/api/repositories");
     const write =
-      (shared && ["POST", "DELETE"].includes(req.method)) || (req.method === "POST" &&
-      (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname)));
+      (shared && ["POST", "DELETE"].includes(req.method)) ||
+      (req.method === "POST" &&
+        (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname)));
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
       ((provider || models) && url.search) ||
       (write && url.search) ||
-      [...url.searchParams.keys()].some((key) => !(shared ?
-        url.pathname === "/api/capabilities" ? ["projectId"] : /\/events$/.test(url.pathname) ? ["after"] : []
-        : ["cursor"]).includes(key)) ||
+      [...url.searchParams.keys()].some(
+        (key) =>
+          !(
+            shared
+              ? url.pathname === "/api/capabilities"
+                ? ["projectId"]
+                : /\/events$/.test(url.pathname)
+                  ? ["after"]
+                  : []
+              : ["cursor"]
+          ).includes(key),
+      ) ||
       url.searchParams.getAll("cursor").length > 1 ||
-      url.searchParams.getAll("after").length > 1 || url.searchParams.getAll("projectId").length > 1 ||
+      url.searchParams.getAll("after").length > 1 ||
+      url.searchParams.getAll("projectId").length > 1 ||
       (url.searchParams.get("projectId")?.length ?? 0) > 128 ||
       (url.searchParams.has("after") && !/^\d{1,15}$/.test(url.searchParams.get("after"))) ||
       (url.searchParams.get("cursor")?.length ?? 0) > 1024
@@ -505,13 +575,24 @@ export function createBackendRelayMiddleware({
         (sessions.get(nonce) ?? 0) <= Date.now() ||
         !equal(
           nonce,
-          req.headers[provider ? "x-pitcrew-connection-nonce" : shared ? "x-pitcrew-local-nonce" : "x-pitcrew-backend-nonce"],
+          req.headers[
+            provider
+              ? "x-pitcrew-connection-nonce"
+              : shared
+                ? "x-pitcrew-local-nonce"
+                : "x-pitcrew-backend-nonce"
+          ],
         )
       )
         return reply(res, 403, { error: "backend_session_required" });
       try {
-        content = req.method === "DELETE" ? undefined : await body(req,
-          shared && /\/messages$/.test(url.pathname) ? 2097152 : shared ? 16384 : 8192);
+        content =
+          req.method === "DELETE"
+            ? undefined
+            : await body(
+                req,
+                shared && /\/messages$/.test(url.pathname) ? 2097152 : shared ? 16384 : 8192,
+              );
         if (provider) {
           const fields = Object.keys(content).sort().join(",");
           if (
@@ -550,27 +631,39 @@ export function createBackendRelayMiddleware({
         },
         ...(write && content !== undefined ? { body: JSON.stringify(content) } : {}),
       });
-      if ([301, 302, 303, 307, 308].includes(response.status) ||
-          (!sharedApi && [401, 403].includes(response.status))) {
+      if (
+        [301, 302, 303, 307, 308].includes(response.status) ||
+        (!sharedApi && [401, 403].includes(response.status))
+      ) {
         cached = undefined;
         await response.body?.cancel();
         return reply(res, 403, { error: "backend_sign_in_required" });
       }
       if (shared && response.ok && /\/attachments\//.test(url.pathname)) {
         const mediaType = response.headers.get("content-type");
-        if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mediaType)) throw Error();
+        if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mediaType))
+          throw Error();
         const reader = response.body?.getReader();
         if (!reader) throw Error();
-        const chunks = []; let length = 0;
+        const chunks = [];
+        let length = 0;
         try {
           while (true) {
-            const chunk = await reader.read(); if (chunk.done) break;
-            length += chunk.value.byteLength; if (length > 1048576) throw Error();
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            length += chunk.value.byteLength;
+            if (length > 1048576) throw Error();
             chunks.push(chunk.value);
           }
-        } finally { await reader.cancel().catch(() => {}); }
-        res.writeHead(response.status, { "Content-Type": mediaType, "Cache-Control": "private, no-store",
-          "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox" });
+        } finally {
+          await reader.cancel().catch(() => {});
+        }
+        res.writeHead(response.status, {
+          "Content-Type": mediaType,
+          "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "default-src 'none'; sandbox",
+        });
         res.end(Buffer.concat(chunks));
         return;
       }
@@ -585,8 +678,12 @@ export function createBackendRelayMiddleware({
                 : "repository_operation_failed",
         });
       const nextSequence = response.headers.get("x-next-sequence");
-      return reply(res, response.status, shared ? value : cleanResponse(url.pathname, value),
-        shared && /^\d{1,15}$/.test(nextSequence ?? "") ? { "X-Next-Sequence": nextSequence } : {});
+      return reply(
+        res,
+        response.status,
+        shared ? value : cleanResponse(url.pathname, value),
+        shared && /^\d{1,15}$/.test(nextSequence ?? "") ? { "X-Next-Sequence": nextSequence } : {},
+      );
     } catch {
       cached = undefined;
       return reply(res, 503, { error: "repository_backend_unavailable" });

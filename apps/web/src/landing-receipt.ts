@@ -7,7 +7,8 @@ export function isLandedReceipt(
 ): boolean {
   return Boolean(
     receipt &&
-    typeof receipt.authorizationId === "string" && receipt.authorizationId.trim() &&
+    typeof receipt.authorizationId === "string" &&
+    receipt.authorizationId.trim() &&
     ["fixture", "artifacts"].includes(receipt.backend) &&
     (!backend || receipt.backend === backend) &&
     (!run.artifactAdmission || receipt.backend === "artifacts") &&

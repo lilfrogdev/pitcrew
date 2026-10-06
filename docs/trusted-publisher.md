@@ -99,13 +99,9 @@ be resolved through `ctx.container.images.publisher` to the reviewed digest.
 ```json
 {
   "durable_objects": {
-    "bindings": [
-      { "name": "TRUSTED_PUBLISHER", "class_name": "TrustedPublisherAgent" }
-    ]
+    "bindings": [{ "name": "TRUSTED_PUBLISHER", "class_name": "TrustedPublisherAgent" }]
   },
-  "migrations": [
-    { "tag": "publisher-v1", "new_sqlite_classes": ["TrustedPublisherAgent"] }
-  ],
+  "migrations": [{ "tag": "publisher-v1", "new_sqlite_classes": ["TrustedPublisherAgent"] }],
   "containers": [
     {
       "name": "pitcrew-trusted-publisher",

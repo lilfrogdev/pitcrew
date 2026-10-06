@@ -403,7 +403,8 @@ for (const code of [124, 137]) {
 }
 
 test("current admission revoked after metadata fences fork creation", async () => {
-  const f = fixture(); let checks = 0;
+  const f = fixture();
+  let checks = 0;
   const artifacts = new CloudflareArtifacts(f.binding, async () => {
     if (++checks === 4) throw Error("revoked");
   });
@@ -411,7 +412,8 @@ test("current admission revoked after metadata fences fork creation", async () =
   assert.deepEqual(f.calls.forks, []);
 });
 test("late fork admission denial still revokes its creation token", async () => {
-  const f = fixture(); let checks = 0;
+  const f = fixture();
+  let checks = 0;
   const artifacts = new CloudflareArtifacts(f.binding, async () => {
     if (++checks === 5) throw Error("revoked");
   });
@@ -420,10 +422,16 @@ test("late fork admission denial still revokes its creation token", async () => 
   assert.deepEqual(f.calls.revoke, [{ name: "fork-1", token: "initial-fork-only-secret" }]);
 });
 test("late read lease denial revokes the lease before any paid container start", async () => {
-  const f = fixture(); let checks = 0;
-  const sandbox = new CloudflareSandbox(f.binding, () => f.container, "registered-tests-image", async () => {
-    if (++checks === 4) throw Error("revoked");
-  });
+  const f = fixture();
+  let checks = 0;
+  const sandbox = new CloudflareSandbox(
+    f.binding,
+    () => f.container,
+    "registered-tests-image",
+    async () => {
+      if (++checks === 4) throw Error("revoked");
+    },
+  );
   await assert.rejects(sandbox.prepare(workspace), /WORKSPACE_PREPARATION_FAILED/);
   assert.equal(f.calls.tokens.length, 1);
   assert.deepEqual(f.calls.revoke, [{ name: "fork-1", token: "lease-id" }]);

@@ -35,8 +35,12 @@ export function api(
     if (!access) return;
     const parts = path.split("/").slice(1);
     if (parts[0] !== "api") throw new AdmissionError("not_found", 404);
-    if (parts[1] === "account" || parts[1] === "invitations" ||
-        (parts[1] === "projects" && parts.length === 2)) return;
+    if (
+      parts[1] === "account" ||
+      parts[1] === "invitations" ||
+      (parts[1] === "projects" && parts.length === 2)
+    )
+      return;
     if (parts[1] === "projects") {
       access.requireProject(parts[2]);
       if (parts[3] === "threads" && parts[4]) access.requireThread(parts[4]);
@@ -52,10 +56,11 @@ export function api(
     } else if (parts[1] === "capabilities") access.requireProject(coordinator.state.project.id);
     else throw new AdmissionError("not_found", 404);
   };
-  if (access) app.use("*", async (c, next) => {
-    authorizePath(new URL(c.req.url).pathname);
-    await next();
-  });
+  if (access)
+    app.use("*", async (c, next) => {
+      authorizePath(new URL(c.req.url).pathname);
+      await next();
+    });
   app.use("*", async (c, next) => {
     if (c.req.method === "POST") {
       if (
@@ -97,10 +102,11 @@ export function api(
     }
     await next();
   });
-  if (access) app.use("*", async (c, next) => {
-    authorizePath(new URL(c.req.url).pathname);
-    await next();
-  });
+  if (access)
+    app.use("*", async (c, next) => {
+      authorizePath(new URL(c.req.url).pathname);
+      await next();
+    });
   app.onError((error, c) =>
     c.json(
       {
@@ -167,11 +173,13 @@ export function api(
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
     const groups = coordinator.groups();
-    if (access) for (const group of groups) {
-      group.links = group.links.filter((link) => access.visibleThread(link.threadId));
-      for (const report of group.reports)
-        if (report.dispatch && !access.visibleThread(report.dispatch.threadId)) delete report.dispatch;
-    }
+    if (access)
+      for (const group of groups) {
+        group.links = group.links.filter((link) => access.visibleThread(link.threadId));
+        for (const report of group.reports)
+          if (report.dispatch && !access.visibleThread(report.dispatch.threadId))
+            delete report.dispatch;
+      }
     return c.json({ groups, profile: coordinator.profile() });
   });
   app.post("/api/projects/:projectId/reports", (c) => {
@@ -216,27 +224,36 @@ export function api(
   });
   app.get("/api/account", (c) => c.json(access?.account() ?? identity));
   app.get("/api/projects", (c) => c.json(access?.projectRole() ? [coordinator.state.project] : []));
-  app.get("/api/projects/:projectId/members", (c) => c.json(access?.projectMembers(c.req.param("projectId")) ?? []),
+  app.get("/api/projects/:projectId/members", (c) =>
+    c.json(access?.projectMembers(c.req.param("projectId")) ?? []),
   );
-  app.get("/api/threads/:threadId/members", (c) => c.json(access?.threadMembers(c.req.param("threadId")) ?? []),
+  app.get("/api/threads/:threadId/members", (c) =>
+    c.json(access?.threadMembers(c.req.param("threadId")) ?? []),
   );
   app.post("/api/projects/:projectId/invitations", async (c) => {
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
-    return c.json(await access.invite("project", c.req.param("projectId"), body.email, body.role), 201,
+    return c.json(
+      await access.invite("project", c.req.param("projectId"), body.email, body.role),
+      201,
     );
   });
   app.post("/api/threads/:threadId/invitations", async (c) => {
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
-    return c.json(await access.invite("thread", c.req.param("threadId"), body.email, body.role), 201,
+    return c.json(
+      await access.invite("thread", c.req.param("threadId"), body.email, body.role),
+      201,
     );
   });
-  app.get("/api/invitations/:token", async (c) => c.json(await access?.preview(c.req.param("token"))),
+  app.get("/api/invitations/:token", async (c) =>
+    c.json(await access?.preview(c.req.param("token"))),
   );
-  app.post("/api/invitations/:token/accept", async (c) => c.json(await access?.accept(c.req.param("token"))),
+  app.post("/api/invitations/:token/accept", async (c) =>
+    c.json(await access?.accept(c.req.param("token"))),
   );
-  app.post("/api/invitations/:token/revoke", async (c) => c.json(await access?.revoke(c.req.param("token"))),
+  app.post("/api/invitations/:token/revoke", async (c) =>
+    c.json(await access?.revoke(c.req.param("token"))),
   );
   app.delete("/api/projects/:projectId/members/:actor", (c) =>
     c.json(access?.remove("project", c.req.param("projectId"), c.req.param("actor"))),
@@ -247,7 +264,8 @@ export function api(
   app.get("/api/projects/:projectId/threads", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
-    return c.json(coordinator.state.threads.filter((thread) => !access || access.visibleThread(thread.id)),
+    return c.json(
+      coordinator.state.threads.filter((thread) => !access || access.visibleThread(thread.id)),
     );
   });
   app.post("/api/projects/:projectId/threads", async (c) => {
@@ -255,7 +273,9 @@ export function api(
       throw new AdmissionError("not_found", 404);
     const body = c.get("body");
     return c.json(
-      coordinator.createThread(body.title as string, body.idempotencyKey as string,
+      coordinator.createThread(
+        body.title as string,
+        body.idempotencyKey as string,
         access?.identity.actor ?? identity.actor,
         access?.identity.email,
       ),
@@ -305,7 +325,8 @@ export function api(
     return c.json(
       (coordinator.state.conversationTurns ?? [])
         .filter((turn) => turn.threadId === c.req.param("threadId"))
-        .map(({ input: _input, actor: _actor, membershipActor: _member, ...publicTurn }) => publicTurn,
+        .map(
+          ({ input: _input, actor: _actor, membershipActor: _member, ...publicTurn }) => publicTurn,
         ),
     );
   });
@@ -316,12 +337,20 @@ export function api(
   app.post("/api/threads/:threadId/messages", async (c) => {
     const body = c.get("body");
     if (executionDisabled) {
-      if (body.attachments !== undefined && (!Array.isArray(body.attachments) || body.attachments.length))
+      if (
+        body.attachments !== undefined &&
+        (!Array.isArray(body.attachments) || body.attachments.length)
+      )
         throw new AdmissionError("note_attachments_unavailable");
-      return c.json(coordinator.appendNote(
-      c.req.param("threadId"), body.content as string,
-      body.idempotencyKey as string, identity.actor, access?.identity,
-      ), 201,
+      return c.json(
+        coordinator.appendNote(
+          c.req.param("threadId"),
+          body.content as string,
+          body.idempotencyKey as string,
+          identity.actor,
+          access?.identity,
+        ),
+        201,
       );
     }
     if (conversation) {
@@ -386,9 +415,11 @@ export function api(
     const after = Number(c.req.query("after") ?? 0);
     if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_event_cursor");
     const scanned = coordinator.eventsAfter(after);
-    const page = scanned.filter((event) =>
-      !access || !(event.provenance?.threadId ?? event.knowledge?.threadId) ||
-      access.visibleThread((event.provenance?.threadId ?? event.knowledge?.threadId)!),
+    const page = scanned.filter(
+      (event) =>
+        !access ||
+        !(event.provenance?.threadId ?? event.knowledge?.threadId) ||
+        access.visibleThread((event.provenance?.threadId ?? event.knowledge?.threadId)!),
     );
     c.header("X-Next-Sequence", String(scanned.at(-1)?.sequence ?? after));
     return c.json(page);

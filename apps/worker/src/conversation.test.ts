@@ -186,14 +186,14 @@ it("stores synthetic images by immutable reference, replays exact bytes and reje
   ).toEqual(first);
   expect(rows.size).toBe(1);
   const otherUser = core.queueTurn(
-      thread.id,
-      "Inspect this synthetic square",
-      "image",
-      "other",
-      catalog,
-      undefined,
-      [image],
-    );
+    thread.id,
+    "Inspect this synthetic square",
+    "image",
+    "other",
+    catalog,
+    undefined,
+    [image],
+  );
   expect(otherUser.turn.id).not.toBe(first.turn.id);
   expect(otherUser.turn.actor).toBe("other");
   const unsupported = structuredClone(catalog);

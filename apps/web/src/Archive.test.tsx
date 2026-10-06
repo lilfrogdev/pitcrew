@@ -48,9 +48,9 @@ describe("archive conversations", () => {
       "Retain my draft",
     );
     expect(readSnapshot).not.toHaveBeenCalled();
-    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).not.toContain(
-      "welcome",
-    );
+    expect(
+      JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations,
+    ).not.toContain("welcome");
     await user.click(screen.getByRole("button", { name: "Recover interrupted work" }));
     await screen.findByRole("heading", { name: "Recover interrupted work" });
     const results = await search(user, "Make agent");
@@ -141,7 +141,9 @@ describe("archive conversations", () => {
     );
     await waitFor(() =>
       expect(
-        within(screen.getByRole("region", { name: "Pinned" })).queryByRole("button", { name: title }),
+        within(screen.getByRole("region", { name: "Pinned" })).queryByRole("button", {
+          name: title,
+        }),
       ).toBeNull(),
     );
   });
@@ -162,14 +164,20 @@ describe("archive conversations", () => {
       "textContent",
       expect.stringContaining("Archive failed"),
     );
-    expect(within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", { name })).toBeTruthy();
-    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).toContain("welcome");
+    expect(
+      within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", { name }),
+    ).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).toContain(
+      "welcome",
+    );
     expect(
       screen.getByText("Show the work behind a change, from delegation to review."),
     ).toBeTruthy();
     await act(user, name, "Archive", screen.getByLabelText("Conversations in Pitcrew"));
     await waitFor(() => expect(screen.queryByRole("button", { name })).toBeNull());
-    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).not.toContain("welcome");
+    expect(
+      JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations,
+    ).not.toContain("welcome");
     expect(write.mock.calls).toEqual([
       ["pitcrew", "welcome", true],
       ["pitcrew", "welcome", true],
