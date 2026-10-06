@@ -68,6 +68,9 @@ export class AdmissionError extends Error {
   }
 }
 export interface State {
+  identityBindings?: Record<string, { userId: string; email: string }>;
+  collaboration?: import("./collaboration").CollaborationState;
+  ownedProjects?: Record<string, { state: State; sourceName: string; sourceId: string; ownerActor: string }>;
   conversationTurns?: ConversationTurn[];
   // Latest explicit checkpoint per run; never a per-note causal watermark.
   knowledgeObservations?: Record<string, number>;
@@ -149,6 +152,53 @@ function delegationPolicy(project: Project): KnowledgeRecord {
   };
 }
 export class Coordinator {
+  bindVerifiedAccount(accessActor: string, userId: string, email: string) {
+    const bindings = this.state.identityBindings ?? {};
+    const existing = bindings[accessActor];
+    if (existing) {
+      if (existing.userId !== userId || existing.email !== email)
+        throw new AdmissionError("identity_binding_conflict", 403);
+      return;
+    }
+    if (Object.values(bindings).some((item) => item.userId === userId))
+      throw new AdmissionError("identity_binding_conflict", 403);
+    this.durableUpdate(() => {
+      (this.state.identityBindings ??= {})[accessActor] = { userId, email };
+    });
+  }
+  addOwnedProject(sourceName: string, sourceId: string, actor: string, email: string) {
+    return this.durableUpdate(() => {
+      const directory = this.state.ownedProjects ??= {};
+      if (Object.values(directory).some((entry) => entry.sourceId === sourceId))
+        throw new AdmissionError("repository_already_registered", 409);
+      if (Object.keys(directory).length >= 20) throw new AdmissionError("capacity", 429);
+      const id = this.id();
+      const projectState = initialState({
+        id, name: sourceName,
+        repository: `artifact:${sourceName}`,
+        // An empty source has no commit. Execution remains gated until an
+        // independently verified initial commit supplies a real base SHA.
+        baseSha: "0".repeat(40),
+        configurationRevision: "uninitialized-v1",
+      });
+      projectState.collaboration = {
+        projectMembers: { [actor]: { actor, email, role: "owner" } },
+        threadMembers: {}, invitations: {},
+      };
+      directory[id] = { state: projectState, sourceName, sourceId, ownerActor: actor };
+      return projectState.project;
+    });
+  }
+  updateOwnedProject(id: string, state: State) {
+    this.durableUpdate(() => {
+      const entry = this.state.ownedProjects?.[id];
+      if (!entry) throw new AdmissionError("not_found", 404);
+      entry.state = structuredClone(state);
+    });
+  }
+  updateCollaboration<T>(operation: (state: State) => T): T {
+    return this.durableUpdate(() => operation(this.state));
+  }
   constructor(
     public state: State,
     private persistState: (state: State) => void,
@@ -472,6 +522,7 @@ export class Coordinator {
     acceptance: AcceptanceCriteria,
     profileRevision: string,
     catalog?: ModelCatalog,
+    membershipActor = actor,
   ) {
     this.validateKey(key);
     const saved = this.state.keys[`intake_dispatch_${actor}_${key}`];
@@ -566,6 +617,13 @@ export class Coordinator {
                 archived: false,
               };
               this.state.threads.push(thread);
+              if (this.state.collaboration) {
+                const member = this.state.collaboration.projectMembers[membershipActor];
+                if (!member) throw new AdmissionError("not_found", 404);
+                this.state.collaboration.threadMembers[thread.id] = {
+                  [membershipActor]: { ...member, role: "owner" },
+                };
+              }
               const messages: Message[] = reports.map((report) => ({
                 id: this.id(),
                 threadId: thread.id,
@@ -807,9 +865,9 @@ export class Coordinator {
       return structuredClone(thread);
     });
   }
-  createThread(title: string, key: string) {
+  createThread(title: string, key: string, actor = "local-fixture", email?: string) {
     this.validateKey(key);
-    return this.transaction(`thread_${key}`, { title }, () => {
+    return this.transaction(`thread_${JSON.stringify([actor, key])}`, { title }, () => {
       if (typeof title !== "string" || !title.trim() || title.length > 200)
         throw new AdmissionError("invalid_title");
       if (this.state.threads.length >= 50) throw new AdmissionError("capacity", 429);
@@ -820,6 +878,13 @@ export class Coordinator {
         archived: false,
       };
       this.state.threads.push(thread);
+      if (this.state.collaboration) {
+        const member = this.state.collaboration.projectMembers[actor];
+        if (!member || member.email !== email) throw new AdmissionError("not_found", 404);
+        this.state.collaboration.threadMembers[thread.id] = {
+          [actor]: { ...member, role: "owner" },
+        };
+      }
       this.event("thread.created", thread.id);
       return thread;
     });
@@ -1104,6 +1169,21 @@ export class Coordinator {
       this.state.messages.push(message);
       this.event("message.created", message.id);
       this.event(error ? "conversation.failed" : "conversation.completed", id);
+    });
+  }
+  appendNote(threadId: string, content: string, key: string, actor: string): Message {
+    this.validateKey(key);
+    return this.transaction(`note_${JSON.stringify([actor, key])}`, { threadId, content }, () => {
+      this.thread(threadId);
+      if (typeof content !== "string" || !content.trim() || content.length > 8000)
+        throw new AdmissionError("invalid_content");
+      if (this.state.messages.length >= 500) throw new AdmissionError("capacity", 429);
+      const message: Message = {
+        id: this.id(), threadId, role: "user", content: content.trim(), createdAt: this.now(),
+      };
+      this.state.messages.push(message);
+      this.event("message.created", message.id, { kind: "principal", id: actor });
+      return structuredClone(message);
     });
   }
   delegateConversation(id: string) {

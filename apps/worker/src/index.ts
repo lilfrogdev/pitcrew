@@ -27,6 +27,8 @@ import { SqliteLandingStore } from "../../../packages/execution/src/landing-stor
 import { fixtureLandingApi, assertConfigurationIdle, type LandingApi } from "./landing-api";
 import { cloudInitialState } from "./cloud-configuration";
 import { principal, protectedFetch, type AccessEnv } from "./access";
+import { Collaboration } from "./collaboration";
+import { configuredAuth, authRequest, authUser, type AuthEnv } from "./auth";
 import { Agent, getAgentByName } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
 export { ChangeAgent, ReviewAgent };
@@ -38,7 +40,7 @@ import {
 } from "./infrastructure-admission";
 import { api } from "./api";
 import { Coordinator, fakeExecution, initialState, type State } from "./coordinator";
-interface Env extends PiEnv, AccessEnv {
+interface Env extends PiEnv, AccessEnv, AuthEnv {
   ASSETS?: Fetcher;
   PROJECT_BASE_SHA?: string;
   CHANGE: DurableObjectNamespace<ChangeAgent>;
@@ -52,9 +54,30 @@ interface Env extends PiEnv, AccessEnv {
   REPOSITORY_LIFECYCLE?: string;
   INFRASTRUCTURE_ADMISSION_ENABLED?: string;
   CLOUD_CONVERSATION_ENABLED?: string;
+  ADOPT_REPOSITORY_NAME?: string;
+  ADOPT_REPOSITORY_ID?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
+  private projectCoordinator(id: string): Coordinator | undefined {
+    const root = this.getCoordinator();
+    if (id === root.state.project.id) return root;
+    const entry = root.state.ownedProjects?.[id];
+    if (!entry) return;
+    return new Coordinator(entry.state, (state) => root.updateOwnedProject(id, state));
+  }
+  private requestCoordinator(path: string): Coordinator | undefined {
+    const parts = path.split("/").slice(1);
+    if (parts[0] !== "api") return;
+    if (parts[1] === "projects" && parts[2]) return this.projectCoordinator(parts[2]);
+    const root = this.getCoordinator();
+    const candidates = [root, ...Object.keys(root.state.ownedProjects ?? {}).map((id) =>
+      this.projectCoordinator(id)!)];
+    if (parts[1] === "threads") return candidates.find((core) => core.state.threads.some((t) => t.id === parts[2]));
+    if (parts[1] === "changes") return candidates.find((core) => core.state.changes?.some((item) => item.id === parts[2]));
+    if (parts[1] === "runs") return candidates.find((core) => core.state.runs.some((item) => item.id === parts[2]));
+    return root;
+  }
   private repositoryLifecycle?: RepositoryLifecycle;
   private getRepositoryLifecycle(request: Request) {
     const listing =
@@ -476,34 +499,110 @@ export class RepositoryAgent extends Agent<Env> {
     return this.coordinator;
   }
   async onRequest(request: Request) {
-    const identity = await principal(request, this.env);
-    if (!identity) return Response.json({ error: "access_not_configured" }, { status: 403 });
+    const accessIdentity = await principal(request, this.env);
+    if (!accessIdentity) return Response.json({ error: "access_not_configured" }, { status: 403 });
+    const auth = this.env.AUTH_MODE === "better-auth"
+      ? configuredAuth(this.env, request, (task) => this.ctx.waitUntil(task)) : undefined;
+    if (this.env.AUTH_MODE === "better-auth" && !auth)
+      return Response.json({ error: "auth_unavailable" }, { status: 503 });
+    const path = new URL(request.url).pathname;
+    if (path.startsWith("/api/auth/"))
+      return auth ? authRequest(auth, request, accessIdentity)
+        : Response.json({ error: "not_found" }, { status: 404 });
+    const user = auth ? await authUser(auth, request, accessIdentity) : undefined;
+    if (auth && !user) return Response.json({ error: "unauthorized" }, { status: 401 });
+    const identity = user
+      ? { actor: `user:${user.id}`, email: user.email.toLowerCase(),
+          displayName: user.name, avatar: user.image }
+      : accessIdentity;
+    const ownerEmail = this.env.ACCESS_EMAIL?.toLowerCase() ??
+        (this.env.ENVIRONMENT === "development" && this.env.FIXTURE_IDENTITY === "lilfrogdev"
+          ? "dev@lilfrogdev.com" : "");
+    const root = this.getCoordinator();
+    if (user) root.bindVerifiedAccount(accessIdentity.actor, user.id, identity.email);
+    const rootAccess = new Collaboration(root, identity, ownerEmail);
+    if (user) rootAccess.rebindLegacy(accessIdentity.actor);
+    rootAccess.bootstrap();
+    if (request.method === "GET" && path === "/api/projects") {
+      const projects = Object.keys(root.state.ownedProjects ?? {}).map((id) =>
+        this.projectCoordinator(id)!).filter((core) =>
+        !!new Collaboration(core, identity, ownerEmail).projectRole(),
+      ).map((core) => core.state.project);
+      return Response.json(projects);
+    }
+    if (request.method === "GET" && path === "/api/account")
+      return Response.json({ actor: identity.actor, email: identity.email,
+        displayName: "displayName" in identity ? identity.displayName : undefined,
+        avatar: "avatar" in identity ? identity.avatar : undefined });
+    if (request.method === "POST" && path === "/api/projects") {
+      if (identity.email !== ownerEmail || !rootAccess.projectRole() ||
+          !this.env.ARTIFACTS || !this.env.ADOPT_REPOSITORY_NAME || !this.env.ADOPT_REPOSITORY_ID)
+        return Response.json({ error: "repository_adoption_unavailable" }, { status: 503 });
+      let name: unknown;
+      try {
+        if (Number(request.headers.get("content-length") ?? 0) > 2048) throw Error();
+        const reader = request.body?.getReader();
+        if (!reader) throw Error();
+        const chunks: Uint8Array[] = [];
+        let length = 0;
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          length += next.value.byteLength;
+          if (length > 2048) { await reader.cancel(); throw Error(); }
+          chunks.push(next.value);
+        }
+        const bytes = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+        name = (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as { name?: unknown }).name;
+      } catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
+      if (name !== this.env.ADOPT_REPOSITORY_NAME)
+        return Response.json({ error: "not_found" }, { status: 404 });
+      try {
+        using repo = await this.env.ARTIFACTS.get(name);
+        const info = await repo.info();
+        if (info.id !== this.env.ADOPT_REPOSITORY_ID)
+          return Response.json({ error: "repository_identity_changed" }, { status: 409 });
+        if (rootAccess.projectRole() !== "owner")
+          return Response.json({ error: "not_found" }, { status: 404 });
+        const project = root.addOwnedProject(name, info.id, identity.actor, identity.email);
+        return Response.json(project, { status: 201 });
+      } catch {
+        return Response.json({ error: "repository_verification_failed" }, { status: 503 });
+      }
+    }
+    const coordinator = this.requestCoordinator(path);
+    if (!coordinator) return Response.json({ error: "not_found" }, { status: 404 });
+    const access = new Collaboration(coordinator, identity, ownerEmail);
+    if (user && coordinator !== root) access.rebindLegacy(accessIdentity.actor);
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter")
-      return providerConnectionRequest(request, this.env, identity.actor);
+      return providerConnectionRequest(request, this.env, accessIdentity.actor);
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter/models")
-      return providerModelsRequest(request, this.env, identity.actor);
+      return providerModelsRequest(request, this.env, accessIdentity.actor);
     if (
       this.env.EXECUTION_MODE === "disabled" &&
       request.method === "POST" &&
-      (/^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname) ||
-        /^\/api\/changes\/[^/]+\/runs$/.test(new URL(request.url).pathname) ||
+      (/^\/api\/changes\/[^/]+\/runs$/.test(new URL(request.url).pathname) ||
         /^\/api\/projects\/[^/]+\/intake\/dispatch$/.test(new URL(request.url).pathname))
     )
       return Response.json({ error: "execution_disabled" }, { status: 503 });
-    if (/^\/api\/repositories(?:\/|$)/.test(new URL(request.url).pathname))
+    if (/^\/api\/repositories(?:\/|$)/.test(path)) {
+      if (access.projectRole() !== "owner")
+        return Response.json({ error: "not_found" }, { status: 404 });
       return lifecycleRequest(request, this.getRepositoryLifecycle(request), (task) =>
         this.ctx.waitUntil(task),
       );
+    }
     const bodyLimit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
       ? ATTACHMENT_LIMITS.requestBytes
       : 16384;
     if (Number(request.headers.get("content-length") ?? 0) > bodyLimit)
       return Response.json({ error: "body_too_large" }, { status: 413 });
-    const coordinator = this.getCoordinator();
     let providerReady = this.env.EXECUTION_MODE === "fake" || !requiresUserOpenRouter(this.env);
     if (!providerReady && credentialStorageAvailable(this.env)) {
       try {
-        providerReady = await userCredential(this.env, identity.actor).configured(identity.actor);
+        providerReady = await userCredential(this.env, accessIdentity.actor).configured(accessIdentity.actor);
       } catch {
         /* Fail closed. */
       }
@@ -519,18 +618,22 @@ export class RepositoryAgent extends Agent<Env> {
       return Response.json({ error: "provider_credential_unavailable" }, { status: 409 });
     const app = api(
       coordinator,
-      (id) => this.dispatchRun(id),
+      (id) => this.env.EXECUTION_MODE === "fake"
+        ? coordinator.dispatch(id, fakeExecution)
+        : this.dispatchRun(id),
       this.landing(coordinator),
-      identity,
+      accessIdentity,
       this.env.CONVERSATION &&
         providerReady &&
         this.conversationsEnabled() &&
         (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
         ? {
-            catalog: resolveCatalog(userModelEnv(this.env, identity.actor)),
+            catalog: resolveCatalog(userModelEnv(this.env, accessIdentity.actor)),
             dispatch: (id) => this.conversationJobs.enqueue(id, { turnId: id }),
           }
         : undefined,
+      access,
+      this.env.EXECUTION_MODE === "disabled",
     );
     return app.fetch(request);
   }
