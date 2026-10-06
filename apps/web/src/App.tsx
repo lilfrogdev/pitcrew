@@ -799,7 +799,7 @@ export function App({ api, auth, viewer, demo = false }: {
                   disabled={!threadId || busy || !!selectionSaving[threadId]}
                   executionEnabled={composerCapabilities ? executionEnabled : null}
                 />
-              ) : humanMessages ? <PermissionsMenu executionEnabled={false} /> : providersLoading ? (
+              ) : !projectId ? null : humanMessages ? <PermissionsMenu executionEnabled={false} /> : providersLoading ? (
                 <span className="provider-setup" role="status">
                   Checking providers…
                 </span>

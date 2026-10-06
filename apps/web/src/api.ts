@@ -139,6 +139,19 @@ export class ApiError extends Error {
   }
 }
 let sessionRequest: Promise<string | null> | undefined;
+let activeReads = 0;
+const waitingReads: (() => void)[] = [];
+async function readWithBudget<T>(read: () => Promise<T>): Promise<T> {
+  // The local relay admits four product requests. Leave one slot for a write.
+  if (activeReads >= 3) await new Promise<void>((resolve) => waitingReads.push(resolve));
+  else activeReads++;
+  try { return await read(); }
+  finally {
+    const next = waitingReads.shift();
+    if (next) next();
+    else activeReads--;
+  }
+}
 async function sessionNonce(): Promise<string | null> {
   const response = await fetch("/api/local-session", { signal: AbortSignal.timeout(10000) });
   if (!response.ok) {
@@ -164,12 +177,15 @@ export async function mutationHeaders(): Promise<Record<string, string>> {
 export async function apiFetch(path: string, body?: unknown): Promise<Response> {
   const send = async () => {
     const headers = body ? await mutationHeaders() : undefined;
-    const response = await fetch(`/api${path}`, {
+    const perform = () => fetch(`/api${path}`, {
       method: body ? "POST" : "GET",
-      signal: AbortSignal.timeout(10000),
+      // Reads include edge admission, cached-token/JWKS checks and the relay's
+      // own upstream deadline. Don't free a client slot before that work ends.
+      signal: AbortSignal.timeout(body ? 10000 : 45000),
       headers,
       body: body ? JSON.stringify(body) : undefined,
     });
+    const response = body ? await perform() : await readWithBudget(perform);
     return { response, local: !!headers?.["X-Pitcrew-Local-Nonce"] };
   };
   const first = await send();

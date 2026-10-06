@@ -208,7 +208,7 @@ export function Collaborators({
         else setError(problem(cause));
       }
     } finally {
-      if (foreground && generation === requestGeneration.current) setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
     }
   }, [api, projectId, threadId, onAccessLost]);
   useEffect(() => {
@@ -223,12 +223,15 @@ export function Collaborators({
     void load(true);
     const interval = window.setInterval(() => { if (!document.hidden) void load(); }, 10000);
     const online = () => void load(true);
+    const visible = () => { if (!document.hidden) void load(); };
     window.addEventListener("online", online);
+    document.addEventListener("visibilitychange", visible);
     return () => {
       requestGeneration.current++;
       mutationGeneration.current++;
       window.clearInterval(interval);
       window.removeEventListener("online", online);
+      document.removeEventListener("visibilitychange", visible);
     };
   }, [load]);
   if (!api || !projectId) return null;
@@ -277,7 +280,10 @@ export function Collaborators({
   const code = invitation?.token ?? "";
   return (
     <div className={styles.sharing}>
-      <button ref={trigger} type="button" aria-expanded={open} aria-controls="collaboration-panel" onClick={() => setOpen(!open)}>
+      <button ref={trigger} type="button" aria-expanded={open} aria-controls="collaboration-panel" onClick={() => {
+        if (!open) void load(true);
+        setOpen(!open);
+      }}>
         Share{threadMembers.length > 1 ? ` · ${threadMembers.length}` : ""}
       </button>
       {open && <section id="collaboration-panel" className={styles.panel} aria-label="Sharing"

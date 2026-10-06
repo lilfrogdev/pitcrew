@@ -57,7 +57,7 @@ it("allows the bounded Access preparation and upstream deadline for repository r
   expect(timeout).toHaveBeenCalledWith(45000);
   timeout.mockClear();
   await apiFetch("/snapshot");
-  expect(timeout).toHaveBeenCalledExactlyOnceWith(10000);
+  expect(timeout).toHaveBeenCalledExactlyOnceWith(45000);
 });
 
 it("never automatically retries repository mutations after Access or admission rejection", async () => {

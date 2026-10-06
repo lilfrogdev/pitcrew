@@ -330,3 +330,21 @@ it("reads the account directory envelope and scopes capabilities to the selected
   expect((await httpApi.capabilities("repo / one")).notesEnabled).toBe(true);
   expect(fetch.mock.calls[1][0]).toBe("/api/capabilities?projectId=repo%20%2F%20one");
 });
+
+it("bounds simultaneous product reads and releases a slot after an interrupted request", async () => {
+  let active = 0, maximum = 0, count = 0;
+  vi.stubGlobal("fetch", vi.fn(async () => {
+    active++; maximum = Math.max(maximum, active);
+    const current = ++count;
+    try {
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      if (current === 2) throw Error("interrupted read");
+      return Response.json([]);
+    } finally { active--; }
+  }));
+  const { apiFetch } = await import("./api");
+  const results = await Promise.allSettled(Array.from({ length: 10 }, () => apiFetch("/projects")));
+  expect(maximum).toBe(3);
+  expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(9);
+  expect(active).toBe(0);
+});

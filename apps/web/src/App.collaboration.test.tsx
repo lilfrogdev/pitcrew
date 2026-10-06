@@ -49,4 +49,6 @@ it("renders peer authors from server identity and clears their transcript after 
   fireEvent(window, new Event("online"));
   await waitFor(() => expect(screen.queryByText("Private shared note")).toBeNull());
   expect(screen.queryByText("Bryan")).toBeNull();
+  await screen.findByText("No repositories yet");
+  expect(screen.queryByRole("button", { name: "Set up a provider" })).toBeNull();
 });

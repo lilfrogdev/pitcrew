@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { ApiError, type CollaborationApi } from "./api";
@@ -30,6 +30,24 @@ function collaboration(): CollaborationApi {
 afterEach(() => {
   cleanup();
   history.replaceState(null, "", "/");
+});
+
+it("finishes loading when a reconnect supersedes the opening request", async () => {
+  const api = collaboration();
+  let finishOpening!: (members: typeof owner[]) => void;
+  vi.mocked(api.projectMembers).mockResolvedValueOnce([owner]).mockImplementationOnce(
+    () => new Promise((resolve) => { finishOpening = resolve; }),
+  ).mockResolvedValue([owner, bryan]);
+  const user = userEvent.setup();
+  render(<Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={vi.fn()} />);
+  await waitFor(() => expect(api.projectMembers).toHaveBeenCalledOnce());
+  await user.click(screen.getByRole("button", { name: "Share" }));
+  expect(screen.getByText("Loading people…")).toBeTruthy();
+  fireEvent(document, new Event("visibilitychange"));
+  await screen.findByText(/bryan@example.com/);
+  expect(screen.queryByText("Loading people…")).toBeNull();
+  finishOpening([owner]);
+  await waitFor(() => expect(screen.getByText(/bryan@example.com/)).toBeTruthy());
 });
 
 it("loads server members, creates a recipient-specific code and removes a member", async () => {
