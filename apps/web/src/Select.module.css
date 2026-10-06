@@ -26,13 +26,18 @@
 .compact .trigger {
   border-color: transparent;
   background: transparent;
-  padding: 6px;
+  padding: 4px 7px;
   font-size: 12px;
   max-width: 200px;
-  border-radius: 8px;
+  border-radius: 6px;
+  min-height: 28px;
 }
 .compact .trigger:hover:not(:disabled) {
   background: var(--canvas);
+  color: var(--text);
+}
+.compact .trigger[aria-expanded="true"] {
+  background: var(--hover);
   color: var(--text);
 }
 .trigger[aria-invalid="true"] {
@@ -60,6 +65,31 @@
 .compact .options {
   top: auto;
   bottom: calc(100% + 4px);
+}
+.composerOptions {
+  z-index: 100;
+  top: auto;
+  bottom: auto;
+  min-width: 0;
+  max-width: none;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 12%);
+}
+.menuTitle {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 5px 8px;
+}
+.badge {
+  display: inline-block;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 3px;
+  font-size: 9px;
+  line-height: 13px;
 }
 .option {
   display: flex;

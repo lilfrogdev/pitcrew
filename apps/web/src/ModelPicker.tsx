@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { IconBrandOpenai, IconCpu, IconSettings } from "@tabler/icons-react";
+import { IconSettings } from "@tabler/icons-react";
 import type { ModelChoice, ModelSelection, ModelSettings } from "@pitcrew/protocol";
 import styles from "./ModelPicker.module.css";
 import { Select } from "./Select";
-import openRouterLogo from "./assets/openrouter.svg";
+import { ModelCatalogPicker } from "./ModelCatalogPicker";
+import { PermissionsMenu } from "./PermissionsMenu";
 
 export interface ModelPickerProps {
   models: ModelChoice[];
@@ -11,6 +12,9 @@ export interface ModelPickerProps {
   onSelection: (selection: ModelSelection) => void;
   disabled: boolean;
   label?: string;
+  favoritesScope?: string;
+  executionEnabled?: boolean | null;
+  catalogStatus?: "ready" | "loading" | "error" | "disconnected";
 }
 
 function preferredEffort(model: ModelChoice): ModelSelection["effort"] | undefined {
@@ -35,6 +39,9 @@ export function ModelPicker({
   onSelection,
   disabled,
   label = "Repo agent",
+  favoritesScope,
+  executionEnabled,
+  catalogStatus,
 }: ModelPickerProps) {
   const id = useId();
   const model = models.find((choice) => choice.id === selection.modelId);
@@ -42,43 +49,25 @@ export function ModelPicker({
   return (
     <div className={styles.picker}>
       <div className={styles.controls} role="group" aria-label={`${label} model and effort`}>
-        <label className={styles.control}>
-          <span className={styles.srOnly}>{label} model</span>
-          <span
-            className={styles.provider}
-            role="img"
-            aria-label={`${model?.provider ?? "Unknown"} provider`}
-          >
-            {model?.provider === "openrouter" ? (
-              <img src={openRouterLogo} alt="" />
-            ) : model?.provider === "openai" ? (
-              <IconBrandOpenai size={18} stroke={1.5} aria-hidden="true" />
-            ) : (
-              <IconCpu size={18} stroke={1.5} aria-hidden="true" />
-            )}
-          </span>
-          <Select
+        <div className={styles.control}>
+          <ModelCatalogPicker
             label={`${label} model`}
             describedBy={error ? `${id}-error` : undefined}
-            invalid={!model}
+            models={models}
             value={model ? selection.modelId : ""}
             disabled={disabled}
-            placeholder="Model unavailable"
-            compact
-            options={models.map((choice) => ({
-              value: choice.id,
-              label: choice.label,
-              disabled: !choice.efforts.length,
-            }))}
-            onChange={(value) => {
-              const choice = models.find((item) => item.id === value);
-              const effort = choice && preferredEffort(choice);
-              if (choice && effort) onSelection({ modelId: choice.id, effort });
+            favoritesScope={favoritesScope}
+            status={catalogStatus}
+            onChange={(choice) => {
+              const effort = choice.efforts.includes(selection.effort)
+                ? selection.effort
+                : preferredEffort(choice);
+              if (effort) onSelection({ modelId: choice.id, effort });
             }}
           />
-        </label>
-        <label className={styles.control}>
-          <span className={styles.srOnly}>{label} effort</span>
+        </div>
+        <span className={styles.divider} aria-hidden="true" />
+        <div className={styles.control}>
           <Select
             label={`${label} effort`}
             describedBy={error ? `${id}-error` : undefined}
@@ -87,6 +76,8 @@ export function ModelPicker({
             disabled={disabled}
             placeholder="Effort unavailable"
             compact
+            menuTitle="Reasoning"
+            defaultValue={model ? preferredEffort(model) : undefined}
             options={(model?.efforts ?? []).map((effort) => ({
               value: effort,
               label: effort === "off" ? "Off" : effort.charAt(0).toUpperCase() + effort.slice(1),
@@ -96,7 +87,13 @@ export function ModelPicker({
               if (effort) onSelection({ ...selection, effort });
             }}
           />
-        </label>
+        </div>
+        {executionEnabled !== undefined && (
+          <>
+            <span className={styles.divider} aria-hidden="true" />
+            <PermissionsMenu executionEnabled={executionEnabled} />
+          </>
+        )}
       </div>
       {error && (
         <p id={`${id}-error`} className={styles.error} role="alert">

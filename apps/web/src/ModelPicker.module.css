@@ -16,6 +16,11 @@
   color: var(--muted);
   border-radius: 8px;
 }
+.divider {
+  height: 14px;
+  border-left: 1px solid var(--border);
+  margin: 0 4px;
+}
 .provider {
   display: grid;
   place-items: center;

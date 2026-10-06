@@ -714,6 +714,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                   selection={selection}
                   onSelection={(next) => void chooseModel(next)}
                   disabled={!threadId || busy || !!selectionSaving[threadId]}
+                  executionEnabled={composerCapabilities ? executionEnabled : null}
                 />
               ) : providersLoading ? (
                 <span className="provider-setup" role="status">

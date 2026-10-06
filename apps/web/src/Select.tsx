@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { IconCheck, IconChevronDown } from "@tabler/icons-react";
 import styles from "./Select.module.css";
+import { createPortal } from "react-dom";
+import { useUpwardPopup } from "./useUpwardPopup";
 
 export interface SelectOption {
   value: string;
@@ -19,6 +21,8 @@ export function Select({
   describedBy,
   invalid,
   compact = false,
+  menuTitle,
+  defaultValue,
 }: {
   label: string;
   value: string;
@@ -29,10 +33,13 @@ export function Select({
   describedBy?: string;
   invalid?: boolean;
   compact?: boolean;
+  menuTitle?: string;
+  defaultValue?: string;
 }) {
   const id = useId();
   const root = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const popup = useRef<HTMLSpanElement>(null);
   const search = useRef({ text: "", time: 0 });
   const [open, setOpen] = useState(false);
   const [activeValue, setActiveValue] = useState(value);
@@ -40,6 +47,7 @@ export function Select({
   const selected = options.find((option) => option.value === value);
   const active = enabled.find((option) => option.value === activeValue) ?? enabled[0];
   const expanded = open && !disabled && enabled.length > 0;
+  const position = useUpwardPopup(expanded && compact, trigger, popup, setOpen, 176);
   const activeIndex = options.findIndex((option) => option === active);
   useEffect(() => {
     if (disabled || !enabled.length) setOpen(false);
@@ -47,7 +55,11 @@ export function Select({
   useEffect(() => {
     if (!expanded) return;
     const outside = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
+      if (
+        !root.current?.contains(event.target as Node) &&
+        !popup.current?.contains(event.target as Node)
+      )
+        setOpen(false);
     };
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
@@ -89,7 +101,11 @@ export function Select({
         disabled={disabled || !enabled.length}
         onClick={() => (expanded ? setOpen(false) : show())}
         onBlur={(event) => {
-          if (!root.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
+          if (
+            !root.current?.contains(event.relatedTarget as Node | null) &&
+            !popup.current?.contains(event.relatedTarget as Node | null)
+          )
+            setOpen(false);
         }}
         onKeyDown={(event) => {
           if (event.key === "Tab" || event.key === "Escape") {
@@ -148,33 +164,55 @@ export function Select({
         <span className={styles.value}>{selected?.label ?? placeholder}</span>
         <IconChevronDown size={14} stroke={1.5} aria-hidden="true" />
       </button>
-      {expanded && (
-        <span id={`${id}-listbox`} role="listbox" aria-label={label} className={styles.options}>
-          {options.map((option, index) => (
+      {expanded &&
+        (() => {
+          const menu = (
             <span
-              key={option.value}
-              id={`${id}-option-${index}`}
-              role="option"
-              aria-selected={option.value === value}
-              aria-disabled={option.disabled || undefined}
-              data-active={option === active}
-              className={styles.option}
-              onPointerMove={() => {
-                if (!option.disabled) setActiveValue(option.value);
-              }}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={(event) => {
-                // An enclosing label must not forward this click back to the trigger.
-                event.preventDefault();
-                choose(option);
-              }}
+              ref={popup}
+              id={`${id}-listbox`}
+              role="listbox"
+              aria-label={label}
+              className={`${styles.options} ${compact ? styles.composerOptions : ""}`}
+              style={compact ? position : undefined}
             >
-              <span>{option.label}</span>
-              {option.value === value && <IconCheck size={14} stroke={1.5} aria-hidden="true" />}
+              {menuTitle && (
+                <span className={styles.menuTitle} role="presentation">
+                  {menuTitle}
+                </span>
+              )}
+              {options.map((option, index) => (
+                <span
+                  key={option.value}
+                  id={`${id}-option-${index}`}
+                  role="option"
+                  aria-label={option.label}
+                  aria-selected={option.value === value}
+                  aria-disabled={option.disabled || undefined}
+                  data-active={option === active}
+                  className={styles.option}
+                  onPointerMove={() => {
+                    if (!option.disabled) setActiveValue(option.value);
+                  }}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={(event) => {
+                    // An enclosing label must not forward this click back to the trigger.
+                    event.preventDefault();
+                    choose(option);
+                  }}
+                >
+                  <span>
+                    {option.label}
+                    {option.value === defaultValue && <span className={styles.badge}>Default</span>}
+                  </span>
+                  {option.value === value && (
+                    <IconCheck size={14} stroke={1.5} aria-hidden="true" />
+                  )}
+                </span>
+              ))}
             </span>
-          ))}
-        </span>
-      )}
+          );
+          return compact ? createPortal(menu, document.body) : menu;
+        })()}
     </span>
   );
 }

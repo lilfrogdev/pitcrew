@@ -5,8 +5,11 @@ import { ModelPicker, WorkerModelSettings } from "./ModelPicker";
 afterEach(cleanup);
 function choose(label: string, name: string) {
   fireEvent.click(screen.getByRole("combobox", { name: label }));
+  const models = screen.queryByRole("grid", { name: label });
   fireEvent.click(
-    within(screen.getByRole("listbox", { name: label })).getByRole("option", { name }),
+    models
+      ? within(models).getByRole("gridcell", { name })
+      : within(screen.getByRole("listbox", { name: label })).getByRole("option", { name }),
   );
 }
 const models: ModelChoice[] = [
@@ -42,7 +45,7 @@ it("uses the transport provider for the glyph without inferring a brand from the
   ).not.toBeNull();
   expect(screen.getByRole("combobox", { name: "Repo agent model" })).toHaveProperty("value", "a");
   fireEvent.click(screen.getByRole("combobox", { name: "Repo agent model" }));
-  expect(screen.getByRole("option", { name: "Qwen custom label" })).toBeTruthy();
+  expect(screen.getByRole("gridcell", { name: "Qwen custom label" })).toBeTruthy();
   fireEvent.click(screen.getByRole("combobox", { name: "Repo agent model" }));
   fireEvent.click(screen.getByRole("combobox", { name: "Repo agent effort" }));
   expect(screen.getByRole("option", { name: "High" })).toBeTruthy();

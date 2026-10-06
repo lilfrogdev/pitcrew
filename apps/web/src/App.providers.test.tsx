@@ -44,7 +44,7 @@ it("allows selecting and reloading display models while Send and server executio
   const user = userEvent.setup();
   render(<App api={api} />);
   await user.click(await screen.findByRole("combobox", { name: "Repo agent model" }));
-  await user.click(screen.getByRole("option", { name: "DeepSeek display" }));
+  await user.click(screen.getByRole("gridcell", { name: "DeepSeek display" }));
   await user.type(screen.getByLabelText("Message your crew"), "A retained draft");
   expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
   fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);

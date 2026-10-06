@@ -420,6 +420,10 @@ textarea {
   line-height: 24px;
   overflow-y: hidden;
 }
+.composer textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
 .composer-footer {
   display: flex;
   align-items: center;

@@ -1,0 +1,55 @@
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 7px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.trigger:hover,
+.trigger[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+.trigger span {
+  white-space: nowrap;
+}
+.trigger svg {
+  flex-shrink: 0;
+}
+.popup {
+  z-index: 100;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 12%);
+  font-size: 12px;
+}
+.heading {
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.status {
+  background: var(--hover);
+  border-radius: 6px;
+  padding: 7px 8px;
+}
+.status > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.status p {
+  margin: 3px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
