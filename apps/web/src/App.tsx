@@ -4,7 +4,8 @@ import { NavigationRail, WorkspacePlaceholder, type WorkspaceSection } from "./N
 import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { VisualizationWorkspace } from "./visualizations/VisualizationWorkspace";
 import type {
   Api,
   Project,
@@ -96,6 +97,22 @@ export function App({
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const loading = projectsLoading || threadsLoading || snapshotLoading;
+  const visualizationSource = useMemo(
+    () =>
+      viewer?.id &&
+      api.visualizations &&
+      !loading &&
+      projectId &&
+      threads.some((thread) => thread.id === threadId)
+        ? {
+            accountId: `account:${viewer.id}`,
+            repositoryId: projectId,
+            threadId,
+            load: (signal: AbortSignal) => api.visualizations!(projectId, threadId, signal),
+          }
+        : undefined,
+    [viewer?.id, api, loading, projectId, threadId, threads],
+  );
   const [mutationError, setMutationError] = useState("");
   const [projectsError, setProjectsError] = useState("");
   const [threadsError, setThreadsError] = useState("");
@@ -121,6 +138,7 @@ export function App({
     setRevision((value) => value + 1);
   }, []);
   const accessLost = useCallback(() => {
+    window.dispatchEvent(new Event("pitcrew-access-lost"));
     setSnapshot(empty);
     setThreads([]);
     setThreadId("");
@@ -911,6 +929,11 @@ export function App({
           api={api}
           collapsed={workspaceCollapsed}
           onCollapse={setWorkspaceCollapsed}
+          visualizations={
+            visualizationSource ? (
+              <VisualizationWorkspace source={visualizationSource} authorized />
+            ) : undefined
+          }
         >
           <div className="evidence" aria-label="Change evidence">
             <div className="evidence-heading">

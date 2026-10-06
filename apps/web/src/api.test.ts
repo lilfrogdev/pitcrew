@@ -1,6 +1,34 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, httpApi } from "./api";
 afterEach(() => vi.unstubAllGlobals());
+it("bounds protected visualization reads, uses cancellation/no-store and refuses redirects/oversized JSON", async () => {
+  const calls: { url: URL; init: RequestInit }[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: URL, init: RequestInit) => {
+      calls.push({ url, init });
+      return Response.json({ artifacts: [] });
+    }),
+  );
+  const controller = new AbortController();
+  expect(await httpApi.visualizations!("repo", "thread", controller.signal)).toEqual({
+    artifacts: [],
+  });
+  expect(calls[0].url.pathname).toBe("/api/projects/repo/threads/thread/visualizations");
+  expect(calls[0].init).toMatchObject({
+    signal: controller.signal,
+    cache: "no-store",
+    redirect: "error",
+    credentials: "same-origin",
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ huge: "x".repeat(524288 + 4096) })),
+  );
+  await expect(httpApi.visualizations!("repo", "thread", controller.signal)).rejects.toThrow(
+    "visualization_unavailable",
+  );
+});
 it("overlays authenticated display models on the actual fixture transport without authorizing Send", async () => {
   const native = {
     landing: { enabled: false, backend: null },

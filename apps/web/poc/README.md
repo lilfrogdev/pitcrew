@@ -44,8 +44,10 @@ hidden/offline state or replaced scope/transport. Unobserved remote revocation i
 revalidation/lease expiry; it is not instantaneous. Session and coordinator SQL are separate
 stores, so publication/session revocation cannot be advertised as a distributed atomic write.
 
-Production registration is a separate follow-up. It must wire the actual verified-session
-adapter, current Collaboration membership, trusted active-turn RPC/tool factory, bounded
-local relay read route and App access-loss/collapse disposal. No fixture identity fallback
-may be copied into registration. Safari/Firefox and deployed account checks remain required
-before enabling the feature.
+The isolated branch also registers the actual verified-session adapter, current Collaboration
+membership, admitted-turn tool RPC, bounded relay read route and one App/Workspace mount.
+Tab switching and collapse unmount the private surface. The registered Worker integration
+test uses actual Better Auth/D1 and Collaboration code with disposable local accounts and
+held model jobs; the browser harness uses synthetic account authority. No fixture identity
+fallback is installed in production registration. Safari/Firefox, a real model invocation
+and deployed account checks remain unverified. Nothing in this harness deploys the feature.

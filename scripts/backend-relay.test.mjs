@@ -680,3 +680,45 @@ test("source viewers use explicit authenticated read routes and preserve bounded
   ])
     assert.ok([400, 404].includes((await request(f.handler, path)).status));
 });
+test("visualization relay allows only bounded scoped JSON reads and retains server-held session authority", async () => {
+  const calls = [];
+  let large = false;
+  const f = fixture({
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-server-session" }),
+    fetchImpl: async (url, init) => {
+      if (url.endsWith("/api/local-session"))
+        return new Response(null, {
+          status: 302,
+          headers: { location: `${BACKEND_ACCESS.issuer}/cdn-cgi/access/login/backend` },
+        });
+      calls.push({ url, init });
+      return Response.json({
+        artifacts: [],
+        ...(large ? { padding: "x".repeat(524288 + 4096) } : {}),
+      });
+    },
+  });
+  const path = "/api/projects/repo/threads/thread/visualizations";
+  assert.equal((await request(f.handler, path)).status, 200);
+  assert.equal(calls[0].init.headers.Cookie, "synthetic-server-session");
+  assert.equal(calls[0].init.redirect, "manual");
+  const count = calls.length;
+  assert.equal(
+    (
+      await request(f.handler, path, {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({ content: {}, key: "manual" }),
+      })
+    ).status,
+    404,
+  );
+  assert.equal((await request(f.handler, `${path}?accountId=other`)).status, 400);
+  assert.equal((await request(f.handler, `${path}/../../secret`)).status, 404);
+  assert.equal(calls.length, count);
+  large = true;
+  assert.equal((await request(f.handler, path)).status, 503);
+  const loggedOut = fixture({ sharedApi: true, sessionHeaders: async () => ({}) });
+  assert.equal((await request(loggedOut.handler, path)).status, 401);
+});

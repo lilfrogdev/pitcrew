@@ -4,7 +4,82 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 import { App } from "./App";
 import { createFixtureApi } from "./fixtures";
 import { Workspace, WorkspaceResize } from "./Workspace";
+import { VisualizationWorkspace } from "./visualizations/VisualizationWorkspace";
 afterEach(cleanup);
+it("mounts visual replies once and disposes frame/private text on tab switch, collapse, scope and access loss", async () => {
+  const user = userEvent.setup(),
+    api = createFixtureApi(),
+    snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
+  const record = {
+    id: "chart",
+    version: 1,
+    repositoryId: "repo",
+    threadId: "thread",
+    creatorActor: "account:viewer",
+    turnId: "turn",
+    invocationId: "call",
+    createdAt: 1,
+    revision: 1,
+    digest: "a".repeat(64),
+    content: {
+      kind: "bars",
+      title: "Private visual",
+      summary: "Private fallback",
+      height: 320,
+      points: [{ label: "A", value: 1 }],
+    },
+  };
+  let permitted = true;
+  const source = {
+    accountId: "account:viewer",
+    repositoryId: "repo",
+    threadId: "thread",
+    load: async () => {
+      if (!permitted) throw Error("revoked");
+      return {
+        accountId: "account:viewer",
+        repositoryId: "repo",
+        threadId: "thread",
+        accessEpoch: "epoch",
+        leaseMs: 5000,
+        artifacts: [record],
+      };
+    },
+  };
+  const visualizations = <VisualizationWorkspace source={source} authorized />;
+  const props = {
+    scope: "repo:thread",
+    snapshot,
+    api,
+    onCollapse: () => {},
+    visualizations,
+    children: "Review",
+  };
+  const view = render(<Workspace {...props} collapsed={false} />);
+  expect(view.container.querySelector("iframe")).toBeNull();
+  await user.click(screen.getByRole("tab", { name: "Visuals" }));
+  await screen.findByText("Private fallback");
+  expect(view.container.querySelectorAll("iframe")).toHaveLength(1);
+  await user.click(screen.getByRole("tab", { name: "Files" }));
+  expect(view.container.querySelector("iframe")).toBeNull();
+  expect(view.container.textContent).not.toContain("Private fallback");
+  await user.click(screen.getByRole("tab", { name: "Visuals" }));
+  await screen.findByText("Private fallback");
+  view.rerender(<Workspace {...props} collapsed />);
+  expect(view.container.querySelector("iframe")).toBeNull();
+  expect(view.container.textContent).not.toContain("Private fallback");
+  view.rerender(<Workspace {...props} collapsed={false} />);
+  await screen.findByText("Private fallback");
+  view.rerender(<Workspace {...props} scope="other" collapsed={false} />);
+  expect(view.container.querySelector("iframe")).toBeNull();
+  await user.click(screen.getByRole("tab", { name: "Visuals" }));
+  await screen.findByText("Private fallback");
+  permitted = false;
+  window.dispatchEvent(new Event("pitcrew-access-lost"));
+  await screen.findByText("Visualizations are unavailable or awaiting access verification.");
+  expect(view.container.querySelector("iframe")).toBeNull();
+  expect(view.container.textContent).not.toContain("Private fallback");
+});
 it("retains thread-specific workspace tabs and chat drafts across collapse and thread switches", async () => {
   const user = userEvent.setup();
   render(<App api={createFixtureApi()} demo />);

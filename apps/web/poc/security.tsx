@@ -1,26 +1,41 @@
 import { createRoot } from "react-dom/client";
+import { useState } from "react";
+import { Workspace } from "../src/Workspace";
+import { httpApi } from "../src/api";
 import { VisualizationWorkspace } from "../src/visualizations/VisualizationWorkspace";
-import { loadVisualizationJson, type VisualizationSource } from "../src/visualizations/controller";
+import type { VisualizationSource } from "../src/visualizations/controller";
 import "../src/styles.css";
 import "./visualizations.css";
 const source: VisualizationSource = {
   accountId: "account:demo",
   repositoryId: "pitcrew",
   threadId: "visualization",
-  load: (signal) =>
-    loadVisualizationJson("/api/projects/pitcrew/threads/visualization/visualizations", signal),
+  load: (signal) => httpApi.visualizations!("pitcrew", "visualization", signal),
 };
-createRoot(document.getElementById("root")!).render(
-  <main className="viz-demo">
-    <h1>Private visual replies</h1>
-    <p>Local admission and lifecycle harness</p>
-    <button
-      onClick={() => {
-        void fetch("/fixture/revoke", { method: "POST" });
-      }}
-    >
-      Revoke fixture membership
-    </button>
-    <VisualizationWorkspace source={source} authorized />
-  </main>,
-);
+function Demo() {
+  const [collapsed, setCollapsed] = useState(false);
+  return (
+    <main className="viz-demo">
+      <h1>Private visual replies</h1>
+      <p>Local admission and lifecycle harness</p>
+      <button
+        onClick={() => {
+          void fetch("/fixture/revoke", { method: "POST" });
+        }}
+      >
+        Revoke fixture membership
+      </button>
+      <Workspace
+        scope="pitcrew:visualization"
+        snapshot={{ messages: [], runs: [], reviews: [], evidence: [] }}
+        api={httpApi}
+        collapsed={collapsed}
+        onCollapse={setCollapsed}
+        visualizations={<VisualizationWorkspace source={source} authorized />}
+      >
+        Review fixture
+      </Workspace>
+    </main>
+  );
+}
+createRoot(document.getElementById("root")!).render(<Demo />);

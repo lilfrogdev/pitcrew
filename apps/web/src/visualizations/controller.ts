@@ -72,6 +72,12 @@ export class VisualizationController {
         deadline <= this.now()
       )
         throw Error("visualization_unavailable");
+      // Keep immutable render identity when renewing authority, so controls persist.
+      if (
+        this.state?.envelope.accessEpoch === envelope.accessEpoch &&
+        JSON.stringify(this.state.envelope.artifacts) === JSON.stringify(envelope.artifacts)
+      )
+        envelope.artifacts = this.state.envelope.artifacts;
       clearTimeout(this.expiry);
       clearTimeout(this.refresh);
       this.state = { source, envelope, deadline };

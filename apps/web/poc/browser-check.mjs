@@ -317,6 +317,38 @@ try {
   assert.equal(await evaluate("!!document.querySelector('details summary')", child), true);
   await screenshot("html-mobile.png");
   await cdp("Page.navigate", { url: origin + "/secure" });
+  await until(
+    "Array.from(document.querySelectorAll('[role=tab]')).some(b=>b.textContent.includes('Visuals'))",
+  );
+  await evaluate(
+    "Array.from(document.querySelectorAll('[role=tab]')).find(b=>b.textContent.includes('Visuals')).click()",
+  );
+  await until("document.querySelectorAll('iframe').length===2");
+  const beforeRenew = await evaluate("document.querySelector('iframe').getAttribute('srcdoc')");
+  await delay(3000);
+  assert.equal(
+    await evaluate("document.querySelector('iframe').getAttribute('srcdoc')"),
+    beforeRenew,
+  );
+  await evaluate(
+    "Array.from(document.querySelectorAll('[role=tab]')).find(b=>b.textContent.includes('Files')).click()",
+  );
+  await until("document.querySelectorAll('iframe').length===0");
+  assert.equal(
+    await evaluate("document.body.textContent.includes('Private server description')"),
+    false,
+  );
+  await evaluate(
+    "Array.from(document.querySelectorAll('[role=tab]')).find(b=>b.textContent.includes('Visuals')).click()",
+  );
+  await until("document.querySelectorAll('iframe').length===2");
+  await evaluate("document.querySelector('[aria-label=\"Collapse workspace\"]').click()");
+  await until("document.querySelectorAll('iframe').length===0");
+  assert.equal(
+    await evaluate("document.body.textContent.includes('Private server description')"),
+    false,
+  );
+  await evaluate("document.querySelector('[aria-label=\"Expand workspace\"]').click()");
   await until("document.querySelectorAll('iframe').length===2");
   const securePath = "/api/projects/pitcrew/threads/visualization/visualizations";
   const denied = await evaluate(
@@ -369,6 +401,8 @@ try {
       "legitimate HTML has no script permission and uses native details control",
       "public HTTP writes denied; trusted structured publication escapes hostile text",
       "scoped JSON service mounts at most two previews",
+      "actual workspace tab switch/collapse dispose private text and frames",
+      "authorization renewal preserves immutable preview controls",
       "remote membership revocation removes running frames and private text on revalidation",
     ],
     productionFixtureSentinelHits: productionHits,

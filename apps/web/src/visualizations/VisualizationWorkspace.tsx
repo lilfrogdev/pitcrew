@@ -1,10 +1,47 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   documentFragment,
   VISUALIZATION_LIMITS,
+  type VisualizationRecord,
 } from "../../../../packages/protocol/src/visualizations";
 import { VisualizationFrame } from "./VisualizationFrame";
 import { VisualizationController, type VisualizationSource } from "./controller";
+const RecordFrame = memo(function RecordFrame({
+  record,
+  accountId,
+  accessEpoch,
+}: {
+  record: VisualizationRecord;
+  accountId: string;
+  accessEpoch: string;
+}) {
+  const scope = useMemo(
+    () => ({
+      accountId,
+      accessEpoch,
+      repositoryId: record.repositoryId,
+      threadId: record.threadId,
+    }),
+    [record.repositoryId, record.threadId, accountId, accessEpoch],
+  );
+  const artifact = useMemo(
+    () =>
+      record.content.kind === "bars"
+        ? { ...record.content, ...scope, id: record.id, version: 1 }
+        : {
+            ...scope,
+            id: record.id,
+            version: 1,
+            kind: "html",
+            title: record.content.title,
+            summary: record.content.summary,
+            height: record.content.height,
+            fragment: documentFragment(record.content),
+          },
+    [record, scope],
+  );
+  return <VisualizationFrame artifact={artifact} scope={scope} authorized />;
+});
 
 export function VisualizationWorkspace({
   source,
@@ -54,30 +91,14 @@ export function VisualizationWorkspace({
   };
   return (
     <section aria-label="Conversation visualizations">
-      {envelope.artifacts.slice(0, VISUALIZATION_LIMITS.frames).map((record) => {
-        const { content } = record;
-        const artifact =
-          content.kind === "bars"
-            ? { ...content, ...scope, id: record.id, version: 1 }
-            : {
-                ...scope,
-                id: record.id,
-                version: 1,
-                kind: "html",
-                title: content.title,
-                summary: content.summary,
-                height: content.height,
-                fragment: documentFragment(content),
-              };
-        return (
-          <VisualizationFrame
-            key={`${scope.accessEpoch}:${record.id}`}
-            artifact={artifact}
-            scope={scope}
-            authorized
-          />
-        );
-      })}
+      {envelope.artifacts.slice(0, VISUALIZATION_LIMITS.frames).map((record) => (
+        <RecordFrame
+          key={`${scope.accessEpoch}:${record.id}`}
+          record={record}
+          accountId={scope.accountId}
+          accessEpoch={scope.accessEpoch}
+        />
+      ))}
       {envelope.artifacts.length > VISUALIZATION_LIMITS.frames && (
         <p>
           {envelope.artifacts.length - VISUALIZATION_LIMITS.frames} additional visualizations are
