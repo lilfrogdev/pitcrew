@@ -1,10 +1,11 @@
 import { Repositories } from "./Repositories";
+import { AccountRepositories } from "./AccountRepositories";
 import { NavigationRail, WorkspacePlaceholder, type WorkspaceSection } from "./NavigationRail";
 import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities } from "./api";
+import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities, InvitationPreview } from "./api";
 import "./styles.css";
 import { LandingControl, type LandingState } from "./LandingControl";
 import { Workspace, WorkspaceResize, workspaceStyle } from "./Workspace";
@@ -19,7 +20,11 @@ import {
 import { ModelPicker } from "./ModelPicker";
 import { useKeyboardFocus } from "./useKeyboardFocus";
 import { ProfileProviders } from "./ProfileProviders";
+import { Collaborators, InvitationGate } from "./Collaboration";
 import { readDisplayPreference, saveDisplayPreference } from "./display-preference";
+import type { AuthApi } from "./auth-api";
+import type { AuthUser } from "./auth-api";
+import { Avatar } from "./Avatar";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -32,7 +37,9 @@ const labels: Record<Run["status"], string> = {
 };
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong. Try again.";
-export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
+export function App({ api, auth, viewer, demo = false }: {
+  api: Api; auth?: AuthApi; viewer?: AuthUser; demo?: boolean;
+}) {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceWidth, setWorkspaceWidth] = useState(380);
   const keyboardFocus = useKeyboardFocus();
@@ -83,6 +90,15 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const mutation = useRef(false);
   const refresh = useCallback(() => {
     setMutationError("");
+    setRevision((value) => value + 1);
+  }, []);
+  const accessLost = useCallback(() => {
+    setSnapshot(empty);
+    setThreads([]);
+    setThreadId("");
+    setProjectId("");
+    setProjects([]);
+    setMutationError("Access changed. Your workspace is refreshing.");
     setRevision((value) => value + 1);
   }, []);
 
@@ -173,6 +189,47 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       cancelled = true;
     };
   }, [api, projectId, revision]);
+  useEffect(() => {
+    if (!api.collaboration) return;
+    let cancelled = false;
+    let inFlight = false;
+    const revalidate = async () => {
+      if (inFlight || mutation.current || document.hidden) return;
+      inFlight = true;
+      try {
+        const nextProjects = await api.projects();
+        if (cancelled) return;
+        if (projectId && !nextProjects.some((item) => item.id === projectId)) {
+          accessLost();
+          return;
+        }
+        setProjects(nextProjects);
+        if (projectId) {
+          const nextThreads = await api.threads(projectId);
+          if (cancelled) return;
+          setThreads(nextThreads);
+          if (threadId && !nextThreads.some((item) => item.id === threadId)) {
+            setSnapshot(empty);
+            setThreadId(nextThreads.find((item) => !item.archived)?.id ?? "");
+          }
+        }
+      } catch (cause) {
+        if (!cancelled && cause instanceof Error && "status" in cause &&
+            [401, 403, 404].includes(Number(cause.status))) accessLost();
+      } finally { inFlight = false; }
+    };
+    const timer = window.setInterval(() => void revalidate(), 15000);
+    const online = () => void revalidate();
+    const visible = () => { if (!document.hidden) void revalidate(); };
+    window.addEventListener("online", online);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("online", online);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [api, projectId, threadId, accessLost]);
   // Failed writes belong to the selected conversation/repository, not its destination.
   useEffect(() => {
     setMutationError("");
@@ -203,7 +260,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         }
       } catch (cause) {
         if (!cancelled && current === generation.current && sequence === snapshotSequence.current) {
-          setSnapshotError(errorText(cause));
+          if (cause instanceof Error && "status" in cause && [401, 403, 404].includes(Number(cause.status))) {
+            accessLost();
+          } else setSnapshotError(errorText(cause));
           setSnapshotLoading(false);
         }
       } finally {
@@ -224,7 +283,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       window.clearInterval(timer);
       window.removeEventListener("online", onOnline);
     };
-  }, [api, threadId, revision]);
+  }, [api, threadId, revision, accessLost]);
 
   const displayOnly = composerCapabilities?.displayOnly === true;
   const executionEnabled =
@@ -496,12 +555,20 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const project = projects.find((item) => item.id === projectId);
   const thread = threads.find((item) => item.id === threadId);
   const latest = snapshot.runs.at(-1);
+  const invitationAccepted = (invitation: InvitationPreview) => {
+    requestedThread.current = invitation.threadId;
+    if (invitation.projectId ?? invitation.repoId)
+      setProjectId((invitation.projectId ?? invitation.repoId)!);
+    setSection("work");
+    setRevision((value) => value + 1);
+    setAnnouncement("Invitation accepted.");
+  };
   return (
     <div className={shellStyles.shell} data-keyboard-focus={keyboardFocus}>
       <a className="skip" href={section === "work" ? "#conversation" : "#workspace-content"}>
         {section === "work" ? "Skip to conversation" : "Skip to content"}
       </a>
-      <NavigationRail section={section} onSelect={setSection} />
+      <NavigationRail section={section} onSelect={setSection} viewer={viewer} />
       <div
         className={`shell workspace-shell ${workspaceCollapsed ? "is-workspace-collapsed" : ""} ${shellStyles.work}`}
         style={workspaceStyle(workspaceWidth)}
@@ -563,11 +630,14 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           )}
         </Sidebar>
         <main id="conversation" className="conversation" tabIndex={-1}>
+          <InvitationGate api={api.collaboration} onAccepted={invitationAccepted} />
           <header className="conversation-header">
             <div>
               <p className="eyebrow">{project?.name ?? "Workspace"} / Change thread</p>
-              <h1>{thread?.title ?? "Your project conversations"}</h1>
+              <h1>{thread?.title ?? (projects.length ? "Your repository conversations" : "Your repositories")}</h1>
             </div>
+            <Collaborators api={api.collaboration} projectId={projectId} threadId={threadId}
+              onAccessLost={accessLost} />
             {latest && <span className={`status ${latest.status}`}>{labels[latest.status]}</span>}
           </header>
           {!demo && projectId && (
@@ -594,8 +664,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               <p className="empty">Loading conversation…</p>
             ) : !thread ? (
               <div className="empty">
-                <h2>A place for every change</h2>
-                <p>Select a project and create a thread to work with your crew.</p>
+                <h2>{projects.length ? "A place for every change" : "No repositories yet"}</h2>
+                <p>{projects.length ? "Select a repository and create a thread to work with your crew."
+                  : "Repositories you own or join will appear here."}</p>
               </div>
             ) : !snapshot.messages.length ? (
               <div className="empty">
@@ -606,16 +677,20 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                 </p>
               </div>
             ) : (
-              snapshot.messages.map((message) => (
-                <article className={`message ${message.role}`} key={message.id}>
-                  <div className="avatar" aria-hidden="true">
-                    {message.role === "user" ? "Y" : message.role.slice(0, 1).toUpperCase()}
-                  </div>
+              snapshot.messages.map((message) => {
+                const isSelf = !!viewer &&
+                  (message.authorActor === viewer.id || message.authorActor === `account:${viewer.id}`);
+                const authorName = message.authorName ||
+                  (isSelf ? (viewer.username || viewer.name) : "Participant");
+                const authorImage = message.authorImage || (isSelf ? viewer.image : undefined);
+                return <article className={`message ${message.role}`} key={message.id}>
+                  <Avatar className="avatar" name={message.role === "user" ? authorName : message.role}
+                    image={message.role === "user" ? authorImage : undefined} />
                   <div className="message-body">
                     <div className="message-meta">
                       <strong>
                         {message.role === "user"
-                          ? "You"
+                          ? authorName
                           : message.role === "coordinator"
                             ? "Repository agent"
                             : message.role === "worker"
@@ -650,8 +725,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                       </details>
                     ))}
                   </div>
-                </article>
-              ))
+                </article>;
+              })
             )}
           </div>
           {attachmentErrors[threadId] && (
@@ -912,6 +987,14 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       {section === "account" && (
         <ProfileProviders
           api={api.openrouter}
+          collaboration={api.collaboration}
+          viewer={viewer}
+          onSignOut={auth ? async () => {
+            await auth.signOut();
+            window.dispatchEvent(new Event("pitcrew-auth-required"));
+          } : undefined}
+          invitation={<InvitationGate api={api.collaboration} manual fromUrl={false}
+            onAccepted={invitationAccepted} />}
           onChange={() => {
             setComposerCapabilities(undefined);
             setProvidersLoading(true);
@@ -919,7 +1002,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           }}
         />
       )}
-      {section === "repositories" && <Repositories api={api.repositories} />}
+      {section === "repositories" && (api.collaboration
+        ? <AccountRepositories api={api.collaboration} />
+        : <Repositories api={api.repositories} />)}
       {section === "tickets" && <WorkspacePlaceholder section={section} />}
     </div>
   );

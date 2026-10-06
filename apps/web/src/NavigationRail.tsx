@@ -1,5 +1,7 @@
 import { Icon } from "./icons";
 import styles from "./NavigationRail.module.css";
+import { Avatar } from "./Avatar";
+import type { AuthUser } from "./auth-api";
 export type WorkspaceSection = "work" | "repositories" | "tickets" | "account";
 const sections = [
   { id: "work", label: "Work", icon: "work" },
@@ -10,9 +12,11 @@ const sections = [
 export function NavigationRail({
   section,
   onSelect,
+  viewer,
 }: {
   section: WorkspaceSection;
   onSelect: (section: WorkspaceSection) => void;
+  viewer?: AuthUser;
 }) {
   return (
     <nav className={styles.rail} aria-label="Workspace">
@@ -26,7 +30,10 @@ export function NavigationRail({
           aria-current={section === item.id ? "page" : undefined}
           onClick={() => onSelect(item.id)}
         >
-          <Icon kind={item.icon} />
+          {item.id === "account" && viewer ?
+            <Avatar name={viewer.username || viewer.name} image={viewer.image}
+              className={styles.avatar} fallback="icon" /> :
+            <Icon kind={item.icon} />}
         </button>
       ))}
     </nav>

@@ -377,6 +377,7 @@ textarea {
   background: var(--hover);
   color: var(--text);
 }
+.message .avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 .message-body {
   min-width: 0;
 }

@@ -16,8 +16,13 @@ import type {
 } from "@pitcrew/protocol";
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
+export type SharedMessage = Message & {
+  authorActor?: string;
+  authorName?: string;
+  authorImage?: string;
+};
 export type Snapshot = {
-  messages: Message[];
+  messages: SharedMessage[];
   runs: Run[];
   reviews: Review[];
   evidence: RunEvidence[];
@@ -44,9 +49,42 @@ export type ApprovalInput = {
 };
 export type Authorization = LandingAuthorizationReceipt;
 export type LandingResult = LandingResultReceipt;
+export type Account = { actor: string; email: string };
+export type Member = Account & { role: "owner" | "editor" };
+export type SharedRepository = {
+  id: string;
+  name: string;
+  role: "owner" | "editor";
+};
+export type Invitation = {
+  id: string;
+  email: string;
+  role: "editor";
+  expiresAt: string;
+  scope: "project" | "repository" | "thread";
+  projectId?: string;
+  repoId?: string;
+  threadId?: string;
+};
+export type InvitationPreview = Invitation;
+export type CreatedInvitation = { token: string; invitation: Invitation };
+export interface CollaborationApi {
+  account(): Promise<Account>;
+  repositories(): Promise<SharedRepository[]>;
+  projectMembers(projectId: string): Promise<Member[]>;
+  threadMembers(threadId: string): Promise<Member[]>;
+  inviteProject(projectId: string, email: string): Promise<CreatedInvitation>;
+  inviteThread(threadId: string, email: string): Promise<CreatedInvitation>;
+  invitation(token: string): Promise<InvitationPreview>;
+  acceptInvitation(token: string): Promise<unknown>;
+  revokeInvitation(token: string): Promise<unknown>;
+  removeProjectMember(projectId: string, actor: string): Promise<unknown>;
+  removeThreadMember(threadId: string, actor: string): Promise<unknown>;
+}
 export interface Api {
   openrouter?: OpenRouterConnectionApi;
   repositories?: RepositoryApi;
+  collaboration?: CollaborationApi;
   capabilities(): Promise<LandingCapabilities>;
   approve(runId: string, input: ApprovalInput): Promise<Authorization>;
   land(runId: string, authorizationId: string): Promise<LandingResult>;
@@ -77,6 +115,10 @@ export class ApiError extends Error {
     super(
       status === 403 || status === 401
         ? "Access is unavailable. Ask the project owner to enable protected access."
+        : status === 404
+          ? "This shared item is no longer available. Refresh your workspace."
+        : status === 410
+          ? "This invitation has expired or was already used. Ask for a new link."
         : status === 409
           ? "The thread changed. Refresh before trying again."
           : status === 413
@@ -90,7 +132,10 @@ export class ApiError extends Error {
 let sessionRequest: Promise<string | null> | undefined;
 async function sessionNonce(): Promise<string | null> {
   const response = await fetch("/api/local-session", { signal: AbortSignal.timeout(10000) });
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(response.status);
+  }
   const { nonce } = (await response.json()) as { nonce: string | null };
   if (nonce !== null && (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)))
     throw new ApiError(0);
@@ -132,11 +177,31 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
     if (error instanceof ApiError) throw error;
     throw new ApiError(0);
   }
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(response.status);
+  }
   try {
     return (await response.json()) as T;
   } catch {
     throw new ApiError(0);
+  }
+}
+async function removeRequest(path: string): Promise<void> {
+  const send = async () => {
+    const headers = await mutationHeaders();
+    const response = await fetch(`/api${path}`, {
+      method: "DELETE",
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
+    return { response, local: !!headers["X-Pitcrew-Local-Nonce"] };
+  };
+  let result = await send();
+  if (result.local && result.response.status === 403) result = await send();
+  if (!result.response.ok) {
+    if (result.response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(result.response.status);
   }
 }
 async function connectionRequest(path: string, init?: RequestInit): Promise<OpenRouterStatus> {
@@ -182,6 +247,29 @@ async function connectionMutation(
   });
 }
 export const httpApi: Api = {
+  collaboration: {
+    account: () => request("/account"),
+    repositories: async () => {
+      const value = await request<unknown>("/repositories");
+      if (!Array.isArray(value) || value.some((item) =>
+        !item || typeof item.id !== "string" || typeof item.name !== "string" ||
+        !["owner", "editor"].includes(item.role))) throw new ApiError(0);
+      return value as SharedRepository[];
+    },
+    projectMembers: (id) => request(`/projects/${encodeURIComponent(id)}/members`),
+    threadMembers: (id) => request(`/threads/${encodeURIComponent(id)}/members`),
+    inviteProject: (id, email) =>
+      request(`/projects/${encodeURIComponent(id)}/invitations`, { email, role: "editor" }),
+    inviteThread: (id, email) =>
+      request(`/threads/${encodeURIComponent(id)}/invitations`, { email, role: "editor" }),
+    invitation: (token) => request(`/invitations/${encodeURIComponent(token)}`),
+    acceptInvitation: (token) => request(`/invitations/${encodeURIComponent(token)}/accept`, {}),
+    revokeInvitation: (token) => request(`/invitations/${encodeURIComponent(token)}/revoke`, {}),
+    removeProjectMember: (id, actor) =>
+      removeRequest(`/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(actor)}`),
+    removeThreadMember: (id, actor) =>
+      removeRequest(`/threads/${encodeURIComponent(id)}/members/${encodeURIComponent(actor)}`),
+  },
   repositories: createRepositoryApi(),
   openrouter: {
     async status() {
@@ -244,7 +332,7 @@ export const httpApi: Api = {
   snapshot: async (id) => {
     const path = `/threads/${encodeURIComponent(id)}`;
     const [messages, runs, turns] = await Promise.all([
-      request<Message[]>(`${path}/messages`),
+      request<SharedMessage[]>(`${path}/messages`),
       request<Run[]>(`${path}/runs`),
       request<NonNullable<Snapshot["turns"]>>(`${path}/turns`),
     ]);

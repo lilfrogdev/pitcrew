@@ -1,0 +1,69 @@
+.account {
+  padding: 24px 30px 0;
+  max-width: 580px;
+}
+.account h2 { margin-bottom: 8px; }
+.account p { color: var(--muted); overflow-wrap: anywhere; }
+.account strong { color: var(--text); font-weight: 600; }
+.account button { margin-top: 10px; }
+.invitation {
+  position: relative;
+  z-index: 3;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.invitation p { color: var(--muted); }
+.invitation [role="alert"], .panel [role="alert"] { color: var(--error); }
+.manualInvitation { padding: 24px 30px 0; max-width: 580px; }
+.manualInvitation h2 { margin-bottom: 10px; }
+.manualInvitation [role="alert"] { color: var(--error); }
+.codeForm { display: grid; gap: 8px; }
+.codeForm label { font-weight: 600; }
+.codeForm input { min-width: 0; padding: 8px; border: 1px solid var(--border-strong); border-radius: 7px; }
+.codeForm button { justify-self: start; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sharing { position: relative; flex: none; }
+.panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 5;
+  width: min(390px, calc(100vw - 32px));
+  max-height: min(70vh, 700px);
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 12%);
+  background: var(--surface);
+  font-size: 13px;
+}
+.heading, .members li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.heading h2 { font-size: 16px; }
+.members { margin-top: 16px; }
+.members h3, .form h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.members ul { margin: 0; padding: 0; list-style: none; }
+.members li { padding: 5px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.members li span { min-width: 0; }
+.members p { color: var(--muted); }
+.form { display: grid; gap: 7px; border-top: 1px solid var(--border); margin-top: 18px; padding-top: 16px; }
+.form label, .link label { font-weight: 600; }
+.form input, .form select, .link input {
+  width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--border-strong);
+  border-radius: 7px; background: var(--surface); color: var(--text);
+}
+.form small { margin-top: -3px; }
+.form button { justify-self: start; margin-top: 4px; }
+.link { display: grid; gap: 8px; margin-top: 14px; }
+@media (max-width: 650px) {
+  .account { padding: 20px; }
+  .manualInvitation { padding: 20px; }
+  .invitation { align-items: start; flex-direction: column; padding: 12px 16px; }
+  .panel { position: fixed; top: 62px; bottom: 12px; right: 12px; left: 12px; width: auto; max-height: none; }
+}

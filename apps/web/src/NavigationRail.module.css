@@ -45,6 +45,19 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+.avatar {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--hover);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
 .account {
   margin-top: auto;
 }

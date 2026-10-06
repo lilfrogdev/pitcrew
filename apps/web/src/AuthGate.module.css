@@ -1,0 +1,39 @@
+.gate {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--canvas);
+}
+.card {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 14px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.brand { font-size: 16px; }
+.card h1 { font-size: 22px; }
+.card p { color: var(--muted); overflow-wrap: anywhere; }
+.card .error { color: var(--error); }
+.card form { display: grid; gap: 14px; }
+.card label { display: grid; gap: 6px; font-weight: 600; }
+.card input {
+  width: 100%; min-width: 0; padding: 10px 11px;
+  border: 1px solid var(--border-strong); border-radius: 7px;
+  background: var(--surface); color: var(--text);
+}
+.card form button {
+  justify-self: start;
+  padding: 9px 16px;
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--surface);
+}
+.card form button:hover:not(:disabled) { background: var(--accent); }
+.actions { display: flex; flex-wrap: wrap; gap: 16px; }
+.actions button { border: 0; padding: 5px 0; background: transparent; color: var(--muted); }
+.actions button:hover { text-decoration: underline; background: transparent; }
+@media (max-width: 480px) { .card { padding: 20px; } }
