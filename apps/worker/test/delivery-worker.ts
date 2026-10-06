@@ -1,3 +1,5 @@
+export { UserCredentials } from "../src/user-credentials-agent";
+import { sqliteAdmission } from "../src/infrastructure-admission";
 import { readRepositoryState } from "../src/repository-state";
 import { Agent } from "agents";
 import { LifecycleCapability } from "agents/lifecycle";
@@ -19,6 +21,9 @@ export class DeliveryRepositoryAgent extends RepositoryAgent {
     this.ctx.storage.sql.exec(
       "INSERT INTO activations VALUES(1,1) ON CONFLICT(id) DO UPDATE SET calls=calls+1",
     );
+  }
+  reservations() {
+    return sqliteAdmission(this.ctx.storage).active();
   }
   async activations() {
     this.ctx.storage.sql.exec(
@@ -198,6 +203,10 @@ export class PreflightChangeAgent extends ChangeAgent {
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
+    if (url.pathname === "/fixture/reservations")
+      return Response.json(
+        await env.REPOSITORY.get(env.REPOSITORY.idFromName("pitcrew")).reservations(),
+      );
     if (url.pathname === "/fixture/activations") {
       return Response.json(
         await env.REPOSITORY.get(env.REPOSITORY.idFromName("pitcrew")).activations(),

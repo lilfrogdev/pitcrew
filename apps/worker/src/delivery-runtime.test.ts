@@ -92,8 +92,21 @@ it("denies disabled infrastructure before activating the child lifecycle", async
     await mf.dispose();
   }
 }, 15000);
-it("redelivers a committed RepositoryAgent result after lost child acknowledgement and restart", async () => {
-  const options = await fixtureOptions();
+it("redelivers a committed result and releases admission after key deletion, lost acknowledgement and restart", async () => {
+  const source = await fixtureOptions();
+  const options = {
+    ...source,
+    bindings: {
+      ...source.bindings,
+      CREDENTIAL_ENCRYPTION_KEY: Buffer.alloc(32, 17).toString("base64"),
+      MODEL_CONFIGURATION:
+        '{"provider":"byok","providerId":"openrouter","model":"qwen/qwen3.8-flash","secretBinding":"OPENROUTER_API_KEY"}',
+    },
+    durableObjects: {
+      ...source.durableObjects,
+      USER_CREDENTIALS: { className: "UserCredentials", useSQLite: true },
+    },
+  };
   const mf = new Miniflare(convertV4MiniflareOptions(options));
   const get = async <T>(path: string) =>
     (await (await mf.dispatchFetch(`http://localhost${path}`)).json()) as T;
@@ -119,6 +132,14 @@ it("redelivers a committed RepositoryAgent result after lost child acknowledgeme
     throw Error("delivery_fixture_timeout");
   };
   try {
+    expect(
+      (
+        await post("/provider-connection/openrouter", {
+          action: "store",
+          key: "sk-or-v1-synthetic_delivery_never_live",
+        })
+      ).status,
+    ).toBe(200);
     const threadResponse = await post("/projects/pitcrew/threads", {
       title: "fixture delivery",
       idempotencyKey: "thread",
@@ -139,6 +160,7 @@ it("redelivers a committed RepositoryAgent result after lost child acknowledgeme
     expect(committed.reviews).toHaveLength(1);
     expect(events.filter((event) => event.type === "run.awaiting_review")).toHaveLength(1);
     expect(events.filter((event) => event.type === "review.created")).toHaveLength(1);
+    expect((await post("/provider-connection/openrouter", { action: "remove" })).status).toBe(200);
     await mf.setOptions(
       convertV4MiniflareOptions({
         ...options,
@@ -161,6 +183,11 @@ it("redelivers a committed RepositoryAgent result after lost child acknowledgeme
       }),
     );
     const acknowledged = await waitForDelivery(run.id, (delivery) => delivery.acknowledged === 1);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (!(await get<unknown[]>("/fixture/reservations")).length) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(await get("/fixture/reservations")).toEqual([]);
     expect(acknowledged).toMatchObject({ effects: 1, observed_commit: 1 });
     expect(await get<RunEvidence>(`/api/runs/${run.id}/evidence`)).toEqual(committed);
     expect(await get<Event[]>("/api/projects/pitcrew/events")).toEqual(events);

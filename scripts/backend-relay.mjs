@@ -174,7 +174,7 @@ async function body(req) {
   try {
     for await (const chunk of req) {
       size += Buffer.byteLength(chunk);
-      if (size > 2048) throw Object.assign(Error(), { status: 413 });
+      if (size > 8192) throw Object.assign(Error(), { status: 413 });
       chunks.push(chunk);
     }
   } finally {
@@ -238,6 +238,11 @@ async function boundedJson(response) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 function cleanResponse(path, value) {
+  if (path === "/api/provider-connection/openrouter") {
+    const fields = ["available", "storageAvailable", "configured", "executionEnabled"];
+    if (fields.some((field) => typeof value?.[field] !== "boolean")) throw Error();
+    return Object.fromEntries(fields.map((field) => [field, value[field]]));
+  }
   if (path === "/api/repositories") {
     if (
       !value ||
@@ -286,6 +291,7 @@ export function createBackendRelayMiddleware({
   fetchImpl = fetch,
   tokenProvider = readCachedAccessToken,
   verifyToken = verifyUserAccessToken,
+  providerOnly = false,
 } = {}) {
   const configuredOrigin = origin;
   const validOrigin = (value) => {
@@ -339,6 +345,7 @@ export function createBackendRelayMiddleware({
     const raw = req.url ?? "";
     if (!validOrigin(origin)) {
       if (
+        (providerOnly && raw.startsWith("/api/provider-connection/openrouter")) ||
         raw.startsWith("/api/repositories") ||
         (enabled && userAccessSession && raw.startsWith("/api/backend-session"))
       )
@@ -352,10 +359,14 @@ export function createBackendRelayMiddleware({
     } catch {
       return reply(res, 400, { error: "invalid_repository_request" });
     }
+    const provider = providerOnly && url.pathname === "/api/provider-connection/openrouter";
     const metadata =
-      url.pathname === "/api/repositories" || url.pathname.startsWith("/api/repositories/");
-    const session = url.pathname === "/api/backend-session";
-    if (!metadata && !(session && enabled && userAccessSession)) return next();
+      !providerOnly &&
+      (url.pathname === "/api/repositories" || url.pathname.startsWith("/api/repositories/"));
+    const session = providerOnly
+      ? url.pathname === "/api/provider-connection/openrouter/session"
+      : url.pathname === "/api/backend-session";
+    if (!metadata && !provider && !(session && enabled && userAccessSession)) return next();
     if (!admitted(req, origin)) return reply(res, 403, { error: "backend_relay_forbidden" });
     if (!enabled || !userAccessSession)
       return reply(res, 503, { error: "repository_backend_unavailable" });
@@ -379,12 +390,13 @@ export function createBackendRelayMiddleware({
         },
       );
     }
-    const read = req.method === "GET" && url.pathname === "/api/repositories";
+    const read = req.method === "GET" && (provider || url.pathname === "/api/repositories");
     const write =
       req.method === "POST" &&
-      /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname);
+      (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname));
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
+      (provider && url.search) ||
       (write && url.search) ||
       [...url.searchParams.keys()].some((key) => key !== "cursor") ||
       url.searchParams.getAll("cursor").length > 1 ||
@@ -398,12 +410,27 @@ export function createBackendRelayMiddleware({
         req.headers.origin !== origin ||
         !nonce ||
         (sessions.get(nonce) ?? 0) <= Date.now() ||
-        !equal(nonce, req.headers["x-pitcrew-backend-nonce"])
+        !equal(
+          nonce,
+          req.headers[provider ? "x-pitcrew-connection-nonce" : "x-pitcrew-backend-nonce"],
+        )
       )
         return reply(res, 403, { error: "backend_session_required" });
       try {
         content = await body(req);
-        if (!normalizeMutation(url.pathname, content)) throw Error();
+        if (provider) {
+          const fields = Object.keys(content).sort().join(",");
+          if (
+            !(
+              (fields === "action" && content.action === "remove") ||
+              (fields === "action,key" &&
+                content.action === "store" &&
+                typeof content.key === "string" &&
+                /^sk-or-v1-[a-zA-Z0-9_-]{16,4000}$/.test(content.key))
+            )
+          )
+            throw Error();
+        } else if (!normalizeMutation(url.pathname, content)) throw Error();
       } catch (error) {
         return reply(res, error.status ?? 400, { error: "invalid_repository_request" });
       }
@@ -434,7 +461,11 @@ export function createBackendRelayMiddleware({
       const value = await boundedJson(response);
       if (!response.ok)
         return reply(res, response.status, {
-          error: safeErrors.has(value?.error) ? value.error : "repository_operation_failed",
+          error: provider
+            ? "provider_operation_failed"
+            : safeErrors.has(value?.error)
+              ? value.error
+              : "repository_operation_failed",
         });
       return reply(res, response.status, cleanResponse(url.pathname, value));
     } catch {

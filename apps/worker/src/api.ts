@@ -274,6 +274,7 @@ export function api(
       c.req.param("changeId"),
       c.get("body").idempotencyKey as string,
       conversation?.catalog,
+      identity.actor,
     );
     await dispatch(run.id);
     return c.json(run, 201);

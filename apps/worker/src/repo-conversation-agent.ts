@@ -1,3 +1,4 @@
+import { userModelEnv } from "./user-credentials";
 import { Agent } from "agents";
 import { LifecycleCapability, type CapabilityStartContext } from "agents/lifecycle";
 import type { PiHarness } from "agents/harness/pi";
@@ -37,7 +38,7 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
           this.assertConversationAllowed();
           const input = this.input();
           const configured = configureSelectedModels(
-            env,
+            userModelEnv(env, input.credentialActor),
             input.models.repoAgent,
             input.models.catalogRevision,
           );

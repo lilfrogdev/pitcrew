@@ -29,7 +29,7 @@ it("uses a separate secure connection session and returns public status only", a
   expect(init.body).toBe(JSON.stringify({ action: "store", key: "synthetic-not-a-credential" }));
   expect(init.cache).toBe("no-store");
 });
-it("removes only the fixed provider binding and fails closed for legacy storage status", async () => {
+it("removes only the current user provider record and fails closed for legacy storage status", async () => {
   const fetch = vi.fn(async (path: string) =>
     path.endsWith("/session")
       ? Response.json({ nonce: "b".repeat(64) })
@@ -249,4 +249,27 @@ it("refreshes a raced session once after a denied local admission with identical
     "a".repeat(64),
     "b".repeat(64),
   ]);
+});
+
+it("uses the production authenticated session without a local nonce and strips private response fields", async () => {
+  const fetch = vi.fn(async (path: string) =>
+    path.endsWith("/session")
+      ? Response.json({ nonce: null })
+      : Response.json({
+          available: true,
+          storageAvailable: true,
+          configured: true,
+          executionEnabled: false,
+          key: "synthetic_should_not_escape",
+        }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect(await httpApi.openrouter!.store("sk-or-v1-synthetic_never_live")).toEqual({
+    available: true,
+    storageAvailable: true,
+    configured: true,
+    executionEnabled: false,
+  });
+  const init = (fetch.mock.calls as unknown as [string, RequestInit][])[1][1];
+  expect(init.headers).toEqual({ "Content-Type": "application/json" });
 });

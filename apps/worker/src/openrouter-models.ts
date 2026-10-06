@@ -1,5 +1,53 @@
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import type { Provider } from "@earendil-works/pi-ai/models";
+import {
+  createAssistantMessageEventStream,
+  fauxAssistantMessage,
+  type AssistantMessageEvent,
+} from "@earendil-works/pi-ai";
+
+/** Provider diagnostics never reach Pi storage, API responses, or logs verbatim. */
+export function privateProviderStream(source: AsyncIterable<AssistantMessageEvent>, key?: string) {
+  const output = createAssistantMessageEventStream();
+  const scrub = <T>(value: T): T =>
+    JSON.parse(
+      JSON.stringify(value, (_name, item) =>
+        typeof item === "string" && key ? item.split(key).join("[redacted]") : item,
+      ),
+    );
+  const fail = () =>
+    output.push({
+      type: "error",
+      reason: "error",
+      error: fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "provider_request_failed",
+      }),
+    });
+  void (async () => {
+    let terminal = false;
+    try {
+      for await (const event of source) {
+        if (event.type === "error") {
+          const clean = scrub(event);
+          output.push({
+            ...clean,
+            error: { ...clean.error, content: [], errorMessage: "provider_request_failed" },
+          });
+          terminal = true;
+        } else {
+          output.push(scrub(event) as AssistantMessageEvent);
+          if (event.type === "done") terminal = true;
+        }
+      }
+    } catch {
+      /* Suppress transport diagnostics. */
+    }
+    if (!terminal) fail();
+    output.end();
+  })();
+  return output;
+}
 
 /** Public catalog snapshot from https://openrouter.ai/api/v1/models, 2026-10-05.
  * Keep Pi's native API/compatibility contracts; correct stale bundled metadata.
@@ -87,14 +135,17 @@ export function pitcrewOpenrouterProvider(): Provider {
         onPayload: async (payload, selected) =>
           prepare?.((await options?.onPayload?.(payload, selected)) ?? payload, selected),
       } as NonNullable<typeof options>;
-      return provider.stream(model, context, updated);
+      return privateProviderStream(provider.stream(model, context, updated), options?.apiKey);
     },
     streamSimple(model, context, options) {
-      return provider.streamSimple(model, context, {
-        ...options,
-        onPayload: async (payload, selected) =>
-          prepare?.((await options?.onPayload?.(payload, selected)) ?? payload, selected),
-      });
+      return privateProviderStream(
+        provider.streamSimple(model, context, {
+          ...options,
+          onPayload: async (payload, selected) =>
+            prepare?.((await options?.onPayload?.(payload, selected)) ?? payload, selected),
+        }),
+        options?.apiKey,
+      );
     },
   };
 }

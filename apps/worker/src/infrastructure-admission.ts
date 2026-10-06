@@ -148,6 +148,11 @@ export class InfrastructureAdmission {
       this.store.write(state);
     });
   }
+  hasReservation(runId: string) {
+    return this.store.transaction(
+      () => !!this.store.read()?.reservations.some((item) => item.runId === runId),
+    );
+  }
   active() {
     return this.store.transaction(() =>
       (this.store.read()?.reservations ?? [])

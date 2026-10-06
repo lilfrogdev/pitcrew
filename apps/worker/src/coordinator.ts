@@ -86,6 +86,7 @@ export interface State {
   evidence: Record<string, TestEvidence>;
   changes?: Change[];
   requests?: Record<string, ExecutionInput>;
+  credentialActors?: Record<string, string>;
 }
 export const initialState = (overrides: Partial<Project> = {}): State => {
   const project: Project = {
@@ -593,6 +594,7 @@ export class Coordinator {
                 configurationRevision: project.configurationRevision,
               };
               this.state.runs.push(run);
+              (this.state.credentialActors ??= {})[run.id] = actor;
               (this.state.plans ??= {})[run.id] = plan;
               this.event("thread.created", thread.id);
               messages.forEach((m) =>
@@ -1066,6 +1068,7 @@ export class Coordinator {
         throw new AdmissionError("conversation_context_limit", 413);
       turn.status = "running";
       turn.input = {
+        credentialActor: turn.actor,
         turnId: id,
         threadId: turn.threadId,
         projectId: this.state.project.id,
@@ -1138,6 +1141,7 @@ export class Coordinator {
       this.state.changes!.push(change);
       this.state.runs.push(run);
       turn.runId = run.id;
+      (this.state.credentialActors ??= {})[run.id] = turn.actor;
       this.event("change.created", change.id);
       this.event("run.queued", run.id);
       return structuredClone(run);
@@ -1162,7 +1166,7 @@ export class Coordinator {
       throw error;
     }
     return this.transaction(
-      `message_${key}`,
+      `message_${JSON.stringify([actor, key])}`,
       {
         threadId,
         content,
@@ -1204,6 +1208,7 @@ export class Coordinator {
         };
         this.state.messages.push(message);
         this.state.runs.push(run);
+        (this.state.credentialActors ??= {})[run.id] = actor;
         this.event("message.created", message.id, { kind: "principal", id: actor });
         this.event("change.created", change.id, { kind: "principal", id: actor });
         this.event("run.queued", run.id);
@@ -1216,9 +1221,9 @@ export class Coordinator {
     if (!change) throw new AdmissionError("not_found", 404);
     return change;
   }
-  retryChange(changeId: string, key: string, catalog?: ModelCatalog): Run {
+  retryChange(changeId: string, key: string, catalog?: ModelCatalog, actor = "local-fixture"): Run {
     this.validateKey(key);
-    return this.transaction(`retry_${key}`, { changeId }, () => {
+    return this.transaction(`retry_${JSON.stringify([actor, key])}`, { changeId, actor }, () => {
       const change = this.change(changeId);
       const sourcePlan = this.state.runs
         .filter((r) => r.changeId === changeId)
@@ -1259,6 +1264,7 @@ export class Coordinator {
         configurationRevision: this.state.project.configurationRevision,
       };
       this.state.runs.push(run);
+      (this.state.credentialActors ??= {})[run.id] = actor;
       if (sourcePlan) (this.state.plans ??= {})[run.id] = structuredClone(sourcePlan);
       this.event("run.queued", run.id);
       return run;
@@ -1340,6 +1346,7 @@ export class Coordinator {
       run.status = "running";
       this.event("run.started", run.id);
       const request: ExecutionInput = {
+        credentialActor: this.state.credentialActors?.[runId],
         runModels: run.runModels,
         knowledgeContext: {
           attemptId: runId,

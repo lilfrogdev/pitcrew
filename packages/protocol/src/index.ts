@@ -127,6 +127,8 @@ export interface SubmitResult {
   run: Run;
 }
 export interface ExecutionInput {
+  /** Trusted initiating identity; never a credential or client-selected owner. */
+  credentialActor?: string;
   conversationContext?: Message[];
   runModels?: FrozenRunModels;
   knowledgeContext?: WorkerKnowledgeContext;

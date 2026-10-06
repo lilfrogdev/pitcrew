@@ -33,6 +33,10 @@
       {
         "name": "REVIEW",
         "class_name": "ReviewAgent"
+      },
+      {
+        "name": "USER_CREDENTIALS",
+        "class_name": "UserCredentials"
       }
     ]
   },
@@ -48,6 +52,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["RepoConversationAgent"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["UserCredentials"]
     }
   ],
   "vars": {

@@ -57,7 +57,8 @@ export async function principal(
       if (
         !trustedLocalOrigin(request) ||
         !nonce ||
-        request.headers.get("x-pitcrew-local-nonce") !== nonce
+        (request.headers.get("x-pitcrew-local-nonce") ??
+          request.headers.get("x-pitcrew-connection-nonce")) !== nonce
       )
         return;
     }
@@ -124,7 +125,12 @@ export async function protectedFetch(
       { error: "access_not_configured_or_denied" },
       { status: 403, headers: { "Cache-Control": "no-store" } },
     );
-  if (new URL(request.url).pathname === "/api/local-session" && request.method === "GET") {
+  if (
+    ["/api/local-session", "/api/provider-connection/openrouter/session"].includes(
+      new URL(request.url).pathname,
+    ) &&
+    request.method === "GET"
+  ) {
     if (!fixtureAccess(request, env))
       return Response.json({ nonce: null }, { headers: { "Cache-Control": "private, no-store" } });
     if (

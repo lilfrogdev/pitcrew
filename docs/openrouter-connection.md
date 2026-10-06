@@ -1,76 +1,38 @@
 # OpenRouter connection
 
-The user opens **Profile → Providers**, enters their existing key in a masked field, and selects
-**Save**. The short storage hint identifies the Pitcrew Cloudflare Worker. Save also replaces an
-existing key; **Remove** deletes the fixed binding. No separate checkbox or composer popup is used.
-The field clears immediately, including on failure and navigation. The browser never persists a key
-in localStorage, conversation state, or repository configuration. The agent must never enter,
-inspect, capture, or test a real key.
+Each authenticated Pitcrew user saves and removes their own key in **Profile → Providers**. Save replaces that user's key. The password field clears immediately on submission, failure, and navigation. The browser does not persist keys in localStorage, conversations, or repository configuration. No endpoint returns keys or validates them by calling OpenRouter.
 
-The local controller is opt-in through `PITCREW_OPENROUTER_SETUP=true`. Storage has a separate,
-default-off `PITCREW_OPENROUTER_AUTH_CONTEXT=user-preferences` option. Do not enable this option
-without action-time approval for the subprocess auth boundary below. Route availability alone does
-not indicate usable storage: public `storageAvailable` is false until this explicit option is enabled,
-and the Profile form stays disabled. Actual OAuth validity is determined by the fixed preflight when
-the user acts; status never claims cloud execution is connected.
+## Identity and storage
 
-Use the exact `http://127.0.0.1:<port>` origin; `localhost` and network hosts are rejected.
-Managed preview installation belongs to the preview owner after parent review. Do not change port
-5173 directly. A deployed static frontend needs the reviewed controller wired separately.
+The Worker verifies Cloudflare Access RS256 signature, issuer, audience, expiry, subject, and exact email allowlist before provider operations. Mutations require the exact application Origin. The credential owner comes from the verified `access:<sub>` principal, never a request body, query, email hint, or forwarded browser identity header. The existing Access issuer is fixed for this deployment; changing issuers requires explicit credential migration/reset rather than reusing subjects.
 
-The controller requires loopback peer/listener, exact Host and Origin, and an expiring HttpOnly,
-SameSite=Strict session cookie with a matching nonce header. It accepts at most 8 KiB JSON:
-`{action:"store",key:"…"}` or exactly `{action:"remove"}`. Both mutations share a lock. The fixed
-account is Pitcrew `004227d2029c56b084ce15356768def3`, Worker `pitcrew-backend`, secret binding
-`OPENROUTER_API_KEY`. A read-only existence preflight precedes fixed secret put/delete commands.
-Wrangler receives the key through stdin only; stdout/stderr are discarded and its log is redirected
-to `/dev/null`. Temporary configuration contains public target metadata only. The Worker must stay
-stable during save: Wrangler could create a draft if a trusted operator deletes it between preflight
-and the write.
+`USER_CREDENTIALS` addresses one SQLite Durable Object per principal. `UserCredentials` checks its own object ID against the supplied principal. Only a versioned AES-256-GCM ciphertext and fresh 96-bit IV are persisted. Authenticated additional data binds the record to its version, provider, and principal. The separate `CREDENTIAL_ENCRYPTION_KEY` Worker secret is a canonical base64 encoding of 32 random bytes. Missing storage, malformed encryption keys, corruption, and decryption errors fail closed with stable error codes. This is application isolation and encrypted storage under trusted infrastructure administration: Cloudflare/account administrators who control Worker secrets or code can access the keys.
 
-The secret persists encrypted in Cloudflare until replaced/removed. Local status records only a
-successful mutation during this process; it cannot verify previously stored key material. No endpoint
-returns the key or tests validity with OpenRouter. Replace/remove only with no active cloud runs.
+GET `/api/provider-connection/openrouter` returns only `available`, `storageAvailable`, `configured`, and `executionEnabled` booleans. POST accepts exactly `{action:"store",key:"…"}` or `{action:"remove"}`, with an 8 KiB bound. No read/export route exists. Responses are private/no-store. Save does not check upstream validity or enable execution. Status reflects persisted storage across restarts. Provider error details are replaced with a stable code before Pi stores or exposes them.
 
-## Subprocess auth proposal — approval pending
+## Runtime
 
-The managed service retains its isolated HOME. Only the fixed Wrangler preflight/store/remove child
-receives `XDG_CONFIG_HOME=/Users/lilfrogdev/Library/Preferences`. This selects the existing macOS
-Wrangler config directory `/Users/lilfrogdev/Library/Preferences/.wrangler`; it does not copy or symlink
-credentials, expand the service HOME, or expose management credentials to the browser or Worker.
-The option remains off in this candidate and must not be applied by the agent without approval.
+Conversation turns freeze their initiating principal. Direct runs, intake dispatch, delegation, and retries carry that principal into the worker and reviewer admission and persist it across restart. A retry uses the user who initiated the retry. The OpenRouter credential store resolves that user's current record for every model request, including follow-up tool calls. Removing a key blocks subsequent requests and queued work using it. A provider HTTP request already sent before deletion may finish; deletion does not undo prior spending or revoke the key at OpenRouter. Replacing a key affects the next lookup.
 
-Metadata confirmed `config/default.toml` exists in that normal-user directory and is absent in the
-isolated HOME; no file contents or OAuth scopes were read. Existing Wrangler may read and refresh
-its OAuth configuration, so approval must cover config-directory reads and refresh writes, including
-any temporary/atomic replacement files it needs, plus Wrangler-owned nonsecret metadata/cache writes
-(such as metrics.json even with telemetry disabled) inside the selected .wrangler directory. This is access to existing auth, not permission to
-create a new token, broaden scopes, run provider inference, or deploy execution settings. The fixed
-child environment omits ambient API tokens and sets `CLOUDFLARE_AUTH_USE_KEYRING=false` to keep
-Wrangler discovery file-only. Encrypted-only auth fails closed; this proposal does not authorize
-OS Keychain access or credential migration. Legacy HOME-based Wrangler discovery still takes
-precedence if the isolated HOME later gains a legacy config; keep that isolated directory absent.
+There is no global `OPENROUTER_API_KEY` fallback, no other-user lookup, and no ambient credential discovery for OpenRouter. The historical model configuration `secretBinding` field is retained for catalog compatibility but ignored by the OpenRouter runtime. Legacy queued work without a frozen principal fails closed and must be resubmitted. Catalog metadata contains no credentials. Capabilities are unavailable when the requesting user's credential cannot be read.
 
-## Backend handoff
+## Local controller
 
-Saving a key does not deploy or enable cloud execution. Ingress, authenticated local relay, execution
-budgets and Cloudflare deployment configuration remain owned by the infrastructure task. The current
-backend has execution disabled. The non-secret configuration below is a reviewed handoff, not an
-automatic deployment. The initial testing choice is Qwen; it is not a permanent user preference.
+The opt-in `PITCREW_OPENROUTER_SETUP=true` helper uses `PITCREW_ACCESS_SESSION=user-cache` and the existing verified user Access session. It forwards only provider status/save/remove to the fixed protected backend, rebuilding headers from that session. It no longer uses Wrangler OAuth or writes a shared Worker secret. The retired `PITCREW_OPENROUTER_AUTH_CONTEXT` setting grants no access. The local signed-in identity is the verified cloudflared cache for that OS user; no browser-supplied owner selector is accepted.
 
-```json
-{
-  "MODEL_CONFIGURATION": "{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"qwen/qwen3.8-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}",
-  "MODELS_CONFIGURATION": "[{\"id\":\"deepseek-flash\",\"configuration\":{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"deepseek/deepseek-v4-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}},{\"id\":\"deepseek-flash-0731\",\"configuration\":{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"deepseek/deepseek-v4-flash-0731\",\"secretBinding\":\"OPENROUTER_API_KEY\"}},{\"id\":\"deepseek-vision\",\"configuration\":{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"deepseek/deepseek-v4-flash-vision-exp\",\"secretBinding\":\"OPENROUTER_API_KEY\"}}]"
-}
-```
+Loopback listener/peer, exact Host/Origin, HttpOnly Strict cookie plus matching expiring nonce, body bounds, capacity, and write serialization guard the helper. Cloud authentication failures and backend diagnostics return stable codes. No inference or arbitrary URL proxy is added. Work capabilities continue to use their separately configured backend; installing this helper alone does not route or enable paid execution.
 
-The existing server catalog, thread picker and frozen run-model contracts apply. Missing credentials,
-unsupported IDs/efforts and image-incompatible role selections fail closed. Secret binding names
-and secret values are excluded from public choices. Qwen supports automatic/no tool choice;
-required/specific tool forcing is rejected before provider transport. Qwen gateway catalog exposes
-token budgets but omits named effort values; initial reasoning **Off** sends `reasoning.enabled:false`.
-No arbitrary low effort or budget is advertised. DeepSeek's native supported effort mappings are retained.
+## Production provisioning — separate approval required
+
+This branch is local and production execution remains disabled. An approved rollout must:
+
+1. Provision the `USER_CREDENTIALS` binding and `v4` SQLite class migration from the backend config.
+2. Generate and install `CREDENTIAL_ENCRYPTION_KEY` through the approved secret-management path. Never commit it, place it in UI/build variables, or print it. No encryption secret was generated or installed by this implementation task.
+3. Deploy the reviewed Worker and frontend/controller together, preserving the Access protection and exact owner/Bryan allowlist. Provisioning and deployment require explicit approval.
+4. Have each user enter their own existing OpenRouter key. There is no migration from the shared slot. Any removal of the old global binding is a separate approved infrastructure action; this runtime ignores it.
+5. Keep `EXECUTION_MODE`, `INFRASTRUCTURE_ADMISSION_ENABLED`, and `CLOUD_CONVERSATION_ENABLED` off until the separate execution and budget approval. No paid verification is needed to test storage.
+
+Keep the encryption secret backed up under the infrastructure owner's controls. Replacing it without migration makes all saved records unreadable; this minimal implementation intentionally has no automatic key rotation. Users can replace or remove their records once the new key is provisioned. SQLite/platform backup retention may retain old ciphertext after logical deletion; deletion blocks live retrieval but does not claim physical erasure from backups. Access issuer/subject changes likewise require controlled migration or fresh user entry.
 
 ## Catalog snapshot
 
@@ -92,6 +54,6 @@ subject to the smaller total request budget. These are application safeguards, n
 hard limits. Video is not admitted by the existing attachment contract. No latest aliases are selected
 automatically and no equivalent performance is assumed.
 
-All integration verification uses synthetic credentials, mocked subprocesses and mocked provider
+All integration verification uses synthetic credentials, native local Durable Objects and mocked provider
 transport. Real inference/private image transfer is a separate explicit user action; OpenRouter usage
 is billed outside the Cloudflare infrastructure budget.
