@@ -731,11 +731,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               )
             }
           />
-          {providerConnected && !executionEnabled && (
-            <p className="composer-hint" role="status">
-              Execution is disabled.
-            </p>
-          )}
           <p className="sr-only" role="status">
             {announcement}
           </p>
