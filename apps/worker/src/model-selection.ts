@@ -63,6 +63,18 @@ function bindings(env: ModelEnv, config: ModelConfiguration) {
   };
 }
 export function resolveCatalog(env: ModelEnv): ModelCatalog {
+  return catalog(env, false);
+}
+/** Public display metadata only. This result cannot configure or dispatch a model. */
+export function resolveDisplayCatalog(env: ModelEnv) {
+  const resolved = catalog({ ...env, openRouterKey: undefined }, true);
+  return {
+    revision: resolved.revision,
+    choices: resolved.choices,
+    defaultSelection: resolved.defaultSelection,
+  };
+}
+function catalog(env: ModelEnv, displayOnly: boolean): ModelCatalog {
   if (env.EXECUTION_MODE === "cloud" && !env.MODEL_CONFIGURATION)
     throw Error("model_not_configured");
   const defaultConfig = configuration(JSON.parse(env.MODEL_CONFIGURATION ?? '{"provider":"fake"}'));
@@ -81,7 +93,7 @@ export function resolveCatalog(env: ModelEnv): ModelCatalog {
       throw Error("model_not_configured");
     ids.add(value.id);
     const config = configuration(value.configuration);
-    if (config.provider !== "fake" && env.EXECUTION_MODE !== "cloud")
+    if (!displayOnly && config.provider !== "fake" && env.EXECUTION_MODE !== "cloud")
       throw Error("model_not_enabled");
     const { model } = configureModels(config, bindings(env, config));
     const limits = model.inputLimits;

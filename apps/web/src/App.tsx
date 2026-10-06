@@ -19,6 +19,7 @@ import {
 import { ModelPicker } from "./ModelPicker";
 import { useKeyboardFocus } from "./useKeyboardFocus";
 import { ProfileProviders } from "./ProfileProviders";
+import { readDisplayPreference, saveDisplayPreference } from "./display-preference";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -225,17 +226,32 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     };
   }, [api, threadId, revision]);
 
+  const displayOnly = composerCapabilities?.displayOnly === true;
+  const executionEnabled =
+    !displayOnly &&
+    (composerCapabilities?.executionEnabled ?? composerCapabilities?.conversation ?? false);
+  const usableModels =
+    composerCapabilities?.conversation || displayOnly
+      ? composerCapabilities.models.filter(
+          (model) =>
+            model.efforts.length &&
+            (demo || !["fixture", "pitcrew-fixture"].includes(model.provider)),
+        )
+      : [];
+  const selectionKey = displayOnly
+    ? `display:${projectId}:${threadId}:${composerCapabilities?.catalogRevision}`
+    : threadId;
   const selection =
-    selections[threadId] ??
-    threads.find((thread) => thread.id === threadId)?.modelSelection ??
+    selections[selectionKey] ??
+    (displayOnly
+      ? readDisplayPreference(
+          projectId,
+          threadId,
+          composerCapabilities?.catalogRevision ?? "",
+          usableModels,
+        )
+      : threads.find((thread) => thread.id === threadId)?.modelSelection) ??
     composerCapabilities?.settings.default;
-  const usableModels = composerCapabilities?.conversation
-    ? composerCapabilities.models.filter(
-        (model) =>
-          model.efforts.length &&
-          (demo || !["fixture", "pitcrew-fixture"].includes(model.provider)),
-      )
-    : [];
   const providerConnected = usableModels.length > 0;
   const modelValid =
     providerConnected &&
@@ -266,7 +282,26 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     const selected = threadId,
       selectedProject = projectId,
       selectedGeneration = generation.current;
-    setSelections((all) => ({ ...all, [selected]: next }));
+    setSelections((all) => ({ ...all, [selectionKey]: next }));
+    if (displayOnly) {
+      const choice = usableModels.find(
+        (model) => model.id === next.modelId && model.efforts.includes(next.effort),
+      );
+      if (choice && composerCapabilities?.catalogRevision) {
+        try {
+          saveDisplayPreference(
+            selectedProject,
+            selected,
+            composerCapabilities.catalogRevision,
+            choice,
+            next,
+          );
+        } catch {
+          setMutationError("Model preference could not be saved for the next visit.");
+        }
+      }
+      return;
+    }
     if (!api.setThreadModelSelection) return;
     setSelectionSaving((all) => ({ ...all, [selected]: true }));
     try {
@@ -337,6 +372,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
       content.length > 8000 ||
       mutation.current ||
       loading ||
+      !executionEnabled ||
       !threadId ||
       selectionSaving[threadId] ||
       !modelValid ||
@@ -662,6 +698,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               !!threadId &&
               !busy &&
               !loading &&
+              executionEnabled &&
               !selectionSaving[threadId] &&
               modelValid &&
               !attachmentCompatibilityError &&
@@ -677,6 +714,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                   selection={selection}
                   onSelection={(next) => void chooseModel(next)}
                   disabled={!threadId || busy || !!selectionSaving[threadId]}
+                  executionEnabled={composerCapabilities ? executionEnabled : null}
                 />
               ) : providersLoading ? (
                 <span className="provider-setup" role="status">
@@ -693,6 +731,11 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               )
             }
           />
+          {providerConnected && !executionEnabled && (
+            <p className="composer-hint" role="status">
+              Execution is disabled.
+            </p>
+          )}
           <p className="sr-only" role="status">
             {announcement}
           </p>

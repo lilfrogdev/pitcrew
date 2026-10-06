@@ -8,6 +8,7 @@ import {
   type CredentialEnv,
 } from "../src/user-credentials";
 import { configureSelectedModels, type ModelEnv } from "../src/model-selection";
+import { providerModelsRequest } from "../src/provider-models";
 const configuredByActor = new Map<string, ReturnType<typeof configureSelectedModels>>();
 export class CredentialFixture extends UserCredentials {
   stored() {
@@ -35,6 +36,8 @@ export default {
         const path = new URL(request.url).pathname;
         if (path === "/api/provider-connection/openrouter")
           return providerConnectionRequest(request, env, identity.actor);
+        if (path === "/api/provider-connection/openrouter/models")
+          return providerModelsRequest(request, env, identity.actor);
         // Test-only observations; these paths do not exist in the production Worker.
         const credential = userCredential(
           env,
@@ -48,6 +51,14 @@ export default {
         if (path === "/api/fixture/foreign") {
           try {
             await credential.read("access:other-user");
+            return Response.json({ denied: false });
+          } catch {
+            return Response.json({ denied: true });
+          }
+        }
+        if (path === "/api/fixture/foreign-presence") {
+          try {
+            await credential.present("access:other-user");
             return Response.json({ denied: false });
           } catch {
             return Response.json({ denied: true });

@@ -238,6 +238,51 @@ async function boundedJson(response) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 function cleanResponse(path, value) {
+  if (path === "/api/provider-connection/openrouter/models") {
+    if (!Array.isArray(value?.models) || value.models.length > 33) throw Error();
+    if (!value.models.length) return { models: [], executionEnabled: false };
+    if (!/^[a-f0-9]{64}$/.test(value.catalogRevision ?? "")) throw Error();
+    const efforts = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    const ids = new Set();
+    const models = value.models.map((model) => {
+      if (
+        !/^[a-zA-Z0-9_-]{1,64}$/.test(model?.id ?? "") ||
+        ids.has(model.id) ||
+        typeof model.label !== "string" ||
+        !model.label.length ||
+        model.label.length > 100 ||
+        model.provider !== "openrouter" ||
+        !/^[a-zA-Z0-9._/-]{1,256}$/.test(model.model ?? "") ||
+        !Array.isArray(model.efforts) ||
+        !model.efforts.length ||
+        model.efforts.length > 7 ||
+        model.efforts.some((effort) => !efforts.has(effort)) ||
+        !Number.isSafeInteger(model.contextWindow) ||
+        model.contextWindow <= 0 ||
+        model.contextWindow > 1e9 ||
+        (model.defaultEffort !== undefined && !model.efforts.includes(model.defaultEffort))
+      )
+        throw Error();
+      ids.add(model.id);
+      return {
+        id: model.id,
+        label: model.label,
+        provider: model.provider,
+        model: model.model,
+        efforts: model.efforts,
+        contextWindow: model.contextWindow,
+        ...(model.defaultEffort !== undefined ? { defaultEffort: model.defaultEffort } : {}),
+      };
+    });
+    const selected = models.find((model) => model.id === value.defaultSelection?.modelId);
+    if (!selected || !selected.efforts.includes(value.defaultSelection.effort)) throw Error();
+    return {
+      catalogRevision: value.catalogRevision,
+      models,
+      defaultSelection: { modelId: selected.id, effort: value.defaultSelection.effort },
+      executionEnabled: false,
+    };
+  }
   if (path === "/api/provider-connection/openrouter") {
     const fields = ["available", "storageAvailable", "configured", "executionEnabled"];
     if (fields.some((field) => typeof value?.[field] !== "boolean")) throw Error();
@@ -360,13 +405,15 @@ export function createBackendRelayMiddleware({
       return reply(res, 400, { error: "invalid_repository_request" });
     }
     const provider = providerOnly && url.pathname === "/api/provider-connection/openrouter";
+    const models = providerOnly && url.pathname === "/api/provider-connection/openrouter/models";
     const metadata =
       !providerOnly &&
       (url.pathname === "/api/repositories" || url.pathname.startsWith("/api/repositories/"));
     const session = providerOnly
       ? url.pathname === "/api/provider-connection/openrouter/session"
       : url.pathname === "/api/backend-session";
-    if (!metadata && !provider && !(session && enabled && userAccessSession)) return next();
+    if (!metadata && !provider && !models && !(session && enabled && userAccessSession))
+      return next();
     if (!admitted(req, origin)) return reply(res, 403, { error: "backend_relay_forbidden" });
     if (!enabled || !userAccessSession)
       return reply(res, 503, { error: "repository_backend_unavailable" });
@@ -390,13 +437,14 @@ export function createBackendRelayMiddleware({
         },
       );
     }
-    const read = req.method === "GET" && (provider || url.pathname === "/api/repositories");
+    const read =
+      req.method === "GET" && (provider || models || url.pathname === "/api/repositories");
     const write =
       req.method === "POST" &&
       (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname));
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
-      (provider && url.search) ||
+      ((provider || models) && url.search) ||
       (write && url.search) ||
       [...url.searchParams.keys()].some((key) => key !== "cursor") ||
       url.searchParams.getAll("cursor").length > 1 ||
@@ -461,11 +509,12 @@ export function createBackendRelayMiddleware({
       const value = await boundedJson(response);
       if (!response.ok)
         return reply(res, response.status, {
-          error: provider
-            ? "provider_operation_failed"
-            : safeErrors.has(value?.error)
-              ? value.error
-              : "repository_operation_failed",
+          error:
+            provider || models
+              ? "provider_operation_failed"
+              : safeErrors.has(value?.error)
+                ? value.error
+                : "repository_operation_failed",
         });
       return reply(res, response.status, cleanResponse(url.pathname, value));
     } catch {

@@ -173,3 +173,44 @@ test("this helper never relays Work, repositories, arbitrary paths or URLs", asy
     assert.equal((await request(f.handler, path)).next, true);
   assert.equal(f.calls.length, 0);
 });
+test("display catalog is authenticated GET-only, strips private fields, and cannot authorize local work", async () => {
+  const catalog = {
+    catalogRevision: "a".repeat(64),
+    executionEnabled: true,
+    entries: [{ secretBinding: key }],
+    models: [
+      {
+        id: "default",
+        label: "Qwen",
+        provider: "openrouter",
+        model: "qwen/qwen3.8-flash",
+        efforts: ["off"],
+        contextWindow: 1000000,
+        secretBinding: key,
+      },
+    ],
+    defaultSelection: { modelId: "default", effort: "off", key },
+  };
+  const f = fixture({
+    fetchImpl: async (url) =>
+      url.endsWith("/api/local-session")
+        ? new Response(null, {
+            status: 302,
+            headers: { location: BACKEND_ACCESS.issuer + "/cdn-cgi/access/login/fixture" },
+          })
+        : Response.json(catalog),
+  });
+  const result = await request(f.handler, route + "/models");
+  assert.equal(result.code, 200);
+  assert.equal(result.json.executionEnabled, false);
+  assert.equal(result.json.models[0].provider, "openrouter");
+  assert.equal(result.text.includes(key), false);
+  for (const method of ["POST", "DELETE", "PUT"])
+    assert.equal((await request(f.handler, route + "/models", { method })).code, 405);
+  assert.equal((await request(f.handler, route + "/models?owner=other")).code, 400);
+  assert.equal(
+    (await request(f.handler, route + "/models", { headers: { origin: "https://evil.test" } }))
+      .code,
+    403,
+  );
+});

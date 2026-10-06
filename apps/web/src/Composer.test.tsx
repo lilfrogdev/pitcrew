@@ -112,12 +112,12 @@ it("retains image previews when a model becomes incompatible and delivers native
     target: { value: "Inspect synthetic image" },
   });
   await user.click(screen.getByRole("combobox", { name: "Repo agent model" }));
-  await user.click(screen.getByRole("option", { name: "Fixture text (synthetic)" }));
+  await user.click(screen.getByRole("gridcell", { name: "Fixture text (synthetic)" }));
   await screen.findByText(/Images are not supported by all selected agents/);
   expect(screen.getByRole("button", { name: "Send message" }).hasAttribute("disabled")).toBe(true);
   expect(screen.getByAltText("Preview of preview.png")).toBeTruthy();
   await user.click(screen.getByRole("combobox", { name: "Repo agent model" }));
-  await user.click(screen.getByRole("option", { name: "Fixture vision (synthetic)" }));
+  await user.click(screen.getByRole("gridcell", { name: "Fixture vision (synthetic)" }));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Send message" }).hasAttribute("disabled")).toBe(
       false,

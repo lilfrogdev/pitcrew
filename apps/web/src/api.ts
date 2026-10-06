@@ -29,6 +29,10 @@ export type LandingCapabilities = {
     models: ModelChoice[];
     settings: ModelSettings;
     conversation: boolean;
+    /** Display metadata never authorizes this API's Work transport. */
+    displayOnly?: boolean;
+    catalogRevision?: string;
+    executionEnabled?: boolean;
     attachments?: AttachmentCapabilities;
   };
 };
@@ -188,7 +192,42 @@ export const httpApi: Api = {
   },
   attachmentUrl: (threadId, attachmentId) =>
     `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`,
-  capabilities: () => request("/capabilities"),
+  async capabilities() {
+    const capabilities = await request<LandingCapabilities>("/capabilities");
+    if (
+      capabilities.composer?.conversation &&
+      capabilities.composer.models.some(
+        (model) => !["fixture", "pitcrew-fixture"].includes(model.provider),
+      )
+    )
+      return capabilities;
+    try {
+      const display = await request<{
+        models: ModelChoice[];
+        catalogRevision?: string;
+        defaultSelection?: ModelSelection;
+      }>("/provider-connection/openrouter/models");
+      if (
+        !display.models?.length ||
+        !/^[a-f0-9]{64}$/.test(display.catalogRevision ?? "") ||
+        !display.defaultSelection
+      )
+        return capabilities;
+      return {
+        ...capabilities,
+        composer: {
+          models: display.models,
+          settings: { default: display.defaultSelection },
+          catalogRevision: display.catalogRevision,
+          conversation: false,
+          displayOnly: true,
+          executionEnabled: false,
+        },
+      };
+    } catch {
+      return capabilities;
+    }
+  },
   approve: (id, input) => request(`/runs/${encodeURIComponent(id)}/merge-approval`, input),
   land: (id, authorizationId) =>
     request(`/runs/${encodeURIComponent(id)}/landing`, { authorizationId }),

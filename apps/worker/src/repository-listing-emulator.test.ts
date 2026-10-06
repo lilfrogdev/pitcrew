@@ -81,6 +81,22 @@ it("signed users list metadata with lifecycle disabled while every write remains
     return (stub as unknown as { calls(): Promise<string[]> }).calls();
   };
   try {
+    const namespace = await mf.getDurableObjectNamespace("REPOSITORY");
+    const stub = namespace.get(namespace.idFromName("pitcrew")) as unknown as {
+      executionCounts(): Promise<Record<string, number>>;
+    };
+    const initialCounts = await stub.executionCounts();
+    for (const path of [
+      "/api/threads/test/messages",
+      "/api/changes/test/runs",
+      "/api/projects/test/intake/dispatch",
+    ]) {
+      const response = await request(path, "POST");
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "execution_disabled" });
+    }
+    expect(await stub.executionCounts()).toEqual(initialCounts);
+    expect(await calls()).toEqual([]);
     // Denial happens before the DO or artifact binding is consulted.
     expect((await mf.dispatchFetch(base + "/api/repositories")).status).toBe(403);
     for (const jwt of [other, expired, "invalid"])

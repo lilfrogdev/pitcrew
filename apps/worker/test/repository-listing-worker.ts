@@ -37,6 +37,15 @@ export class RepositoryListingFixture extends RepositoryAgent {
       ...this.ctx.storage.sql.exec<{ operation: string }>("SELECT operation FROM listing_calls"),
     ].map((row) => row.operation);
   }
+  executionCounts() {
+    const state = this.getCoordinator().state;
+    return {
+      runs: state.runs.length,
+      messages: state.messages.length,
+      turns: state.conversationTurns?.length ?? 0,
+      keys: Object.keys(state.keys).length,
+    };
+  }
 }
 
 // Exercise the real top-level protected fetch and real RepositoryAgent.onRequest.

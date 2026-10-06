@@ -7,6 +7,60 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
 });
+it("allows selecting and reloading display models while Send and server execution preferences stay disabled", async () => {
+  const api = createFixtureApi();
+  const native = await api.capabilities();
+  const models = [
+    {
+      id: "default",
+      label: "Qwen display",
+      provider: "openrouter",
+      model: "qwen/qwen3.8-flash",
+      efforts: ["off" as const],
+      contextWindow: 1000000,
+    },
+    {
+      id: "deepseek",
+      label: "DeepSeek display",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4-flash",
+      efforts: ["off" as const, "high" as const],
+      contextWindow: 1048576,
+    },
+  ];
+  api.capabilities = vi.fn(async () => ({
+    ...native,
+    composer: {
+      models,
+      conversation: false,
+      displayOnly: true,
+      executionEnabled: false,
+      catalogRevision: "a".repeat(64),
+      settings: { default: { modelId: "default", effort: "off" as const } },
+    },
+  }));
+  api.send = vi.fn(api.send);
+  api.setThreadModelSelection = vi.fn(api.setThreadModelSelection);
+  const user = userEvent.setup();
+  render(<App api={api} />);
+  await user.click(await screen.findByRole("combobox", { name: "Repo agent model" }));
+  await user.click(screen.getByRole("gridcell", { name: "DeepSeek display" }));
+  await user.type(screen.getByLabelText("Message your crew"), "A retained draft");
+  expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
+  fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
+  expect(api.send).not.toHaveBeenCalled();
+  expect(api.setThreadModelSelection).not.toHaveBeenCalled();
+  expect(screen.getByText("Execution is disabled.")).toBeTruthy();
+  cleanup();
+  render(<App api={api} />);
+  await waitFor(() =>
+    expect(screen.getByRole("combobox", { name: "Repo agent model" })).toHaveProperty(
+      "textContent",
+      "DeepSeek display",
+    ),
+  );
+  expect(api.send).not.toHaveBeenCalled();
+});
 it.each([
   "missing",
   "failed",
