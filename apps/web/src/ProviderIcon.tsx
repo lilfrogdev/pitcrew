@@ -26,7 +26,7 @@ export function ProviderIcon({ provider, size = 18 }: { provider: string; size?:
       {provider === "openrouter" ? (
         <img src={openRouterLogo} alt="" width={size} />
       ) : provider === "openai" ? (
-        <IconBrandOpenai size={size} stroke={1.5} aria-hidden="true" />
+        <IconBrandOpenai size={size} stroke={1.5} color="#000" aria-hidden="true" />
       ) : (
         <IconCpu size={size} stroke={1.5} aria-hidden="true" />
       )}

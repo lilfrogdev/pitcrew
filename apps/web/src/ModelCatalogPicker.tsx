@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { IconCheck, IconChevronDown, IconSearch, IconStar } from "@tabler/icons-react";
 import type { ModelChoice } from "@pitcrew/protocol";
 import { ProviderIcon, providerName } from "./ProviderIcon";
+import { ModelIcon } from "./ModelIcon";
 import { useUpwardPopup } from "./useUpwardPopup";
 import { favoriteKey, useModelFavorites } from "./model-favorites";
 import styles from "./ModelCatalogPicker.module.css";
@@ -123,7 +124,7 @@ export function ModelCatalogPicker({
           }
         }}
       >
-        <ProviderIcon provider={selected?.provider ?? "openrouter"} size={16} />
+        <ModelIcon model={selected} size={16} />
         <span className={styles.triggerLabel}>{selected?.label ?? "Choose model"}</span>
         <IconChevronDown size={13} stroke={1.5} aria-hidden="true" />
       </button>
@@ -150,7 +151,13 @@ export function ModelCatalogPicker({
                   search.current?.focus();
                 }}
               >
-                <IconStar size={20} stroke={1.5} fill="currentColor" aria-hidden="true" />
+                <IconStar
+                  size={20}
+                  stroke={1.5}
+                  fill="currentColor"
+                  className={styles.favoritesIcon}
+                  aria-hidden="true"
+                />
               </button>
               <span className={styles.railDivider} />
               {providers.map((provider) => (
