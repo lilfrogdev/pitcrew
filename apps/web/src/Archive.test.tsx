@@ -31,7 +31,7 @@ async function search(user: ReturnType<typeof userEvent.setup>, title: string) {
   return screen.getByRole("region", { name: "Conversation search results" });
 }
 describe("archive conversations", () => {
-  it("hides active pinned threads, keeps their draft/transcript and pin intent, then searches/restores after remount", async () => {
+  it("hides active pinned threads, keeps their draft/transcript and removes pin intent, then searches/restores after remount", async () => {
     const user = userEvent.setup(),
       api = await mount();
     const name = "Make agent work visible";
@@ -48,7 +48,7 @@ describe("archive conversations", () => {
       "Retain my draft",
     );
     expect(readSnapshot).not.toHaveBeenCalled();
-    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).toContain(
+    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).not.toContain(
       "welcome",
     );
     await user.click(screen.getByRole("button", { name: "Recover interrupted work" }));
@@ -67,16 +67,16 @@ describe("archive conversations", () => {
     await act(user, name, "Restore", reloadedResults);
     await waitFor(() =>
       expect(
-        within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", {
+        within(screen.getByRole("region", { name: "Pinned" })).queryByRole("button", {
           name,
         }),
-      ).toBeTruthy(),
+      ).toBeNull(),
     );
     expect((await api.threads("pitcrew")).find((item) => item.id === "welcome")?.archived).toBe(
       false,
     );
   });
-  it("archives a nonselected repository thread and restores its independent pin without navigating", async () => {
+  it("archives a nonselected repository thread and restores without repinning or navigating", async () => {
     const user = userEvent.setup(),
       api = await mount();
     const title = "Explore an isolated change";
@@ -99,10 +99,10 @@ describe("archive conversations", () => {
     );
     await waitFor(() =>
       expect(
-        within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", {
+        within(screen.getByRole("region", { name: "Pinned" })).queryByRole("button", {
           name: title,
         }),
-      ).toBeTruthy(),
+      ).toBeNull(),
     );
     expect((await api.threads("playground"))[0].archived).toBe(false);
   });
@@ -141,8 +141,8 @@ describe("archive conversations", () => {
     );
     await waitFor(() =>
       expect(
-        within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", { name: title }),
-      ).toBeTruthy(),
+        within(screen.getByRole("region", { name: "Pinned" })).queryByRole("button", { name: title }),
+      ).toBeNull(),
     );
   });
   it("keeps rows and content on failure and permits an explicit repeated retry", async () => {
@@ -156,17 +156,20 @@ describe("archive conversations", () => {
     api.setThreadArchived = write;
     await mount(api);
     const name = "Make agent work visible";
+    await user.click(screen.getByRole("button", { name: `Pin conversation ${name}` }));
     await act(user, name, "Archive", screen.getByLabelText("Conversations in Pitcrew"));
     expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
       expect.stringContaining("Archive failed"),
     );
-    expect(screen.getByRole("button", { name })).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Pinned" })).getByRole("button", { name })).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).toContain("welcome");
     expect(
       screen.getByText("Show the work behind a change, from delegation to review."),
     ).toBeTruthy();
     await act(user, name, "Archive", screen.getByLabelText("Conversations in Pitcrew"));
     await waitFor(() => expect(screen.queryByRole("button", { name })).toBeNull());
+    expect(JSON.parse(localStorage.getItem("pitcrew.sidebar.pins.v1")!).conversations).not.toContain("welcome");
     expect(write.mock.calls).toEqual([
       ["pitcrew", "welcome", true],
       ["pitcrew", "welcome", true],

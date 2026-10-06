@@ -581,6 +581,8 @@ export function App({ api, auth, viewer, demo = false }: {
         hidden={section !== "work"}
       >
         <Sidebar
+          key={viewer?.id ?? "local"}
+          accountId={viewer?.id}
           api={api}
           projects={projects}
           projectId={projectId}

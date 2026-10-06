@@ -4,13 +4,17 @@ import { Icon, type IconKind } from "./icons";
 import { useSidebarData } from "./useSidebarData";
 import { ConversationTitle } from "./ConversationTitle";
 
-const expansionKey = "pitcrew.sidebar.collapsed.v1";
-function readCollapsed(): Record<string, boolean> {
+const legacyExpansionKey = "pitcrew.sidebar.collapsed.v1";
+const folderKey = (id: string, pinned = false) => `${pinned ? "pinned" : "repositories"}:${id}`;
+function readCollapsed(key: string, migrateLegacy: boolean): Record<string, boolean> {
   try {
-    const value: unknown = JSON.parse(localStorage.getItem(expansionKey) ?? "{}");
+    const saved = localStorage.getItem(key);
+    const legacy = saved === null && migrateLegacy;
+    const value: unknown = JSON.parse(saved ?? (legacy ? localStorage.getItem(legacyExpansionKey) : null) ?? "{}");
     return value && typeof value === "object" && !Array.isArray(value)
       ? Object.fromEntries(
-          Object.entries(value).filter(([, collapsed]) => typeof collapsed === "boolean"),
+          Object.entries(value).filter(([, collapsed]) => typeof collapsed === "boolean")
+            .map(([id, collapsed]) => [legacy ? folderKey(id) : id, collapsed]),
         )
       : {};
   } catch {
@@ -23,9 +27,9 @@ type Pins = {
   conversations: string[];
   conversationRepositories: Record<string, string>;
 };
-function readPins(): Pins {
+function readPins(key = preferenceKey): Pins {
   try {
-    const value = JSON.parse(localStorage.getItem(preferenceKey) ?? "{}");
+    const value = JSON.parse(localStorage.getItem(key) ?? "{}");
     const ids = (items: unknown): string[] =>
       Array.isArray(items)
         ? [...new Set(items.filter((id): id is string => typeof id === "string"))]
@@ -91,6 +95,7 @@ export function Sidebar({
   onArchive,
   activeRun,
   children,
+  accountId,
 }: {
   api: Api;
   projects: Project[];
@@ -104,17 +109,21 @@ export function Sidebar({
   onArchive?: (thread: Thread, archived: boolean) => Promise<Thread | undefined>;
   activeRun?: Run;
   children?: ReactNode;
+  accountId?: string;
 }) {
+  const expansionKey = `pitcrew.sidebar.collapsed.v2:${encodeURIComponent(accountId ?? "local")}`;
+  const pinsKey = accountId ? `pitcrew.sidebar.pins.v2:${encodeURIComponent(accountId)}` : preferenceKey;
   const searchButton = useRef<HTMLButtonElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [archiveUpdates, setArchiveUpdates] = useState<Record<string, Thread>>({});
   const [searching, setSearching] = useState(false);
   const [notifications, setNotifications] = useState(false);
-  const [pins, setPins] = useState(readPins);
+  const [creatingInPinned, setCreatingInPinned] = useState(false);
+  const [pins, setPins] = useState(() => readPins(pinsKey));
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => ({
-    [projectId]: false,
-    ...readCollapsed(),
+    [folderKey(projectId)]: false,
+    ...readCollapsed(expansionKey, !accountId),
   }));
   useEffect(() => {
     try {
@@ -122,7 +131,7 @@ export function Sidebar({
     } catch {
       /* Collapsing remains usable without storage. */
     }
-  }, [collapsed]);
+  }, [collapsed, expansionKey]);
   const matching = projects.filter((item) =>
     `${item.name} ${item.repository}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
@@ -135,7 +144,8 @@ export function Sidebar({
     activeRun,
     revision,
     visibleRepositories: matching
-      .filter((item) => !(collapsed[item.id] ?? item.id !== projectId))
+      .filter((item) => !(collapsed[folderKey(item.id)] ?? item.id !== projectId) ||
+        (pins.repositories.includes(item.id) && !(collapsed[folderKey(item.id, true)] ?? false)))
       .map((item) => item.id),
     pinnedConversations: pins.conversations,
   });
@@ -166,11 +176,11 @@ export function Sidebar({
   };
   useEffect(() => {
     try {
-      localStorage.setItem(preferenceKey, JSON.stringify(pins));
+      localStorage.setItem(pinsKey, JSON.stringify(pins));
     } catch {
       /* Navigation works without storage. */
     }
-  }, [pins]);
+  }, [pins, pinsKey]);
   useEffect(() => {
     const savedConversations = projects.flatMap((item) =>
       item.id === projectId ? threads : (others[item.id] ?? []),
@@ -202,6 +212,7 @@ export function Sidebar({
   }, [associationKey]);
   const pinnedRepositories = new Set([
     ...pins.repositories,
+    ...(creatingInPinned && children && projectId ? [projectId] : []),
     ...pins.conversations.flatMap((id) =>
       associations[id] && !knownConversations.find((item) => item.id === id)?.archived
         ? [associations[id]]
@@ -222,7 +233,7 @@ export function Sidebar({
           : [...all.conversations, item.id],
       };
     });
-  const conversationRow = (item: Thread) => (
+  const conversationRow = (item: Thread, pinnedSection = false) => (
     <div
       className={`sidebar-row conversation-row ${item.id === threadId ? "selected" : ""}`}
       key={item.id}
@@ -234,7 +245,7 @@ export function Sidebar({
         title={item.title}
         disabled={busy}
         onClick={() => {
-          setCollapsed((all) => ({ ...all, [item.projectId]: false }));
+          setCollapsed((all) => ({ ...all, [folderKey(item.projectId, pinnedSection)]: false }));
           onSelect(item.projectId, item.id);
         }}
       >
@@ -251,7 +262,15 @@ export function Sidebar({
             onClick={async () => {
               const updated = await onArchive(item, !item.archived);
               // A committed response survives a failed list revalidation.
-              if (updated) setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
+              if (updated) {
+                setArchiveUpdates((all) => ({ ...all, [updated.id]: updated }));
+                if (updated.archived) setPins((all) => {
+                  const conversationRepositories = { ...all.conversationRepositories };
+                  delete conversationRepositories[updated.id];
+                  return { ...all, conversationRepositories,
+                    conversations: all.conversations.filter((id) => id !== updated.id) };
+                });
+              }
             }}
           >
             <Icon kind={item.archived ? "restore" : "archive"} />
@@ -271,17 +290,17 @@ export function Sidebar({
         className="sidebar-item"
         aria-label={`${item.name} · ${item.repository}`}
         title={item.repository}
-        aria-expanded={!(collapsed[item.id] ?? (!pinnedSection && item.id !== projectId))}
+        aria-expanded={!(collapsed[folderKey(item.id, pinnedSection)] ?? (!pinnedSection && item.id !== projectId))}
         disabled={busy}
         onClick={() => {
-          const wasCollapsed = collapsed[item.id] ?? (!pinnedSection && item.id !== projectId);
-          setCollapsed((all) => ({ ...all, [item.id]: !wasCollapsed }));
+          const wasCollapsed = collapsed[folderKey(item.id, pinnedSection)] ?? (!pinnedSection && item.id !== projectId);
+          setCollapsed((all) => ({ ...all, [folderKey(item.id, pinnedSection)]: !wasCollapsed }));
           if (wasCollapsed && item.id !== projectId) onSelect(item.id);
         }}
       >
         <Icon
           kind={
-            (collapsed[item.id] ?? (!pinnedSection && item.id !== projectId))
+            (collapsed[folderKey(item.id, pinnedSection)] ?? (!pinnedSection && item.id !== projectId))
               ? "repository"
               : "folderOpen"
           }
@@ -293,7 +312,8 @@ export function Sidebar({
         disabled={busy}
         aria-label={`New conversation in ${item.name}`}
         onClick={() => {
-          setCollapsed((all) => ({ ...all, [item.id]: false }));
+          setCreatingInPinned(pinnedSection);
+          setCollapsed((all) => ({ ...all, [folderKey(item.id, pinnedSection)]: false }));
           onCreate(item.id);
         }}
       >
@@ -379,7 +399,7 @@ export function Sidebar({
         <section className="sidebar-section" aria-label="Conversation search results">
           {knownConversations
             .filter((item) => item.title.toLowerCase().includes(query.trim().toLowerCase()))
-            .map(conversationRow)}
+            .map((item) => conversationRow(item))}
         </section>
       )}
       <section className="sidebar-section" aria-label="Pinned">
@@ -389,7 +409,7 @@ export function Sidebar({
           .map((item) => (
             <div key={item.id}>
               {repositoryRow(item, true)}
-              {!(collapsed[item.id] ?? false) && (
+              {!(collapsed[folderKey(item.id, true)] ?? false) && (
                 <div
                   className="repository-conversations"
                   aria-label={`Pinned conversations in ${item.name}`}
@@ -399,7 +419,8 @@ export function Sidebar({
                       (conversation) =>
                         !conversation.archived && pins.conversations.includes(conversation.id),
                     )
-                    .map(conversationRow)}
+                    .map((conversation) => conversationRow(conversation, true))}
+                  {item.id === projectId && creatingInPinned && children}
                 </div>
               )}
             </div>
@@ -410,7 +431,7 @@ export function Sidebar({
         {matching.map((item) => (
           <div key={item.id}>
             {repositoryRow(item)}
-            {!(collapsed[item.id] ?? item.id !== projectId) && (
+            {!(collapsed[folderKey(item.id)] ?? item.id !== projectId) && (
               <div
                 className="repository-conversations"
                 aria-label={`Conversations in ${item.name}`}
@@ -418,7 +439,7 @@ export function Sidebar({
                 {conversations(item.id)
                   .filter((conversation) => !conversation.archived)
                   .map((conversation) => conversationRow(conversation))}
-                {item.id === projectId && children}
+                {item.id === projectId && !creatingInPinned && children}
               </div>
             )}
           </div>
