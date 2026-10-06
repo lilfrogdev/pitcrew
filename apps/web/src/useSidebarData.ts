@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Api, Project, Run, Thread } from "./api";
+import { ApiError, type Api, type Project, type Run, type Thread } from "./api";
 
 type Context = {
   api: Api;
@@ -58,8 +58,13 @@ function createScheduler(publish: (data: Data) => void) {
         entry.next = next(value);
         emit();
       })
-      .catch(() => {
+      .catch((cause) => {
         if (generation !== requestedGeneration) return;
+        if (cause instanceof ApiError && [401, 403, 404].includes(cause.status)) {
+          entry.value = undefined;
+          entry.loaded = false;
+          emit();
+        }
         entry.next = Date.now() + retryDelay(++entry.failures);
       })
       .finally(() => {
@@ -92,7 +97,7 @@ function createScheduler(publish: (data: Data) => void) {
         request(
           entry,
           () => api.threads(project.id),
-          () => Infinity,
+          () => api.collaboration ? Date.now() + 15000 : Infinity,
         );
     }
     const latestRun = api.latestRun;
@@ -118,7 +123,8 @@ function createScheduler(publish: (data: Data) => void) {
         request(
           entry,
           () => latestRun.call(api, item.id),
-          (run) => (run && activeStatuses.has(run.status) ? Date.now() + 5000 : Infinity),
+          (run) => (run && activeStatuses.has(run.status) ? Date.now() + 5000 :
+            api.collaboration ? Date.now() + 15000 : Infinity),
         );
     }
   };
@@ -167,7 +173,7 @@ function createScheduler(publish: (data: Data) => void) {
           value: next.threads,
           loaded: true,
           pending: false,
-          next: Infinity,
+          next: next.api.collaboration ? Date.now() + 15000 : Infinity,
           failures: 0,
         });
       if (next.activeRun && next.activeRun !== lastActiveRun) {
@@ -177,14 +183,16 @@ function createScheduler(publish: (data: Data) => void) {
           loaded: true,
           pending: false,
           failures: 0,
-          next: activeStatuses.has(next.activeRun.status) ? Date.now() + 5000 : Infinity,
+          next: activeStatuses.has(next.activeRun.status) ? Date.now() + 5000 :
+            next.api.collaboration ? Date.now() + 15000 : Infinity,
         });
       }
       emit();
       pump();
     },
     reconnect() {
-      for (const entry of lists.values()) if (!entry.loaded || entry.failures) entry.next = 0;
+      for (const entry of lists.values())
+        if (context?.api.collaboration || !entry.loaded || entry.failures) entry.next = 0;
       for (const entry of runs.values()) entry.next = 0;
       pump();
     },

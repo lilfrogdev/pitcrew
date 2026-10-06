@@ -32,7 +32,7 @@ export function AccountRepositories({ api }: { api: CollaborationApi }) {
         <button type="button" onClick={() => void load()} disabled={loading}>Refresh</button>
         {loading ? <p role="status">Loading repositories…</p> : error ?
           <p role="alert">{error}</p> : items.length ?
-            <ul className={styles.list}>{items.map((item) => <li key={item.id}>
+            <ul className={styles.list}>{items.map((item) => <li key={item.projectId}>
               <div><strong>{item.name}</strong><span>{item.role}</span></div>
             </li>)}</ul> : <p>No repositories belong to this account yet.</p>}
       </div>

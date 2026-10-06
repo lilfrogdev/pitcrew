@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
 import type { CollaborationApi } from "./api";
-import type { AuthUser } from "./auth-api";
+import type { AuthApi, AuthUser } from "./auth-api";
 import { AccountSummary } from "./Collaboration";
 import styles from "./ProfileProviders.module.css";
 const unavailable: OpenRouterStatus = {
@@ -13,6 +13,7 @@ const unavailable: OpenRouterStatus = {
 
 export function ProfileProviders({
   api,
+  auth,
   collaboration,
   viewer,
   invitation,
@@ -20,6 +21,7 @@ export function ProfileProviders({
   onChange,
 }: {
   api?: OpenRouterConnectionApi;
+  auth?: AuthApi;
   collaboration?: CollaborationApi;
   viewer?: AuthUser;
   invitation?: ReactNode;
@@ -98,7 +100,7 @@ export function ProfileProviders({
           <p>Profile</p>
           <h1>Providers</h1>
         </header>
-        <AccountSummary api={collaboration} viewer={viewer} onSignOut={onSignOut} />
+        <AccountSummary api={collaboration} auth={auth} viewer={viewer} onSignOut={onSignOut} />
         {invitation}
         <section className={styles.provider} aria-labelledby="openrouter-heading">
           <h2 id="openrouter-heading">OpenRouter</h2>

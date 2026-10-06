@@ -17,9 +17,7 @@ import type {
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
 export type SharedMessage = Message & {
-  authorActor?: string;
-  authorName?: string;
-  authorImage?: string;
+  author?: Account;
 };
 export type Snapshot = {
   messages: SharedMessage[];
@@ -30,6 +28,8 @@ export type Snapshot = {
 };
 export type LandingCapabilities = {
   landing: { enabled: boolean; backend: "fixture" | null };
+  /** Enables durable human messages without claiming agent execution. */
+  notesEnabled?: boolean;
   composer?: {
     models: ModelChoice[];
     settings: ModelSettings;
@@ -49,22 +49,31 @@ export type ApprovalInput = {
 };
 export type Authorization = LandingAuthorizationReceipt;
 export type LandingResult = LandingResultReceipt;
-export type Account = { actor: string; email: string };
+export type Account = {
+  actor: string;
+  email: string;
+  displayName?: string;
+  avatar?: string | null;
+};
 export type Member = Account & { role: "owner" | "editor" };
 export type SharedRepository = {
-  id: string;
+  projectId: string;
   name: string;
   role: "owner" | "editor";
+  status: "present";
+  lifecycle: "registered";
+  deletable: false;
 };
 export type Invitation = {
   id: string;
   email: string;
   role: "editor";
   expiresAt: string;
-  scope: "project" | "repository" | "thread";
-  projectId?: string;
-  repoId?: string;
+  scope: "project" | "thread";
+  projectId: string;
   threadId?: string;
+  acceptedBy?: string;
+  revokedAt?: string;
 };
 export type InvitationPreview = Invitation;
 export type CreatedInvitation = { token: string; invitation: Invitation };
@@ -76,7 +85,7 @@ export interface CollaborationApi {
   inviteProject(projectId: string, email: string): Promise<CreatedInvitation>;
   inviteThread(threadId: string, email: string): Promise<CreatedInvitation>;
   invitation(token: string): Promise<InvitationPreview>;
-  acceptInvitation(token: string): Promise<unknown>;
+  acceptInvitation(token: string): Promise<InvitationPreview>;
   revokeInvitation(token: string): Promise<unknown>;
   removeProjectMember(projectId: string, actor: string): Promise<unknown>;
   removeThreadMember(threadId: string, actor: string): Promise<unknown>;
@@ -85,7 +94,7 @@ export interface Api {
   openrouter?: OpenRouterConnectionApi;
   repositories?: RepositoryApi;
   collaboration?: CollaborationApi;
-  capabilities(): Promise<LandingCapabilities>;
+  capabilities(projectId?: string): Promise<LandingCapabilities>;
   approve(runId: string, input: ApprovalInput): Promise<Authorization>;
   land(runId: string, authorizationId: string): Promise<LandingResult>;
   reconcile(runId: string, authorizationId: string): Promise<LandingResult>;
@@ -118,7 +127,7 @@ export class ApiError extends Error {
         : status === 404
           ? "This shared item is no longer available. Refresh your workspace."
         : status === 410
-          ? "This invitation has expired or was already used. Ask for a new link."
+          ? "This invitation has expired or was already used. Ask for a new code."
         : status === 409
           ? "The thread changed. Refresh before trying again."
           : status === 413
@@ -251,10 +260,12 @@ export const httpApi: Api = {
     account: () => request("/account"),
     repositories: async () => {
       const value = await request<unknown>("/repositories");
-      if (!Array.isArray(value) || value.some((item) =>
-        !item || typeof item.id !== "string" || typeof item.name !== "string" ||
-        !["owner", "editor"].includes(item.role))) throw new ApiError(0);
-      return value as SharedRepository[];
+      if (!value || typeof value !== "object" || !("repositories" in value) ||
+          !Array.isArray(value.repositories) || value.repositories.some((item) =>
+        !item || typeof item.projectId !== "string" || typeof item.name !== "string" ||
+        !["owner", "editor"].includes(item.role) || item.status !== "present" ||
+        item.lifecycle !== "registered" || item.deletable !== false)) throw new ApiError(0);
+      return value.repositories as SharedRepository[];
     },
     projectMembers: (id) => request(`/projects/${encodeURIComponent(id)}/members`),
     threadMembers: (id) => request(`/threads/${encodeURIComponent(id)}/members`),
@@ -280,8 +291,8 @@ export const httpApi: Api = {
   },
   attachmentUrl: (threadId, attachmentId) =>
     `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`,
-  async capabilities() {
-    const capabilities = await request<LandingCapabilities>("/capabilities");
+  async capabilities(projectId) {
+    const capabilities = await request<LandingCapabilities>(`/capabilities${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
     if (
       capabilities.composer?.conversation &&
       capabilities.composer.models.some(

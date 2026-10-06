@@ -18,6 +18,7 @@ import {
   type ModelSelection,
 } from "@pitcrew/protocol";
 import { ModelPicker } from "./ModelPicker";
+import { PermissionsMenu } from "./PermissionsMenu";
 import { useKeyboardFocus } from "./useKeyboardFocus";
 import { ProfileProviders } from "./ProfileProviders";
 import { Collaborators, InvitationGate } from "./Collaboration";
@@ -49,6 +50,7 @@ export function App({ api, auth, viewer, demo = false }: {
   const [providersLoading, setProvidersLoading] = useState(true);
   const [composerCapabilities, setComposerCapabilities] =
     useState<LandingCapabilities["composer"]>();
+  const [notesEnabled, setNotesEnabled] = useState(false);
   const [selections, setSelections] = useState<Record<string, ModelSelection>>({});
   const [selectionSaving, setSelectionSaving] = useState<Record<string, boolean>>({});
   const [landingStates, setLandingStates] = useState<Record<string, LandingState>>({});
@@ -107,11 +109,14 @@ export function App({ api, auth, viewer, demo = false }: {
     setLandingEnabled(false);
     setProvidersLoading(true);
     setComposerCapabilities(undefined);
+    setNotesEnabled(false);
+    if (api.collaboration && !projectId) { setProvidersLoading(false); return; }
     api
-      .capabilities()
+      .capabilities(projectId || undefined)
       .then((capabilities) => {
         if (!cancelled) {
           setComposerCapabilities(capabilities.composer);
+          setNotesEnabled(capabilities.notesEnabled === true);
           setProvidersLoading(false);
           setLandingEnabled(
             capabilities.landing.enabled && capabilities.landing.backend === "fixture",
@@ -128,7 +133,7 @@ export function App({ api, auth, viewer, demo = false }: {
     return () => {
       cancelled = true;
     };
-  }, [api, revision, providerRevision]);
+  }, [api, projectId, revision, providerRevision]);
   useEffect(() => {
     let cancelled = false;
     setProjectsLoading(true);
@@ -289,6 +294,7 @@ export function App({ api, auth, viewer, demo = false }: {
   const executionEnabled =
     !displayOnly &&
     (composerCapabilities?.executionEnabled ?? composerCapabilities?.conversation ?? false);
+  const humanMessages = notesEnabled && !executionEnabled;
   const usableModels =
     composerCapabilities?.conversation || displayOnly
       ? composerCapabilities.models.filter(
@@ -431,10 +437,11 @@ export function App({ api, auth, viewer, demo = false }: {
       content.length > 8000 ||
       mutation.current ||
       loading ||
-      !executionEnabled ||
+      !(humanMessages || executionEnabled) ||
       !threadId ||
       selectionSaving[threadId] ||
-      !modelValid ||
+      (!humanMessages && !modelValid) ||
+      (humanMessages && files.length > 0) ||
       files.some((item) => item.status !== "ready")
     )
       return;
@@ -475,7 +482,7 @@ export function App({ api, auth, viewer, demo = false }: {
       updateAttachments(selected, () => []);
       setAttachmentErrors((all) => ({ ...all, [selected]: "" }));
       setAnnouncement(
-        composerCapabilities?.conversation
+        humanMessages ? "Message sent." : composerCapabilities?.conversation
           ? "Message sent and repository agent reply queued."
           : "Message sent and change queued.",
       );
@@ -557,8 +564,7 @@ export function App({ api, auth, viewer, demo = false }: {
   const latest = snapshot.runs.at(-1);
   const invitationAccepted = (invitation: InvitationPreview) => {
     requestedThread.current = invitation.threadId;
-    if (invitation.projectId ?? invitation.repoId)
-      setProjectId((invitation.projectId ?? invitation.repoId)!);
+    setProjectId(invitation.projectId);
     setSection("work");
     setRevision((value) => value + 1);
     setAnnouncement("Invitation accepted.");
@@ -670,19 +676,18 @@ export function App({ api, auth, viewer, demo = false }: {
               </div>
             ) : !snapshot.messages.length ? (
               <div className="empty">
-                <h2>Start with the outcome</h2>
-                <p>
+                <h2>{humanMessages ? "Start the conversation" : "Start with the outcome"}</h2>
+                {humanMessages ? <p>Share a message with the people in this thread.</p> : <p>
                   Describe what you want changed. Your repository agent will coordinate a separate
                   worker and reviewer.
-                </p>
+                </p>}
               </div>
             ) : (
               snapshot.messages.map((message) => {
-                const isSelf = !!viewer &&
-                  (message.authorActor === viewer.id || message.authorActor === `account:${viewer.id}`);
-                const authorName = message.authorName ||
-                  (isSelf ? (viewer.username || viewer.name) : "Participant");
-                const authorImage = message.authorImage || (isSelf ? viewer.image : undefined);
+                const isSelf = !!viewer && message.author?.actor === `account:${viewer.id}`;
+                const authorName = isSelf ? (viewer.username || viewer.name) :
+                  message.author?.displayName || message.author?.email || "Participant";
+                const authorImage = isSelf ? viewer.image : message.author?.avatar;
                 return <article className={`message ${message.role}`} key={message.id}>
                   <Avatar className="avatar" name={message.role === "user" ? authorName : message.role}
                     image={message.role === "user" ? authorImage : undefined} />
@@ -755,6 +760,7 @@ export function App({ api, auth, viewer, demo = false }: {
               {attachmentCompatibilityError}
             </p>
           )}
+          {humanMessages && <p className="composer-hint">Messages are shared. Agent runs are disabled.</p>}
           <Composer
             sessionKey={threadId}
             dictationEnabled={section === "work"}
@@ -768,14 +774,16 @@ export function App({ api, auth, viewer, demo = false }: {
             }}
             onSend={send}
             disabled={!threadId || busy}
+            attachmentsEnabled={!humanMessages}
             sending={busy}
             canSend={
               !!threadId &&
               !busy &&
               !loading &&
-              executionEnabled &&
+              (humanMessages || executionEnabled) &&
               !selectionSaving[threadId] &&
-              modelValid &&
+              (humanMessages || modelValid) &&
+              (!humanMessages || !(attachments[threadId] ?? []).length) &&
               !attachmentCompatibilityError &&
               !!(drafts[threadId] ?? "").trim() &&
               (drafts[threadId] ?? "").length <= 8000 &&
@@ -791,7 +799,7 @@ export function App({ api, auth, viewer, demo = false }: {
                   disabled={!threadId || busy || !!selectionSaving[threadId]}
                   executionEnabled={composerCapabilities ? executionEnabled : null}
                 />
-              ) : providersLoading ? (
+              ) : humanMessages ? <PermissionsMenu executionEnabled={false} /> : providersLoading ? (
                 <span className="provider-setup" role="status">
                   Checking providers…
                 </span>
@@ -986,6 +994,7 @@ export function App({ api, auth, viewer, demo = false }: {
       </div>
       {section === "account" && (
         <ProfileProviders
+          auth={auth}
           api={api.openrouter}
           collaboration={api.collaboration}
           viewer={viewer}

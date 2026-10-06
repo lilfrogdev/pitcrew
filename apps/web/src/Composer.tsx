@@ -40,6 +40,7 @@ export function Composer({
   modelControls,
   sessionKey = "composer",
   dictationEnabled = true,
+  attachmentsEnabled = true,
 }: {
   draft: string;
   onDraft: (text: string) => void;
@@ -54,6 +55,7 @@ export function Composer({
   modelControls?: React.ReactNode;
   sessionKey?: string;
   dictationEnabled?: boolean;
+  attachmentsEnabled?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -99,7 +101,7 @@ export function Composer({
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes("Files")) {
           event.preventDefault();
-          if (!disabled) setDragging(true);
+          if (!disabled && attachmentsEnabled) setDragging(true);
         }
       }}
       onDragLeave={(event) => {
@@ -108,7 +110,7 @@ export function Composer({
       onDrop={(event) => {
         event.preventDefault();
         setDragging(false);
-        if (!disabled) onFiles(Array.from(event.dataTransfer.files));
+        if (!disabled && attachmentsEnabled) onFiles(Array.from(event.dataTransfer.files));
       }}
     >
       {attachments.length > 0 && (
@@ -161,7 +163,7 @@ export function Composer({
         onPaste={(event) => {
           if (event.clipboardData.files.length) {
             event.preventDefault();
-            if (!disabled) onFiles(Array.from(event.clipboardData.files));
+            if (!disabled && attachmentsEnabled) onFiles(Array.from(event.clipboardData.files));
           }
         }}
         onKeyDown={(event) => {
@@ -191,7 +193,7 @@ export function Composer({
           aria-label="Choose attachments"
           accept={extensions}
           multiple
-          disabled={disabled}
+          disabled={disabled || !attachmentsEnabled}
           onChange={(event) => {
             onFiles(Array.from(event.target.files ?? []));
             event.target.value = "";
@@ -200,9 +202,9 @@ export function Composer({
         <button
           type="button"
           className="composer-attach"
-          title={support}
+          title={attachmentsEnabled ? support : "Attachments require agent execution."}
           aria-label="Attach files"
-          disabled={disabled}
+          disabled={disabled || !attachmentsEnabled}
           onClick={() => input.current?.click()}
         >
           <Icon kind="plus" />

@@ -6,7 +6,7 @@ import type { CollaborationApi } from "./api";
 afterEach(cleanup);
 it("shows only account-scoped repositories and an honest empty state", async () => {
   const repositories = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([
-    { id: "repo-1", name: "Shared empty repo", role: "editor" },
+    { projectId: "repo-1", status: "present", lifecycle: "registered", deletable: false, name: "Shared empty repo", role: "editor" },
   ]);
   const api = { repositories } as unknown as CollaborationApi;
   const user = userEvent.setup();
