@@ -1,0 +1,40 @@
+// Example only. The active backend configuration is unchanged.
+// Source landing requires approved Artifacts CAS conformance and a separate rollout.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "pitcrew-artifacts-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "pitcrew" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "REPOSITORY", "class_name": "RepositoryAgent" },
+      { "name": "CHANGE", "class_name": "ChangeAgent" },
+      { "name": "REVIEW", "class_name": "ReviewAgent" },
+      { "name": "TRUSTED_PUBLISHER", "class_name": "TrustedPublisherAgent" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RepositoryAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["ChangeAgent", "ReviewAgent"] },
+    { "tag": "publisher-v1", "new_sqlite_classes": ["TrustedPublisherAgent"] },
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "EXECUTION_MODE": "disabled",
+    "INFRASTRUCTURE_ADMISSION_ENABLED": "false",
+    "TRUSTED_PUBLISHER_ENABLED": "false",
+    "LANDING_MODE": "disabled",
+    "ARTIFACTS_CAS_CONFORMANCE_VERIFIED": "false",
+    "ARTIFACT_REPOSITORY": "pitcrew-test",
+    "ARTIFACT_REPOSITORY_ID": "REVERIFY_IMMUTABLE_METADATA_ID_BEFORE_ROLLOUT",
+  },
+  // Provision the dedicated backend-private TRUSTED_PUBLISHER_AUTH_KEY separately.
+  // A pinned trusted publisher container image belongs to TrustedPublisherAgent,
+  // exposed as ctx.container.images.publisher. Candidate containers have no key,
+  // write token, publisher image, task mount, or source merge approval.
+  // This partial example intentionally requires image/auth/provider setup before deploy.
+}

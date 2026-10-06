@@ -35,6 +35,14 @@ export interface Change {
   contextRevision: string;
 }
 export interface Message {
+  /** Verified application identity snapshot; never supplied by the message body. */
+  author?: {
+    actor: string;
+    email: string;
+    displayName?: string;
+    username?: string;
+    avatar?: string | null;
+  };
   attachments?: MessageAttachment[];
   id: string;
   threadId: string;
@@ -51,6 +59,7 @@ export type RunStatus =
   | "failed"
   | "stopped";
 export interface Run {
+  artifactAdmission?: ArtifactRunAdmission;
   runModels?: FrozenRunModels;
   landing?: LandingResultReceipt;
   // Optional only for legacy wire records; coordinator assigns every stored run.
@@ -126,7 +135,15 @@ export interface SubmitResult {
   message: Message;
   run: Run;
 }
+export interface ArtifactRunAdmission {
+  sourceName: string;
+  sourceRepositoryId: string;
+  fingerprint: string;
+  deadline: number;
+}
 export interface ExecutionInput {
+  /** Frozen by the repository authority after its durable infrastructure reservation. */
+  artifactAdmission?: ArtifactRunAdmission;
   /** Trusted initiating identity; never a credential or client-selected owner. */
   credentialActor?: string;
   conversationContext?: Message[];
@@ -199,12 +216,12 @@ export interface LandingAuthorizationReceipt {
   configurationRevision: string;
   expiresAt: number;
   state: "authorized" | "pending" | "landed" | "rejected" | "uncertain";
-  backend: "fixture";
+  backend: "fixture" | "artifacts";
 }
 export interface LandingResultReceipt {
   authorizationId: string;
   status: "landed" | "rejected" | "uncertain";
   code?: string;
   landedSha?: string;
-  backend: "fixture";
+  backend: "fixture" | "artifacts";
 }

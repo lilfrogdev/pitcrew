@@ -16,15 +16,20 @@ import type {
 } from "@pitcrew/protocol";
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
+export type SharedMessage = Message & {
+  author?: Account;
+};
 export type Snapshot = {
-  messages: Message[];
+  messages: SharedMessage[];
   runs: Run[];
   reviews: Review[];
   evidence: RunEvidence[];
   turns?: { id: string; status: "queued" | "running" | "completed" | "failed"; error?: string }[];
 };
 export type LandingCapabilities = {
-  landing: { enabled: boolean; backend: "fixture" | null };
+  landing: { enabled: boolean; backend: LandingAuthorizationReceipt["backend"] | null };
+  /** Enables durable human messages without claiming agent execution. */
+  notesEnabled?: boolean;
   composer?: {
     models: ModelChoice[];
     settings: ModelSettings;
@@ -44,10 +49,52 @@ export type ApprovalInput = {
 };
 export type Authorization = LandingAuthorizationReceipt;
 export type LandingResult = LandingResultReceipt;
+export type Account = {
+  actor: string;
+  email: string;
+  displayName?: string;
+  avatar?: string | null;
+};
+export type Member = Account & { role: "owner" | "editor" };
+export type SharedRepository = {
+  projectId: string;
+  name: string;
+  role: "owner" | "editor";
+  status: "present";
+  lifecycle: "registered";
+  deletable: false;
+};
+export type Invitation = {
+  id: string;
+  email: string;
+  role: "editor";
+  expiresAt: string;
+  scope: "project" | "thread";
+  projectId: string;
+  threadId?: string;
+  acceptedBy?: string;
+  revokedAt?: string;
+};
+export type InvitationPreview = Invitation;
+export type CreatedInvitation = { token: string; invitation: Invitation };
+export interface CollaborationApi {
+  account(): Promise<Account>;
+  repositories(): Promise<SharedRepository[]>;
+  projectMembers(projectId: string): Promise<Member[]>;
+  threadMembers(threadId: string): Promise<Member[]>;
+  inviteProject(projectId: string, email: string): Promise<CreatedInvitation>;
+  inviteThread(threadId: string, email: string): Promise<CreatedInvitation>;
+  invitation(token: string): Promise<InvitationPreview>;
+  acceptInvitation(token: string): Promise<InvitationPreview>;
+  revokeInvitation(token: string): Promise<unknown>;
+  removeProjectMember(projectId: string, actor: string): Promise<unknown>;
+  removeThreadMember(threadId: string, actor: string): Promise<unknown>;
+}
 export interface Api {
   openrouter?: OpenRouterConnectionApi;
   repositories?: RepositoryApi;
-  capabilities(): Promise<LandingCapabilities>;
+  collaboration?: CollaborationApi;
+  capabilities(projectId?: string): Promise<LandingCapabilities>;
   approve(runId: string, input: ApprovalInput): Promise<Authorization>;
   land(runId: string, authorizationId: string): Promise<LandingResult>;
   reconcile(runId: string, authorizationId: string): Promise<LandingResult>;
@@ -77,20 +124,41 @@ export class ApiError extends Error {
     super(
       status === 403 || status === 401
         ? "Access is unavailable. Ask the project owner to enable protected access."
-        : status === 409
-          ? "The thread changed. Refresh before trying again."
-          : status === 413
-            ? "This message is too large. Shorten it and try again."
-            : status === 429
-              ? "The crew is at capacity. Wait for an active change to finish, then try again."
-              : "Could not reach Pitcrew. Your draft is saved here; try again.",
+        : status === 404
+          ? "This shared item is no longer available. Refresh your workspace."
+          : status === 410
+            ? "This invitation has expired or was already used. Ask for a new code."
+            : status === 409
+              ? "The thread changed. Refresh before trying again."
+              : status === 413
+                ? "This message is too large. Shorten it and try again."
+                : status === 429
+                  ? "The crew is at capacity. Wait for an active change to finish, then try again."
+                  : "Could not reach Pitcrew. Your draft is saved here; try again.",
     );
   }
 }
 let sessionRequest: Promise<string | null> | undefined;
+let activeReads = 0;
+const waitingReads: (() => void)[] = [];
+async function readWithBudget<T>(read: () => Promise<T>): Promise<T> {
+  // The local relay admits four product requests. Leave one slot for a write.
+  if (activeReads >= 3) await new Promise<void>((resolve) => waitingReads.push(resolve));
+  else activeReads++;
+  try {
+    return await read();
+  } finally {
+    const next = waitingReads.shift();
+    if (next) next();
+    else activeReads--;
+  }
+}
 async function sessionNonce(): Promise<string | null> {
   const response = await fetch("/api/local-session", { signal: AbortSignal.timeout(10000) });
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(response.status);
+  }
   const { nonce } = (await response.json()) as { nonce: string | null };
   if (nonce !== null && (typeof nonce !== "string" || !/^[a-f0-9]{64}$/.test(nonce)))
     throw new ApiError(0);
@@ -110,12 +178,16 @@ export async function mutationHeaders(): Promise<Record<string, string>> {
 export async function apiFetch(path: string, body?: unknown): Promise<Response> {
   const send = async () => {
     const headers = body ? await mutationHeaders() : undefined;
-    const response = await fetch(`/api${path}`, {
-      method: body ? "POST" : "GET",
-      signal: AbortSignal.timeout(10000),
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const perform = () =>
+      fetch(`/api${path}`, {
+        method: body ? "POST" : "GET",
+        // Reads include edge admission, cached-token/JWKS checks and the relay's
+        // own upstream deadline. Don't free a client slot before that work ends.
+        signal: AbortSignal.timeout(body ? 10000 : 45000),
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    const response = body ? await perform() : await readWithBudget(perform);
     return { response, local: !!headers?.["X-Pitcrew-Local-Nonce"] };
   };
   const first = await send();
@@ -132,11 +204,31 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
     if (error instanceof ApiError) throw error;
     throw new ApiError(0);
   }
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(response.status);
+  }
   try {
     return (await response.json()) as T;
   } catch {
     throw new ApiError(0);
+  }
+}
+async function removeRequest(path: string): Promise<void> {
+  const send = async () => {
+    const headers = await mutationHeaders();
+    const response = await fetch(`/api${path}`, {
+      method: "DELETE",
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
+    return { response, local: !!headers["X-Pitcrew-Local-Nonce"] };
+  };
+  let result = await send();
+  if (result.local && result.response.status === 403) result = await send();
+  if (!result.response.ok) {
+    if (result.response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(result.response.status);
   }
 }
 async function connectionRequest(path: string, init?: RequestInit): Promise<OpenRouterStatus> {
@@ -182,6 +274,43 @@ async function connectionMutation(
   });
 }
 export const httpApi: Api = {
+  collaboration: {
+    account: () => request("/account"),
+    repositories: async () => {
+      const value = await request<unknown>("/repositories");
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("repositories" in value) ||
+        !Array.isArray(value.repositories) ||
+        value.repositories.some(
+          (item) =>
+            !item ||
+            typeof item.projectId !== "string" ||
+            typeof item.name !== "string" ||
+            !["owner", "editor"].includes(item.role) ||
+            item.status !== "present" ||
+            item.lifecycle !== "registered" ||
+            item.deletable !== false,
+        )
+      )
+        throw new ApiError(0);
+      return value.repositories as SharedRepository[];
+    },
+    projectMembers: (id) => request(`/projects/${encodeURIComponent(id)}/members`),
+    threadMembers: (id) => request(`/threads/${encodeURIComponent(id)}/members`),
+    inviteProject: (id, email) =>
+      request(`/projects/${encodeURIComponent(id)}/invitations`, { email, role: "editor" }),
+    inviteThread: (id, email) =>
+      request(`/threads/${encodeURIComponent(id)}/invitations`, { email, role: "editor" }),
+    invitation: (token) => request(`/invitations/${encodeURIComponent(token)}`),
+    acceptInvitation: (token) => request(`/invitations/${encodeURIComponent(token)}/accept`, {}),
+    revokeInvitation: (token) => request(`/invitations/${encodeURIComponent(token)}/revoke`, {}),
+    removeProjectMember: (id, actor) =>
+      removeRequest(`/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(actor)}`),
+    removeThreadMember: (id, actor) =>
+      removeRequest(`/threads/${encodeURIComponent(id)}/members/${encodeURIComponent(actor)}`),
+  },
   repositories: createRepositoryApi(),
   openrouter: {
     async status() {
@@ -192,8 +321,10 @@ export const httpApi: Api = {
   },
   attachmentUrl: (threadId, attachmentId) =>
     `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`,
-  async capabilities() {
-    const capabilities = await request<LandingCapabilities>("/capabilities");
+  async capabilities(projectId) {
+    const capabilities = await request<LandingCapabilities>(
+      `/capabilities${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+    );
     if (
       capabilities.composer?.conversation &&
       capabilities.composer.models.some(
@@ -244,7 +375,7 @@ export const httpApi: Api = {
   snapshot: async (id) => {
     const path = `/threads/${encodeURIComponent(id)}`;
     const [messages, runs, turns] = await Promise.all([
-      request<Message[]>(`${path}/messages`),
+      request<SharedMessage[]>(`${path}/messages`),
       request<Run[]>(`${path}/runs`),
       request<NonNullable<Snapshot["turns"]>>(`${path}/turns`),
     ]);

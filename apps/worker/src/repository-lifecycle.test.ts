@@ -346,3 +346,21 @@ it("exposes allowlisted import failures without raw messages, unsafe cleanup or 
     expect(f.repo.revokeToken).not.toHaveBeenCalled();
   }
 });
+it("binds lifecycle records to their initiating account and denies guessed names or legacy unowned records", async () => {
+  const f = fixture();
+  await f.lifecycle.provision("sandbox", "create", undefined, "account:owner");
+  expect(f.records.get("sandbox")?.ownerActor).toBe("account:owner");
+  const calls = f.binding.get.mock.calls.length;
+  await expect(
+    f.lifecycle.provision("sandbox", "create", undefined, "account:colleague"),
+  ).rejects.toThrow("not_found");
+  await expect(f.lifecycle.reconcile("sandbox", "account:colleague")).rejects.toThrow("not_found");
+  await expect(f.lifecycle.remove("sandbox", "sandbox", "account:colleague")).rejects.toThrow(
+    "not_found",
+  );
+  expect(f.binding.get.mock.calls.length).toBe(calls);
+  f.records.set("legacy", { name: "legacy", operation: "create", status: "ready", id: "old-id" });
+  await expect(f.lifecycle.remove("legacy", "legacy", "account:owner")).rejects.toThrow(
+    "not_found",
+  );
+});

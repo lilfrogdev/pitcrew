@@ -12,13 +12,18 @@ async function fixture() {
   return { api, run: snapshot.runs[0], evidence: snapshot.evidence[0], reviews: snapshot.reviews };
 }
 function Harness(
-  props: Awaited<ReturnType<typeof fixture>> & { enabled?: boolean; initial?: LandingState },
+  props: Awaited<ReturnType<typeof fixture>> & {
+    enabled?: boolean;
+    backend?: Authorization["backend"] | null;
+    initial?: LandingState;
+  },
 ) {
   const [state, setState] = useState(props.initial);
   return (
     <LandingControl
       {...props}
       enabled={props.enabled ?? true}
+      backend={props.backend === undefined ? "fixture" : props.backend}
       state={state}
       onStateChange={setState}
     />
@@ -54,9 +59,7 @@ describe("exact candidate landing simulation", () => {
     fireEvent.click(land);
     await screen.findByText(/Fixture simulation landed/);
     expect(f.api.land).toHaveBeenCalledWith(f.run.id, expect.stringMatching(/^fixture-/));
-    expect(
-      screen.getByRole("button", { name: "Land fixture simulation" }).hasAttribute("disabled"),
-    ).toBe(true);
+    expect(screen.queryByRole("button", { name: "Land fixture simulation" })).toBeNull();
   });
   it.each(["missing", "failed", "stale", "review", "disabled"] as const)(
     "fails closed with %s evidence or capability",
@@ -142,9 +145,7 @@ describe("exact candidate landing simulation", () => {
     };
     render(<Harness {...f} />);
     expect(screen.getByText(/Fixture simulation landed/)).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
-    ).toBe(true);
+    expect(screen.queryByRole("button", { name: "Approve exact candidate" })).toBeNull();
   });
   it("reconciles a persisted uncertain receipt without another landing", async () => {
     const f = await fixture();
@@ -188,4 +189,110 @@ describe("exact candidate landing simulation", () => {
       ).toBe(true);
     },
   );
+});
+
+describe("Artifacts source landing", () => {
+  it("approves the exact candidate, lands once and completes only from its source receipt", async () => {
+    const f = await fixture();
+    const auth = { ...authorization(f.run), backend: "artifacts" as const };
+    f.api.approve = vi.fn().mockResolvedValue(auth);
+    f.api.land = vi.fn().mockResolvedValue({
+      authorizationId: auth.authorizationId,
+      status: "landed",
+      backend: "artifacts",
+      landedSha: f.run.candidateSha,
+    });
+    render(<Harness {...f} backend="artifacts" />);
+    expect(screen.queryByText(/Source repository landed/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Approve exact candidate" }));
+    const land = await screen.findByRole("button", { name: "Land approved candidate" });
+    expect(f.api.approve).toHaveBeenCalledWith(
+      f.run.id,
+      expect.objectContaining({
+        expectedTargetSha: f.run.baseSha,
+        candidateSha: f.run.candidateSha,
+        configurationRevision: f.run.configurationRevision,
+      }),
+    );
+    expect(screen.queryByText(/Source repository landed/)).toBeNull();
+    fireEvent.click(land);
+    fireEvent.click(land);
+    await screen.findByText(`Source repository landed ${f.run.candidateSha}.`);
+    expect(f.api.land).toHaveBeenCalledExactlyOnceWith(f.run.id, auth.authorizationId);
+    expect(screen.queryByText(/Fixture simulation/)).toBeNull();
+  });
+  it.each(["wrong sha", "wrong backend", "wrong authorization", "lost response"])(
+    "reconciles %s without replaying source landing or completing",
+    async (kind) => {
+      const f = await fixture();
+      const auth = { ...authorization(f.run), backend: "artifacts" as const };
+      const receipt = {
+        authorizationId: auth.authorizationId,
+        status: "landed",
+        backend: "artifacts",
+        landedSha: f.run.candidateSha,
+      };
+      f.api.land =
+        kind === "lost response"
+          ? vi.fn().mockRejectedValue(Error("lost"))
+          : vi.fn().mockResolvedValue({
+              ...receipt,
+              ...(kind === "wrong sha" ? { landedSha: "another" } : {}),
+              ...(kind === "wrong backend" ? { backend: "fixture" } : {}),
+              ...(kind === "wrong authorization" ? { authorizationId: "another" } : {}),
+            });
+      f.api.reconcile = vi.fn().mockResolvedValue(receipt);
+      render(<Harness {...f} backend="artifacts" initial={{ authorization: auth }} />);
+      fireEvent.click(screen.getByRole("button", { name: "Land approved candidate" }));
+      await screen.findByText(/Landing uncertain/);
+      expect(screen.queryByText(/Source repository landed/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Check landing receipt" }));
+      await screen.findByText(/Source repository landed/);
+      expect(f.api.land).toHaveBeenCalledTimes(1);
+      expect(f.api.reconcile).toHaveBeenCalledExactlyOnceWith(f.run.id, auth.authorizationId);
+    },
+  );
+  it.each(["missing receipt", "wrong sha", "wrong backend"])(
+    "does not trust a landed authorization with %s on reload",
+    async (kind) => {
+      const f = await fixture();
+      const auth = {
+        ...authorization(f.run),
+        backend: "artifacts" as const,
+        state: "landed" as const,
+      };
+      if (kind !== "missing receipt")
+        f.run.landing = {
+          authorizationId: auth.authorizationId,
+          backend: kind === "wrong backend" ? "fixture" : "artifacts",
+          status: "landed",
+          landedSha: kind === "wrong sha" ? "another" : f.run.candidateSha,
+        };
+      render(<Harness {...f} backend="artifacts" initial={{ authorization: auth }} />);
+      expect(screen.queryByText(/Source repository landed/)).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Land approved candidate" }).hasAttribute("disabled"),
+      ).toBe(true);
+      expect(screen.getByRole("button", { name: "Check landing receipt" })).toBeTruthy();
+    },
+  );
+  it("renders an exact persisted source receipt while capabilities are unavailable", async () => {
+    const f = await fixture();
+    f.run.landing = {
+      authorizationId: "persisted",
+      backend: "artifacts",
+      status: "landed",
+      landedSha: f.run.candidateSha,
+    };
+    render(<Harness {...f} backend={null} enabled={false} />);
+    expect(screen.getByText(/Source repository landed/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve exact candidate" })).toBeNull();
+  });
+  it("keeps source actions disabled without a recognized project capability", async () => {
+    const f = await fixture();
+    render(<Harness {...f} backend={null} />);
+    expect(
+      screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
 });

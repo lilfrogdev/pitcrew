@@ -34,6 +34,8 @@ export interface WorkspaceTransport {
   prepare(workspace: Workspace): Promise<void>;
   run(workspace: Workspace, command: Command, signal?: AbortSignal): Promise<CommandResult>;
   inspect(workspace: Workspace): Promise<{ sha: string; clean: boolean }>;
+  // Implementations must keep write credentials out of candidate-controlled runtime,
+  // executables and Git configuration; fail closed when no trusted publisher exists.
   publish(workspace: Workspace, candidateSha: string): Promise<void>;
   readFile(workspace: Workspace, path: string): Promise<string>;
   writeFile(workspace: Workspace, path: string, content: string): Promise<void>;

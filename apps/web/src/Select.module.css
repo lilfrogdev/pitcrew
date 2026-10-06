@@ -29,7 +29,7 @@
   padding: 4px 7px;
   font-size: 12px;
   max-width: 200px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   min-height: 28px;
 }
 .compact .trigger:hover:not(:disabled) {
@@ -56,7 +56,7 @@
   overflow: auto;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--surface);
   color: var(--text);
   box-shadow: 0 4px 12px rgb(0 0 0 / 8%);
@@ -72,7 +72,7 @@
   bottom: auto;
   min-width: 0;
   max-width: none;
-  border-radius: 10px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 10px 28px rgb(0 0 0 / 12%);
 }
 .menuTitle {
@@ -85,7 +85,7 @@
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-small);
   padding: 0 3px;
   margin-left: 3px;
   font-size: 9px;
@@ -97,7 +97,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
   cursor: pointer;
   overflow-wrap: anywhere;
 }

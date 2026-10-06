@@ -15,20 +15,29 @@ export type NativeContainer = Pick<Container, "start" | "exec" | "destroy">;
 export type ContainerResolver = (workerId: string) => NativeContainer;
 
 export class CloudflareArtifacts implements ForkTransport {
-  constructor(private readonly binding: ArtifactsBinding) {}
+  constructor(
+    private readonly binding: ArtifactsBinding,
+    private readonly fence: () => Promise<void> = async () => {},
+  ) {}
 
   async fork(source: string, target: string, baseSha: string): Promise<void> {
     assertSha(baseSha);
+    await this.fence();
     using repo = await this.binding.get(source);
+    await this.fence();
     const info = await repo.info();
+    await this.fence();
     const [head] = await repo.log({ ref: info.defaultBranch, limit: 1 });
+    await this.fence();
     if (head?.hash !== baseSha) throw new ExecutionError("STALE_BASE");
     const created = await repo.fork(target, { defaultBranchOnly: true, readOnly: false });
     using fork = await this.binding.get(created.name);
     // The creation token may have the platform's default long TTL: revoke it immediately.
     if (!(await fork.revokeToken(created.token)))
       throw new ExecutionError("TOKEN_REVOCATION_FAILED");
+    await this.fence();
     if (!(await fork.readCommit(baseSha))) throw new ExecutionError("BASE_UNAVAILABLE");
+    await this.fence();
   }
 }
 
@@ -52,17 +61,23 @@ export class CloudflareSandbox implements WorkspaceTransport {
     private readonly binding: ArtifactsBinding,
     private readonly resolve: ContainerResolver,
     private readonly image: string,
+    private readonly fence: () => Promise<void> = async () => {},
   ) {
     if (!image) throw new ExecutionError("IMAGE_REQUIRED");
   }
 
   async prepare(workspace: Workspace): Promise<void> {
+    await this.fence();
     using fork = await this.binding.get(workspace.artifactId);
+    await this.fence();
     const info = await fork.info();
+    await this.fence();
     const remote = safeRemote(info.remote);
     const token = await fork.createToken("read", 300);
     const container = this.resolve(workspace.workerId);
     try {
+      // Assign the lease before this fence so revocation always runs after a late denial.
+      await this.fence();
       this.assertLease(token, "read");
       // Internet is needed for Git/dependency installation. No account credential is supplied.
       container.start({
@@ -210,42 +225,13 @@ export class CloudflareSandbox implements WorkspaceTransport {
     }
   }
 
-  async publish(workspace: Workspace, candidateSha: string): Promise<void> {
+  async publish(_workspace: Workspace, candidateSha: string): Promise<void> {
     assertSha(candidateSha);
-    using fork = await this.binding.get(workspace.artifactId);
-    const remote = safeRemote((await fork.info()).remote);
-    const token = await fork.createToken("write", 300);
-    const container = this.resolve(workspace.workerId);
-    try {
-      this.assertLease(token, "write");
-      const result = await this.execute(
-        container,
-        {
-          commandId: "publish",
-          argv: ["git", "push", "--", remote, `${candidateSha}:refs/heads/candidate`],
-          timeoutMs: 60_000,
-          maxOutputBytes: 16_384,
-        },
-        "/workspace",
-        undefined,
-        {
-          GIT_CONFIG_COUNT: "1",
-          GIT_CONFIG_KEY_0: "http.extraHeader",
-          GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token.plaintext}`,
-          GIT_TERMINAL_PROMPT: "0",
-        },
-      );
-      if (
-        result.exitCode !== 0 ||
-        result.status !== "completed" ||
-        !(await fork.readCommit(candidateSha))
-      )
-        throw new ExecutionError("PUBLISH_UNCERTAIN");
-    } catch {
-      throw new ExecutionError("PUBLISH_UNCERTAIN");
-    } finally {
-      await this.revokeLease(fork, token.id, container);
-    }
+    // Task argv can replace Git, timeout, hooks and configuration throughout this
+    // container. No write lease may enter it, even with hooks disabled. Publishing
+    // requires a separately owned trusted container and bounded inert object transfer;
+    // the current Worker has no such publisher capability or resource reservation.
+    throw new ExecutionError("TRUSTED_PUBLISHER_REQUIRED");
   }
 
   private async revokeLease(
@@ -284,6 +270,11 @@ export class CloudflareSandbox implements WorkspaceTransport {
   ): Promise<CommandResult> {
     assertCommand(command);
     if (signal?.aborted) throw new ExecutionError("STOPPED");
+    await this.fence();
+    if (signal?.aborted) {
+      await container.destroy("stopped during admission");
+      return { exitCode: null, stdout: "", stderr: "", truncated: false, status: "stopped" };
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopping: Promise<CommandResult> | undefined;
     let resolveStop!: (result: CommandResult) => void;
@@ -366,7 +357,9 @@ export class CloudflareSandbox implements WorkspaceTransport {
           status: "completed",
         };
       })();
-      return await Promise.race([completed, stopped]);
+      const result = await Promise.race([completed, stopped]);
+      await this.fence();
+      return result;
     } catch {
       await container.destroy("command failed");
       throw new ExecutionError("COMMAND_FAILED");

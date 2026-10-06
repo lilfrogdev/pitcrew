@@ -9,7 +9,12 @@ export interface LandingApi {
   service: TrustedLandingService;
   store: LandingStore;
   actor: string;
-  backend: "fixture";
+  reconcile?: (input: {
+    authorizationId: string;
+    runId: string;
+    actor: string;
+  }) => Promise<import("../../../packages/execution/src/landing").LandingResult>;
+  backend: "fixture" | "artifacts";
 }
 // This source reads only server-persisted execution evidence. Browser claims,
 // artifact IDs, actors, target refs, and repository URLs never enter this port.

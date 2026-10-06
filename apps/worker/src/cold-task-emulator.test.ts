@@ -35,7 +35,7 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
     compatibilityDate: "2026-10-03",
     compatibilityFlags: ["nodejs_compat"],
     bindings: {
-      ENVIRONMENT: "production",
+      ENVIRONMENT: "development",
       EXECUTION_MODE: "cloud",
       INFRASTRUCTURE_ADMISSION_ENABLED: "true",
       MODEL_CONFIGURATION: '{"provider":"fake"}',
@@ -225,6 +225,89 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
       "execution_disabled",
     ]);
 
+    // Tool errors alone let Pi continue generating. Overflow must also persist
+    // Stop and close the live harness, including after a cold saved wake job.
+    for (const reviewer of [false, true]) {
+      const name = reviewer ? "review-tool-budget" : "change-tool-budget";
+      await call(name, "seed", {
+        deadline,
+        reviewer,
+        stage: "blocked",
+        workspace: true,
+        allowCleanup: true,
+      });
+      const allowed = await call(name, "tools", { reviewer, count: 32 });
+      expect(reviewer ? allowed : allowed.snapshot).toMatchObject({
+        opens: 1,
+        resumes: 1,
+        effects: 33,
+        closes: 0,
+        stopped: null,
+      });
+      await call(name, "queue", { reviewer, time: deadline });
+      expect(await call(name, "tools", { reviewer, count: 1 })).toMatchObject({
+        error: "tool_budget",
+      });
+      const stopped = await call(name, "inspect", { reviewer });
+      expect(reviewer ? stopped : stopped.snapshot).toMatchObject({
+        opens: 1,
+        resumes: 1,
+        effects: 33,
+        closes: 1,
+        stopped: { run_id: "cold-run" },
+      });
+      await reload();
+      await call(name, "fire", { reviewer });
+      const recovered = await call(name, "awaken", { reviewer });
+      expect(reviewer ? recovered : recovered.snapshot).toMatchObject({
+        opens: 1,
+        resumes: 1,
+        effects: 33,
+        closes: 1,
+        stopped: { run_id: "cold-run" },
+      });
+      if (!reviewer)
+        expect((await call(name, "result")).result).toMatchObject({
+          stage: "blocked",
+          cleanupVerified: true,
+        });
+      expect(await call(name, "tools", { reviewer, count: 1 })).toMatchObject({
+        error: "execution_disabled",
+      });
+    }
+
+    // The real durable model/tool scheduler must close without joining its own
+    // executing tool, then leave its saved tasks denied after a cold restart.
+    await call("real-tool-budget", "seed", {
+      deadline,
+      stage: "blocked",
+      workspace: true,
+      realTools: true,
+    });
+    await call("real-tool-budget", "run-tools");
+    let realBudget;
+    for (let i = 0; i < 100; i++) {
+      realBudget = (await call("real-tool-budget", "inspect")).snapshot;
+      if (realBudget.closes === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(realBudget).toMatchObject({
+      opens: 1,
+      resumes: 1,
+      effects: 32,
+      closes: 1,
+      providerCalls: 33,
+      stopped: { run_id: "cold-run" },
+    });
+    await reload();
+    expect((await call("real-tool-budget", "awaken")).snapshot).toMatchObject({
+      opens: 1,
+      resumes: 1,
+      effects: 32,
+      closes: 1,
+      stopped: { run_id: "cold-run" },
+    });
+
     // A lost start acknowledgement may leave an admitted harness without a pipeline.
     // Stop still closes it and persists denial, while the caller retains its cleanup slot.
     await call("unstarted", "seed", { deadline, withoutPipeline: true });
@@ -346,6 +429,16 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
       stage: "blocked",
       error: "reconciliation_required",
       cleanupVerified: false,
+    });
+    await call("production-missing-grant", "seed", { deadline, stage: "done" });
+    await reload({ ENVIRONMENT: "production" });
+    expect(await call("production-missing-grant", "direct")).toMatchObject({
+      error: "execution_disabled",
+    });
+    expect((await call("production-missing-grant", "result")).snapshot).toMatchObject({
+      opens: 0,
+      resumes: 0,
+      effects: 0,
     });
   } finally {
     await mf.dispose();

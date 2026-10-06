@@ -1,4 +1,6 @@
-import type { Harness } from "@earendil-works/pi-durable";
+import { Harness, defineTool } from "@earendil-works/pi-durable";
+import { fauxProvider, fauxAssistantMessage, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { configureModels } from "../src/pi-models";
 import type { LifecycleServices } from "agents/lifecycle";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "../src/pi-agents";
 import type { DurableChangePipeline, PipelineState, PipelinePorts } from "../src/durable-pipeline";
@@ -8,12 +10,14 @@ interface Seed {
   deadline?: number;
   stage?: PipelineState["stage"];
   cleanup?: boolean;
+  workspace?: boolean;
   crossRoot?: boolean;
   crossOpen?: boolean;
   withoutPipeline?: boolean;
   allowCleanup?: boolean;
   tombstone?: boolean;
   uncertain?: boolean;
+  realTools?: boolean;
 }
 const runId = "cold-run";
 function seedPending(sql: SqlStorage, crossing = 0) {
@@ -38,6 +42,19 @@ function expire(sql: SqlStorage) {
     "UPDATE task_models SET value=? WHERE id=1",
     JSON.stringify({ ...JSON.parse(row.value), deadline: Date.now() - 1 }),
   );
+}
+function toolContext() {
+  return {
+    workspace: {
+      runId,
+      projectId: "project",
+      repository: "owner/repo",
+      workerId: "worker",
+      artifactId: "artifact",
+      baseSha: "a".repeat(40),
+      configurationRevision: "fixture",
+    },
+  };
 }
 // The installed PiHarness and Agents native RPC/lifecycle wrapper stay real. Only
 // Harness.open's return value is fake, so no provider or sandbox can be called.
@@ -66,6 +83,7 @@ function fakeHarness(sql: SqlStorage): Harness {
   } as unknown as Harness;
 }
 export class ColdChangeFixture extends ChangeAgent {
+  private faux?: ReturnType<typeof fauxProvider>;
   constructor(ctx: DurableObjectState, env: PiEnv) {
     super(ctx, env);
     const native = (this as unknown as { coordinator: () => unknown }).coordinator.bind(this);
@@ -81,19 +99,71 @@ export class ColdChangeFixture extends ChangeAgent {
               .exec<{ cross_root: number }>("SELECT cross_root FROM fixture_pending WHERE id=1")
               .toArray()
           : [];
-        return mode?.cross_root === 3
+        return mode?.cross_root === 3 || mode?.cross_root === 4
           ? { coordinator: { stop: async () => {} }, transport: {} }
           : native();
       },
     });
   }
-  protected openHarness() {
-    return Promise.resolve(fakeHarness(this.ctx.storage.sql));
+  protected async openHarness(...args: Parameters<typeof Harness.open>) {
+    const [mode] = this.ctx.storage.sql
+      .exec<{ cross_root: number }>("SELECT cross_root FROM fixture_pending WHERE id=1")
+      .toArray();
+    if (mode?.cross_root !== 4) return fakeHarness(this.ctx.storage.sql);
+    this.ctx.storage.sql.exec("UPDATE fixture_counters SET opens=opens+1 WHERE id=1");
+    const faux = (this.faux = fauxProvider({
+      provider: "pitcrew-fixture",
+      models: [{ id: "fixture", maxTokens: 1024 }],
+    }));
+    faux.setResponses(
+      Array.from({ length: 40 }, (_, i) =>
+        fauxAssistantMessage(fauxToolCall("budget_fixture", {}, { id: `budget-${i}` }), {
+          stopReason: "toolUse",
+        }),
+      ),
+    );
+    this.registry.install({
+      name: "budget-fixture",
+      tools: [
+        defineTool({
+          name: "budget_fixture",
+          description: "Exercise the real task budget with a local effect",
+          parameters: Type.Object({}),
+          execute: async () => {
+            this.countTool();
+            this.ctx.storage.sql.exec("UPDATE fixture_counters SET effects=effects+1 WHERE id=1");
+            return { content: [{ type: "text", text: "fixture effect" }] };
+          },
+        }),
+      ],
+    });
+    const harness = await Harness.open(
+      args[0],
+      { ...args[1], models: configureModels({ provider: "fake" }, {}, faux.provider).models },
+      args[2],
+    );
+    const resume = harness.resume.bind(harness);
+    harness.resume = () => {
+      this.ctx.storage.sql.exec("UPDATE fixture_counters SET resumes=resumes+1 WHERE id=1");
+      resume();
+    };
+    const close = harness.close.bind(harness);
+    harness.close = async (context) => {
+      await close(context);
+      this.ctx.storage.sql.exec("UPDATE fixture_counters SET closes=closes+1 WHERE id=1");
+    };
+    return harness;
   }
   seed(options: Seed) {
     seedPending(
       this.ctx.storage.sql,
-      options.allowCleanup ? 3 : options.crossOpen ? 2 : Number(!!options.crossRoot),
+      options.realTools
+        ? 4
+        : options.allowCleanup
+          ? 3
+          : options.crossOpen
+            ? 2
+            : Number(!!options.crossRoot),
     );
     this.bindModelAdmission(undefined, "implementer", options.deadline);
     if (options.tombstone) this.recordStop(runId);
@@ -113,7 +183,7 @@ export class ColdChangeFixture extends ChangeAgent {
       stage: options.stage ?? "prepare",
       startedAt: Date.now(),
       ...(options.uncertain ? { error: "reconciliation_required" as const } : {}),
-      ...(options.cleanup || options.stage === "stop"
+      ...(options.cleanup || options.workspace || options.stage === "stop"
         ? {
             ...(options.cleanup ? { cleanupPending: true } : {}),
             workspace: {
@@ -161,10 +231,26 @@ export class ColdChangeFixture extends ChangeAgent {
     return this.inspectFixture();
   }
   inspectFixture() {
-    return snapshot(this.ctx.storage.sql, this.lifecycle.isStarted());
+    return {
+      ...snapshot(this.ctx.storage.sql, this.lifecycle.isStarted()),
+      ...(this.faux ? { providerCalls: this.faux.state.callCount } : {}),
+    };
   }
   async awaken() {
     return this.inspectFixture();
+  }
+  async spendTools(count: number) {
+    this.bind(toolContext());
+    for (let i = 0; i < count; i++) {
+      this.countTool();
+      this.ctx.storage.sql.exec("UPDATE fixture_counters SET effects=effects+1 WHERE id=1");
+    }
+    return this.inspectFixture();
+  }
+  async runTools() {
+    this.bind(toolContext());
+    const prompt = await this.prompt();
+    await prompt.submit("Exercise the fixture tool budget", { operationId: "budget-loop" });
   }
   async legacyObservation() {
     return this.result(runId);
@@ -266,6 +352,26 @@ export class ColdReviewFixture extends ReviewAgent {
   async awaken() {
     return this.inspectFixture();
   }
+  async spendTools(count: number) {
+    this.bind(toolContext());
+    for (let i = 0; i < count; i++) {
+      this.countTool();
+      this.ctx.storage.sql.exec("UPDATE fixture_counters SET effects=effects+1 WHERE id=1");
+    }
+    return this.inspectFixture();
+  }
+  queueWake(time: number) {
+    return (this.harness as unknown as { lifecycle: LifecycleServices }).lifecycle.jobs.push({
+      id: "fixture-wake",
+      fn: "wake",
+      payload: { session: "1" },
+      time,
+    });
+  }
+  fireWake() {
+    const jobs = (this.harness as unknown as { lifecycle: LifecycleServices }).lifecycle.jobs;
+    return jobs.reschedule("fixture-wake", Date.now()).then(() => this.lifecycle.alarm());
+  }
 }
 interface Env extends PiEnv {
   CHANGE: DurableObjectNamespace<ColdChangeFixture>;
@@ -278,6 +384,7 @@ export default {
       name: string;
       reviewer?: boolean;
       time?: number;
+      count?: number;
     };
     try {
       if (body.reviewer) {
@@ -285,6 +392,9 @@ export default {
         if (body.operation === "seed") await stub.seed(body);
         else if (body.operation === "awaken") await stub.awaken();
         else if (body.operation === "abort") await stub.abortReview(runId);
+        else if (body.operation === "tools") await stub.spendTools(body.count!);
+        else if (body.operation === "queue") await stub.queueWake(body.time!);
+        else if (body.operation === "fire") await stub.fireWake();
         return Response.json(await stub.inspectFixture());
       }
       const stub = env.CHANGE.get(env.CHANGE.idFromName(body.name));
@@ -343,6 +453,12 @@ export default {
           break;
         case "held":
           result = await stub.heldPrompt();
+          break;
+        case "tools":
+          result = await stub.spendTools(body.count!);
+          break;
+        case "run-tools":
+          result = await stub.runTools();
           break;
       }
       return Response.json({ result: result ?? null, snapshot: await stub.inspectFixture() });

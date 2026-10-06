@@ -28,7 +28,7 @@
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 11px;
+  border-radius: var(--radius-control);
   color: var(--muted);
   background: transparent;
 }
@@ -44,6 +44,23 @@
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+.avatar {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--radius-avatar);
+  background: var(--hover);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .account {
   margin-top: auto;

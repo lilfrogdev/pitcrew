@@ -6,6 +6,7 @@ export interface ConversationTurn {
   status: "queued" | "running" | "completed" | "failed";
   models: FrozenRunModels;
   actor: string;
+  membershipActor?: string;
   baseSha: string;
   configurationRevision: string;
   createdAt: string;

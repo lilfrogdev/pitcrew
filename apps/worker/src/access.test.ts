@@ -43,6 +43,7 @@ describe("protected private cloud demo", () => {
     ])
       expect(await principal(request(await f.token({ email, sub })), shared, f.keys)).toEqual({
         actor: `access:${sub}`,
+        email,
       });
     for (const email of [
       "other@gmail.com",
@@ -58,7 +59,10 @@ describe("protected private cloud demo", () => {
   it("verifies a genuine locally signed JWT and routes both assets and API behind it", async () => {
     const f = await fixture(),
       jwt = await f.token();
-    expect(await principal(request(jwt), env, f.keys)).toEqual({ actor: "access:owner-subject" });
+    expect(await principal(request(jwt), env, f.keys)).toEqual({
+      actor: "access:owner-subject",
+      email: "owner@example.com",
+    });
     let assetCalls = 0,
       apiCalls = 0;
     const api = async () => {

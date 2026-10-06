@@ -1,6 +1,10 @@
 // Conservative reservations, not measured billing or an account spending cap.
 // Every operation must run inside the repository DO's transactionSync callback.
 export interface Reservation {
+  kind?: "run" | "landing";
+  owningRunId?: string;
+  authorizationId?: string;
+  actor?: string;
   runId: string;
   fingerprint: string;
   month: string;
@@ -64,7 +68,12 @@ export class InfrastructureAdmission {
     private store: AdmissionStore,
     private now = () => Date.now(),
   ) {}
-  reserve(runId: string, fingerprint: string, enabled: boolean) {
+  reserve(
+    runId: string,
+    fingerprint: string,
+    enabled: boolean,
+    ownership?: Pick<Reservation, "kind" | "owningRunId" | "authorizationId" | "actor">,
+  ) {
     if (!enabled) return { allowed: false as const, reason: "disabled" };
     if (!runId || runId.length > 128 || !fingerprint || fingerprint.length > 128)
       throw Error("invalid_admission_identity");
@@ -73,7 +82,22 @@ export class InfrastructureAdmission {
       const timestamp = this.now();
       const previous = state.reservations.find((item) => item.runId === runId);
       if (previous) {
-        if (previous.fingerprint !== fingerprint) throw Error("admission_identity_conflict");
+        if (
+          previous.fingerprint !== fingerprint ||
+          JSON.stringify([
+            previous.kind,
+            previous.owningRunId,
+            previous.authorizationId,
+            previous.actor,
+          ]) !==
+            JSON.stringify([
+              ownership?.kind,
+              ownership?.owningRunId,
+              ownership?.authorizationId,
+              ownership?.actor,
+            ])
+        )
+          throw Error("admission_identity_conflict");
         if (previous.state === "released")
           return { allowed: false as const, reason: "already_finished" };
         if (previous.state !== "active" || timestamp >= previous.deadline || state.paused)
@@ -99,6 +123,7 @@ export class InfrastructureAdmission {
       )
         return { allowed: false as const, reason: "monthly_reservations_exhausted" };
       const reservation: Reservation = {
+        ...ownership,
         runId,
         fingerprint,
         month,
@@ -109,6 +134,42 @@ export class InfrastructureAdmission {
       state.reservations.push(reservation);
       this.store.write(state);
       return { allowed: true as const, reservation: structuredClone(reservation) };
+    });
+  }
+  reserveLanding(
+    operationId: string,
+    fingerprint: string,
+    enabled: boolean,
+    ownership: { owningRunId: string; authorizationId: string; actor: string },
+  ) {
+    const owner = this.get(ownership.owningRunId);
+    if (!owner || owner.state !== "released" || owner.kind === "landing")
+      throw Error("worker_cleanup_not_verified");
+    return this.reserve(operationId, fingerprint, enabled, { kind: "landing", ...ownership });
+  }
+  get(runId: string) {
+    return this.store.transaction(() => {
+      const item = this.store
+        .read()
+        ?.reservations.find((reservation) => reservation.runId === runId);
+      return item && structuredClone(item);
+    });
+  }
+  assertActive(runId: string, fingerprint: string, deadline: number) {
+    return this.store.transaction(() => {
+      const state = this.store.read();
+      const reservation = state?.reservations.find((item) => item.runId === runId);
+      if (
+        !state ||
+        !reservation ||
+        state.paused ||
+        reservation.state !== "active" ||
+        reservation.fingerprint !== fingerprint ||
+        reservation.deadline !== deadline ||
+        this.now() >= deadline
+      )
+        throw Error("publisher_admission_revoked");
+      return structuredClone(reservation);
     });
   }
   stopRequired(runId: string, executionEnabled: boolean) {

@@ -6,6 +6,7 @@ allowBuilds:
   esbuild@0.28.1 || 0.28.2: true
   workerd@1.20261001.1: true
   # These transitive hooks are unnecessary for the installed runtime packages.
+  esbuild@0.18.20 || 0.25.12: false
   "@google/genai": false
   core-js-pure: false
   protobufjs: false

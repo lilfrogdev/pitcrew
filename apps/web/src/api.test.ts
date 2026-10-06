@@ -320,3 +320,55 @@ it("uses the production authenticated session without a local nonce and strips p
   const init = (fetch.mock.calls as unknown as [string, RequestInit][])[1][1];
   expect(init.headers).toEqual({ "Content-Type": "application/json" });
 });
+
+it("reads the account directory envelope and scopes capabilities to the selected repository", async () => {
+  const fetch = vi.fn(async (path: string) =>
+    Response.json(
+      path === "/api/repositories"
+        ? {
+            repositories: [
+              {
+                projectId: "repo-1",
+                name: "Shared repo",
+                role: "editor",
+                status: "present",
+                lifecycle: "registered",
+                deletable: false,
+              },
+            ],
+            cursor: null,
+          }
+        : { landing: { enabled: false, backend: null }, notesEnabled: true },
+    ),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect((await httpApi.collaboration!.repositories())[0].projectId).toBe("repo-1");
+  expect((await httpApi.capabilities("repo / one")).notesEnabled).toBe(true);
+  expect(fetch.mock.calls[1][0]).toBe("/api/capabilities?projectId=repo%20%2F%20one");
+});
+
+it("bounds simultaneous product reads and releases a slot after an interrupted request", async () => {
+  let active = 0,
+    maximum = 0,
+    count = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      active++;
+      maximum = Math.max(maximum, active);
+      const current = ++count;
+      try {
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        if (current === 2) throw Error("interrupted read");
+        return Response.json([]);
+      } finally {
+        active--;
+      }
+    }),
+  );
+  const { apiFetch } = await import("./api");
+  const results = await Promise.allSettled(Array.from({ length: 10 }, () => apiFetch("/projects")));
+  expect(maximum).toBe(3);
+  expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(9);
+  expect(active).toBe(0);
+});

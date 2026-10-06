@@ -16,6 +16,12 @@
   --success-bg: #edf5ef;
   --error: #a13737;
   --error-bg: #fcf0f0;
+  --radius-none: 0;
+  --radius-small: 3px;
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --radius-avatar: 50%;
+  --conversation-gutter: 16px;
   font-family:
     Inter,
     ui-sans-serif,
@@ -47,7 +53,7 @@ button {
   cursor: pointer;
   color: inherit;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   padding: 7px 12px;
 }
@@ -150,7 +156,7 @@ small {
   background: var(--text);
   color: var(--surface);
   font-weight: 900;
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   padding: 3px 9px;
 }
 .section-label {
@@ -196,7 +202,7 @@ small {
   align-items: center;
   min-width: 0;
   min-height: 36px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
 }
 .sidebar-row:hover {
   background: var(--hover);
@@ -208,7 +214,7 @@ small {
   flex: 1;
   min-width: 0;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: transparent;
   padding: 6px 8px;
   text-align: left;
@@ -238,7 +244,7 @@ small {
   border: 0;
   background: transparent;
   padding: 3px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   color: var(--muted);
 }
 .conversation-actions {
@@ -269,14 +275,14 @@ small {
   padding: 0 8px;
 }
 .repository-search input {
-  border-radius: 10px;
+  border-radius: var(--radius-panel);
   min-width: 0;
   width: 100%;
   font-size: 12px;
   padding: 6px;
 }
 .repository-search button {
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   border: 0;
   background: transparent;
   padding: 3px;
@@ -295,16 +301,16 @@ small {
 }
 .new-thread label,
 .new-thread input {
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   width: 100%;
 }
 .new-thread input {
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   min-width: 0;
   padding: 6px;
 }
 .new-thread button {
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   padding: 4px 8px;
 }
 input,
@@ -313,7 +319,7 @@ select {
   color: inherit;
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   padding: 10px;
   resize: vertical;
 }
@@ -331,7 +337,7 @@ textarea {
   outline: none;
 }
 .conversation-header {
-  padding: 20px 30px;
+  padding: 16px var(--conversation-gutter);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -346,13 +352,22 @@ textarea {
 .transcript {
   flex: 1;
   overflow: auto;
-  padding: 30px;
+  padding: 20px var(--conversation-gutter);
   scrollbar-width: thin;
 }
 .message {
-  display: flex;
-  gap: 14px;
-  margin-bottom: 30px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+.message > .avatar {
+  grid-column: 1;
+  grid-row: 1;
+}
+.message:last-child {
+  margin-bottom: 0;
 }
 .avatar {
   flex: 0 0 32px;
@@ -361,7 +376,7 @@ textarea {
   place-items: center;
   background: var(--selection);
   color: var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius-avatar);
   font-size: 12px;
   font-weight: 700;
 }
@@ -377,14 +392,29 @@ textarea {
   background: var(--hover);
   color: var(--text);
 }
+.message .avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
 .message-body {
   min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  overflow-wrap: anywhere;
+}
+.message-body > * {
+  max-width: 100%;
+}
+.message-body pre {
+  overflow-x: auto;
 }
 .message-meta {
   display: flex;
   gap: 9px;
   align-items: center;
-  margin: 3px 0 9px;
+  margin: 0 0 4px;
   font-size: 12px;
   flex-wrap: wrap;
 }
@@ -393,6 +423,7 @@ textarea {
   color: var(--muted);
 }
 .message p {
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.65;
@@ -400,11 +431,11 @@ textarea {
   font-size: 14px;
 }
 .composer {
-  margin: 0 30px 24px;
+  margin: 0 var(--conversation-gutter) 16px;
   padding: 14px 14px 10px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: var(--radius-panel);
   box-shadow:
     0 3px 14px rgb(0 0 0 / 7%),
     0 1px 3px rgb(0 0 0 / 3%);
@@ -459,7 +490,7 @@ textarea {
   height: 32px;
   padding: 6px;
   border: 0;
-  border-radius: 50%;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text);
   flex-shrink: 0;
@@ -482,7 +513,7 @@ textarea {
   width: 28px;
   height: 28px;
   padding: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-control);
   background: var(--text);
   color: var(--surface);
   border: 0;
@@ -498,7 +529,7 @@ textarea {
 .composer-error {
   color: var(--text);
   font-size: 12px;
-  margin: 8px 30px;
+  margin: 8px var(--conversation-gutter);
 }
 .composer-dragging {
   border-color: var(--accent);
@@ -520,7 +551,7 @@ textarea {
   min-height: 120px;
   border: 1px solid var(--border);
   background: var(--canvas);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   font-size: 12px;
 }
 .attachment-preview.reading,
@@ -539,7 +570,7 @@ textarea {
   height: 28px;
   padding: 4px;
   border: 0;
-  border-radius: 50%;
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
 }
@@ -578,7 +609,7 @@ textarea {
 .attachment-preview .attachment-image {
   width: 118px;
   height: 118px;
-  border-radius: 11px;
+  border-radius: var(--radius-panel);
   object-fit: cover;
 }
 .message-attachment summary {
@@ -594,7 +625,7 @@ textarea {
 }
 .message-attachment {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   padding: 10px;
   margin-top: 8px;
   font-size: 12px;
@@ -604,7 +635,7 @@ textarea {
   max-width: 100%;
   height: 120px;
   object-fit: contain;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 .message-attachment img {
   display: block;
@@ -633,7 +664,7 @@ textarea {
 .run-card {
   border: 0;
   border-bottom: 1px solid var(--border);
-  border-radius: 0;
+  border-radius: var(--radius-none);
   padding: 0 0 20px;
   margin-bottom: 24px;
   background: transparent;
@@ -657,7 +688,7 @@ textarea {
   background: var(--hover);
   color: var(--muted);
   font-size: 12px;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
   padding: 2px 6px;
 }
 .status.waiting_user,
@@ -719,7 +750,7 @@ pre {
   overflow-wrap: anywhere;
   background: var(--canvas);
   padding: 10px;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   font-size: 12px;
   max-height: 260px;
   overflow: auto;
@@ -813,18 +844,11 @@ pre {
   background: var(--accent);
   color: var(--surface);
   padding: 8px 15px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 @media (min-width: 1500px) {
   .shell {
     grid-template-columns: 270px minmax(500px, 1fr) 380px;
-  }
-  .transcript {
-    padding: 36px 8%;
-  }
-  .composer {
-    margin-left: 8%;
-    margin-right: 8%;
   }
 }
 @media (max-width: 1100px) {
@@ -850,6 +874,9 @@ pre {
   }
 }
 @media (max-width: 650px) {
+  :root {
+    --conversation-gutter: 12px;
+  }
   .shell {
     display: flex;
     flex-direction: column;
@@ -867,17 +894,17 @@ pre {
     opacity: 1;
   }
   .conversation-header {
-    padding: 20px;
+    padding: 16px var(--conversation-gutter);
   }
   .conversation {
     background: var(--surface);
     min-height: 70dvh;
   }
   .transcript {
-    padding: 22px 18px;
+    padding: 16px var(--conversation-gutter);
   }
   .composer {
-    margin: 0 16px 20px;
+    margin: 0 var(--conversation-gutter) 16px;
   }
   .composer-footer > span {
     max-width: 130px;

@@ -1,0 +1,17 @@
+{
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "pitcrew-auth",
+      "database_id": "APPROVED_D1_ID_REQUIRED",
+      "migrations_dir": "migrations/auth"
+    }
+  ],
+  "send_email": [{ "name": "EMAIL", "remote": true }],
+  "vars": {
+    "AUTH_MODE": "better-auth",
+    "BETTER_AUTH_URL": "https://pitcrew-backend.pitcrew-004.workers.dev",
+    "AUTH_CLIENT_ORIGIN": "http://localhost:5173",
+    "AUTH_EMAIL_FROM": "APPROVED_SENDER_REQUIRED"
+  }
+}

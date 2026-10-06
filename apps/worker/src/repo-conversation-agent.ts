@@ -132,11 +132,13 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
     return Harness.open(...args);
   }
   protected conversationAllowed() {
+    const row = this.sql<{ status: string }>`SELECT status FROM conversation_receipt WHERE id=1`[0];
     return (
-      this.env.EXECUTION_MODE === "fake" ||
-      (this.env.EXECUTION_MODE === "cloud" &&
-        this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
-        this.env.CLOUD_CONVERSATION_ENABLED === "true")
+      row?.status !== "failed" &&
+      (this.env.EXECUTION_MODE === "fake" ||
+        (this.env.EXECUTION_MODE === "cloud" &&
+          this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
+          this.env.CLOUD_CONVERSATION_ENABLED === "true"))
     );
   }
   private assertConversationAllowed() {
@@ -189,5 +191,10 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
   result(turnId: string) {
     if (this.input().turnId !== turnId) throw Error("conversation_conflict");
     return this.receipt();
+  }
+  stop(turnId: string) {
+    if (this.input().turnId !== turnId) throw Error("conversation_conflict");
+    this.finish({ status: "failed", error: "membership_revoked" });
+    return this.harness.dispose();
   }
 }

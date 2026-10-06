@@ -9,6 +9,7 @@ import type {
 import type { KnowledgeDelivery } from "./knowledge-outbox";
 
 export interface KnowledgeReportingPorts {
+  beforeTool?(): void | Promise<void>;
   context(): WorkerKnowledgeContext;
   readSource(path: string, revision: "base" | "candidate"): Promise<{ text: string; sha: string }>;
   enqueue(delivery: KnowledgeDelivery): Promise<void>;
@@ -36,9 +37,14 @@ export function knowledgeReporting(ports: KnowledgeReportingPorts) {
               executionMode: "sequential",
               outputLimits: { maxBytes: 70 * 1024, maxLines: 2000 },
               parameters: Type.Object({}),
-              execute: async () => ({
-                content: [{ type: "text" as const, text: JSON.stringify(await ports.refresh!()) }],
-              }),
+              execute: async () => {
+                await ports.beforeTool?.();
+                return {
+                  content: [
+                    { type: "text" as const, text: JSON.stringify(await ports.refresh!()) },
+                  ],
+                };
+              },
             }),
           ]
         : []),
@@ -66,6 +72,7 @@ export function knowledgeReporting(ports: KnowledgeReportingPorts) {
           ),
         }),
         execute: async (args, api, invocation) => {
+          await ports.beforeTool?.();
           let delivery = (await api.memo("knowledge-delivery", invocation)) as unknown as
             | KnowledgeDelivery
             | undefined;

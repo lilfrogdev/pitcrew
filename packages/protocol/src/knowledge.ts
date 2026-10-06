@@ -67,7 +67,8 @@ export interface EventProvenance {
     | "candidate_recorded"
     | "review_approved"
     | "review_changes_requested"
-    | "fixture_landed";
+    | "fixture_landed"
+    | "source_landed";
 }
 
 export type KnowledgeCheckpoint =

@@ -50,7 +50,7 @@ export async function principal(
   request: Request,
   env: AccessEnv,
   keys?: JWTVerifyGetKey,
-): Promise<{ actor: string } | undefined> {
+): Promise<{ actor: string; email: string } | undefined> {
   if (fixtureAccess(request, env)) {
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
       const nonce = localNonce(request);
@@ -62,7 +62,7 @@ export async function principal(
       )
         return;
     }
-    return { actor: "lilfrogdev" };
+    return { actor: "lilfrogdev", email: "dev@lilfrogdev.com" };
   }
   if (
     env.ENVIRONMENT !== "production" ||
@@ -108,7 +108,7 @@ export async function principal(
       payload.iat > Math.floor(Date.now() / 1000)
     )
       return;
-    return { actor: `access:${payload.sub}` };
+    return { actor: `access:${payload.sub}`, email: payload.email.toLowerCase() };
   } catch {
     return;
   }

@@ -112,7 +112,7 @@ it("runs production repository routes with trusted evidence, one-use SQLite appr
     expect(
       (await post("/api/runs/wrong/landing", { authorizationId: authorization.authorizationId }))
         .status,
-    ).toBe(409);
+    ).toBe(404);
     const landed = await (
       await post(`${runPath}/landing`, {
         authorizationId: authorization.authorizationId,

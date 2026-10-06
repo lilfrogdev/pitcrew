@@ -2,6 +2,7 @@ import { normalizePublicRepositoryImportUrl } from "../../../packages/protocol/s
 
 /** Metadata only. No creation token is stored, returned, or used for Git. */
 export type LifecycleRecord = {
+  ownerActor?: string;
   name: string;
   operation: "create" | "import";
   id?: string;
@@ -97,9 +98,10 @@ export class RepositoryLifecycle {
     this.store.put(record);
     return record;
   }
-  provision(name: string, operation: "create" | "import", source?: string) {
+  provision(name: string, operation: "create" | "import", source?: string, ownerActor?: string) {
     return this.exclusive(async () => {
       const existing = this.store.get(name);
+      if (existing && existing.ownerActor !== ownerActor) throw Error("not_found");
       // Never retry an ambiguous creation or replace a deleted/existing name.
       if (existing) {
         if (existing.status === "deleted") throw Error("repository_name_retired");
@@ -121,6 +123,7 @@ export class RepositoryLifecycle {
       const record: LifecycleRecord = {
         name,
         operation,
+        ...(ownerActor ? { ownerActor } : {}),
         ...(source ? { source } : {}),
         status: "pending",
       };
@@ -164,9 +167,10 @@ export class RepositoryLifecycle {
       return this.cleanup(record);
     });
   }
-  reconcile(name: string) {
+  reconcile(name: string, ownerActor?: string) {
     return this.exclusive(async () => {
       const record = this.store.get(name);
+      if (record && record.ownerActor !== ownerActor) throw Error("not_found");
       if (record?.status === "deleting") {
         try {
           using repo = await this.binding.get(name);
@@ -186,9 +190,10 @@ export class RepositoryLifecycle {
       return this.cleanup(record);
     });
   }
-  remove(name: string, confirmation: string) {
+  remove(name: string, confirmation: string, ownerActor?: string) {
     return this.exclusive(async () => {
       const record = this.store.get(name);
+      if (record && record.ownerActor !== ownerActor) throw Error("not_found");
       if (confirmation !== name) throw Error("confirmation_required");
       if (record?.status === "deleted") return { name, status: "deleted" };
       if (!record || record.status !== "ready" || this.referenced(name))
@@ -206,6 +211,8 @@ export async function lifecycleRequest(
   request: Request,
   lifecycle?: RepositoryLifecycle,
   waitUntil?: (task: Promise<unknown>) => void,
+  ownerActor?: string,
+  registered?: (record: LifecycleRecord) => Promise<void>,
 ) {
   if (!lifecycle)
     return Response.json({ error: "repository_backend_unavailable" }, { status: 503 });
@@ -245,7 +252,12 @@ export async function lifecycleRequest(
       if (body.credentialConsent !== true) throw Error("credential_consent_required");
       const importing = url.pathname.endsWith("/import");
       const source = importing ? publicImportUrl(body.url) : undefined;
-      const task = lifecycle.provision(name, importing ? "import" : "create", source);
+      const task = lifecycle
+        .provision(name, importing ? "import" : "create", source, ownerActor)
+        .then(async (record) => {
+          if (record.status === "ready") await registered?.(record);
+          return record;
+        });
       waitUntil?.(task.catch(() => {}));
       let timer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([
@@ -260,10 +272,13 @@ export async function lifecycleRequest(
       if (result.issue) return Response.json({ error: result.issue }, { status: 422 });
       return Response.json(result, { status: result.status === "ready" ? 200 : 202 });
     }
-    if (url.pathname === "/api/repositories/reconcile")
-      return Response.json(await lifecycle.reconcile(name));
+    if (url.pathname === "/api/repositories/reconcile") {
+      const record = await lifecycle.reconcile(name, ownerActor);
+      if (record.status === "ready") await registered?.(record);
+      return Response.json(record);
+    }
     if (url.pathname === "/api/repositories/delete")
-      return Response.json(await lifecycle.remove(name, body.confirmation));
+      return Response.json(await lifecycle.remove(name, body.confirmation, ownerActor));
     return Response.json({ error: "not_found" }, { status: 404 });
   } catch (error) {
     const safe = [
@@ -280,6 +295,7 @@ export async function lifecycleRequest(
       "repository_protected",
       "reconciliation_unavailable",
       "delete_not_confirmed",
+      "not_found",
     ];
     const message =
       error instanceof Error && safe.includes(error.message)
@@ -287,7 +303,7 @@ export async function lifecycleRequest(
         : "repository_operation_failed";
     return Response.json(
       { error: message },
-      { status: message === "repository_protected" ? 409 : 400 },
+      { status: message === "not_found" ? 404 : message === "repository_protected" ? 409 : 400 },
     );
   }
 }
