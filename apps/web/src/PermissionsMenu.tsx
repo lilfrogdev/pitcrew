@@ -23,7 +23,7 @@ export function PermissionsMenu({ executionEnabled }: { executionEnabled: boolea
         type="button"
         ref={trigger}
         className={styles.trigger}
-        aria-label="Permissions"
+        aria-label={`Permissions, ${label}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? id : undefined}

@@ -51,6 +51,7 @@ it("allows selecting and reloading display models while Send and server executio
   expect(api.send).not.toHaveBeenCalled();
   expect(api.setThreadModelSelection).not.toHaveBeenCalled();
   expect(screen.queryByText("Execution is disabled.")).toBeNull();
+  expect(screen.getByRole("button", { name: "Permissions, Runs disabled" })).toBeTruthy();
   cleanup();
   render(<App api={api} />);
   await waitFor(() =>

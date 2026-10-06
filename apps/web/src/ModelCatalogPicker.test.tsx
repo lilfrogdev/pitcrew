@@ -358,7 +358,7 @@ it("keeps a supported effort when switching models and renders only the model's 
 it("shows permissions as server status with no invented selectable modes and returns focus on Escape", async () => {
   const user = userEvent.setup();
   const view = render(<PermissionsMenu executionEnabled={false} />);
-  const trigger = screen.getByRole("button", { name: "Permissions" });
+  const trigger = screen.getByRole("button", { name: "Permissions, Runs disabled" });
   await user.click(trigger);
   expect(screen.getByRole("status").textContent).toContain("Runs disabled");
   expect(screen.queryByRole("row")).toBeNull();
@@ -367,6 +367,12 @@ it("shows permissions as server status with no invented selectable modes and ret
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(document.activeElement).toBe(trigger);
   view.rerender(<PermissionsMenu executionEnabled={null} />);
+  expect(screen.getByRole("button", { name: "Permissions, Permissions unavailable" })).toBe(
+    trigger,
+  );
   fireEvent.click(trigger);
   expect(screen.getByRole("status").textContent).toContain("Permissions unavailable");
+  view.rerender(<PermissionsMenu executionEnabled={true} />);
+  expect(screen.getByRole("button", { name: "Permissions, Runs enabled" })).toBe(trigger);
+  expect(screen.getByRole("status").textContent).toContain("Runs enabled");
 });
