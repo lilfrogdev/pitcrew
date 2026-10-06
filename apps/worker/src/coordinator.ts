@@ -168,9 +168,10 @@ export class Coordinator {
     });
   }
   addOwnedProject(sourceName: string, sourceId: string, actor: string, email: string,
-    configuration?: Pick<Project, "baseSha" | "configurationRevision">) {
+    configuration?: Pick<Project, "baseSha" | "configurationRevision">,
+  ) {
     return this.durableUpdate(() => {
-      const directory = this.state.ownedProjects ??= {};
+      const directory = (this.state.ownedProjects ??= {});
       if (Object.values(directory).some((entry) => entry.sourceId === sourceId))
         throw new AdmissionError("repository_already_registered", 409);
       if (Object.keys(directory).length >= 20) throw new AdmissionError("capacity", 429);
@@ -213,7 +214,8 @@ export class Coordinator {
     private atomic: <T>(operation: () => T) => T = (operation) => operation(),
   ) {
     const needsMigration =
-      Object.keys(state.keys).some((key) => key.startsWith("conversation_") && !key.startsWith("conversation_[")) ||
+      Object.keys(state.keys).some((key) => key.startsWith("conversation_") && !key.startsWith("conversation_["),
+      ) ||
       state.threads.some((thread) => thread.archived === undefined) ||
       !state.changes ||
       state.runs.some(
@@ -388,13 +390,15 @@ export class Coordinator {
       !request?.knowledgeContext ||
       !sameKnowledgeContext(context, request.knowledgeContext) ||
       !run ||
+      !this.runAuthorized(context.runId) ||
       ["failed", "stopped", "waiting_user"].includes(run.status) ||
       context.baseSha !== this.state.project.baseSha ||
       context.configurationRevision !== this.state.project.configurationRevision
     )
       return { status: "stale" };
     const currentKnowledge = this.repositoryContext(this.state.runActors?.[context.runId] ??
-      this.state.credentialActors?.[context.runId]).currentKnowledge!;
+      this.state.credentialActors?.[context.runId],
+    ).currentKnowledge!;
     this.durableUpdate(() => {
       (this.state.knowledgeObservations ??= {})[context.runId] = currentKnowledge.revision;
     });
@@ -434,6 +438,7 @@ export class Coordinator {
     if (!request?.knowledgeContext || !sameKnowledgeContext(context, request.knowledgeContext))
       return { eventId, status: "stale" };
     const run = this.evidence(context.runId).run;
+    if (!this.runAuthorized(context.runId)) return { eventId, status: "stale" };
     const previous = this.state.keys[`worker_knowledge_${context.runId}_${report.key}`];
     const body = { context: request.knowledgeContext, input };
     if (previous) {
@@ -503,7 +508,8 @@ export class Coordinator {
       },
     );
   }
-  async updateProfile(profile: VerificationProfile, expectedRevision: string, authorize = () => {}) {
+  async updateProfile(profile: VerificationProfile, expectedRevision: string, authorize = () => {},
+  ) {
     const old = this.profile();
     if (old.revision !== expectedRevision || profile.revision === old.revision)
       throw new AdmissionError("profile_revision_conflict", 409);
@@ -846,8 +852,9 @@ export class Coordinator {
           ? review.decision === "approve"
             ? "review_approved"
             : "review_changes_requested"
-          : type === "run.completed" && run?.landing?.backend === "fixture"
-            ? "fixture_landed"
+          : type === "run.completed" && run?.landing?run.landing.backend === "artifacts"
+              ? "source_landed"
+              : "fixture_landed"
             : undefined;
     this.state.events.push({
       sequence: this.state.events.length + 1,
@@ -1207,7 +1214,8 @@ export class Coordinator {
       this.event(error ? "conversation.failed" : "conversation.completed", id);
     });
   }
-  appendNote(threadId: string, content: string, key: string, actor: string, author?: Message["author"]): Message {
+  appendNote(threadId: string, content: string, key: string, actor: string, author?: Message["author"],
+  ): Message {
     this.validateKey(key);
     return this.transaction(`note_${JSON.stringify([actor, key])}`, { threadId, content }, () => {
       this.thread(threadId);
@@ -1344,7 +1352,8 @@ export class Coordinator {
     if (!change) throw new AdmissionError("not_found", 404);
     return change;
   }
-  retryChange(changeId: string, key: string, catalog?: ModelCatalog, actor = "local-fixture", membershipActor = actor): Run {
+  retryChange(changeId: string, key: string, catalog?: ModelCatalog, actor = "local-fixture", membershipActor = actor,
+  ): Run {
     this.validateKey(key);
     return this.transaction(`retry_${JSON.stringify([actor, key])}`, { changeId, actor }, () => {
       const change = this.change(changeId);
@@ -1417,10 +1426,12 @@ export class Coordinator {
   repositoryContext(actor?: string): RepositoryContext {
     const currentKnowledge = this.currentKnowledge();
     if (actor !== undefined) currentKnowledge.entries = currentKnowledge.entries.filter((entry) =>
-      !entry.threadId || this.actorAuthorized(actor, entry.threadId));
+      !entry.threadId || this.actorAuthorized(actor, entry.threadId),
+      );
     const active = this.state.runs.filter((run) =>
       ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status) &&
-      (actor === undefined || this.actorAuthorized(actor, run.threadId)));
+      (actor === undefined || this.actorAuthorized(actor, run.threadId)),
+    );
     return {
       revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}:${currentKnowledge.revision}`,
       baseSha: this.state.project.baseSha,
@@ -1459,12 +1470,17 @@ export class Coordinator {
   }
   actorAuthorized(actor: string | undefined, threadId: string) {
     const access = this.state.collaboration;
-    return !access || !!(actor && access.projectMembers[actor] && access.threadMembers[threadId]?.[actor]);
+    return (
+      !access || !!(actor && access.projectMembers[actor] && access.threadMembers[threadId]?.[actor])
+    );
   }
   runAuthorized(runId: string) {
     const run = this.state.runs.find((item) => item.id === runId);
-    return !!run && this.actorAuthorized(this.state.runActors?.[runId] ??
-      this.state.credentialActors?.[runId], run.threadId);
+    return (
+      !!run && this.actorAuthorized(this.state.runActors?.[runId] ??
+      this.state.credentialActors?.[runId], run.threadId,
+      )
+    );
   }
   begin(runId: string): ExecutionInput | undefined {
     const run = this.evidence(runId).run;
@@ -1497,7 +1513,8 @@ export class Coordinator {
         repository: this.state.project.repository,
         baseSha: run.baseSha,
         configurationRevision: run.configurationRevision,
-        repositoryContext: this.repositoryContext(this.state.runActors?.[runId] ?? this.state.credentialActors?.[runId]),
+        repositoryContext: this.repositoryContext(this.state.runActors?.[runId] ?? this.state.credentialActors?.[runId],
+        ),
         conversationContext: structuredClone(this.change(run.changeId!).conversationContext),
         messages: structuredClone(
           this.state.messages.filter((m) =>
@@ -1545,8 +1562,27 @@ export class Coordinator {
       }
     });
   }
+  freezeArtifactAdmission(
+    runId: string,
+    admission: import("@pitcrew/protocol").ArtifactRunAdmission,
+  ) {
+    const run = this.evidence(runId).run;
+    if (
+      run.artifactAdmission &&
+      JSON.stringify(run.artifactAdmission) !== JSON.stringify(admission)
+    )
+      throw Error("admission_identity_conflict");
+    this.durableUpdate(() => {
+      run.artifactAdmission = structuredClone(admission);
+      if (this.state.requests?.[runId])
+        this.state.requests[runId].artifactAdmission = structuredClone(admission);
+    });
+  }
   confirmFixtureLanding(runId: string, result: LandingResultReceipt) {
-    if (result.backend !== "fixture" || result.status !== "landed") return;
+    this.confirmLanding(runId, result);
+  }
+  confirmLanding(runId: string, result: LandingResultReceipt) {
+    if (result.status !== "landed") return;
     const run = this.evidence(runId).run;
     if (result.landedSha !== run.candidateSha) throw Error("invalid_landing_evidence");
     if (run.landing?.authorizationId === result.authorizationId) return;

@@ -216,29 +216,39 @@ export function api(
   });
   app.get("/api/account", (c) => c.json(access?.account() ?? identity));
   app.get("/api/projects", (c) => c.json(access?.projectRole() ? [coordinator.state.project] : []));
-  app.get("/api/projects/:projectId/members", (c) => c.json(access?.projectMembers(c.req.param("projectId")) ?? []));
-  app.get("/api/threads/:threadId/members", (c) => c.json(access?.threadMembers(c.req.param("threadId")) ?? []));
+  app.get("/api/projects/:projectId/members", (c) => c.json(access?.projectMembers(c.req.param("projectId")) ?? []),
+  );
+  app.get("/api/threads/:threadId/members", (c) => c.json(access?.threadMembers(c.req.param("threadId")) ?? []),
+  );
   app.post("/api/projects/:projectId/invitations", async (c) => {
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
-    return c.json(await access.invite("project", c.req.param("projectId"), body.email, body.role), 201);
+    return c.json(await access.invite("project", c.req.param("projectId"), body.email, body.role), 201,
+    );
   });
   app.post("/api/threads/:threadId/invitations", async (c) => {
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
-    return c.json(await access.invite("thread", c.req.param("threadId"), body.email, body.role), 201);
+    return c.json(await access.invite("thread", c.req.param("threadId"), body.email, body.role), 201,
+    );
   });
-  app.get("/api/invitations/:token", async (c) => c.json(await access?.preview(c.req.param("token"))));
-  app.post("/api/invitations/:token/accept", async (c) => c.json(await access?.accept(c.req.param("token"))));
-  app.post("/api/invitations/:token/revoke", async (c) => c.json(await access?.revoke(c.req.param("token"))));
+  app.get("/api/invitations/:token", async (c) => c.json(await access?.preview(c.req.param("token"))),
+  );
+  app.post("/api/invitations/:token/accept", async (c) => c.json(await access?.accept(c.req.param("token"))),
+  );
+  app.post("/api/invitations/:token/revoke", async (c) => c.json(await access?.revoke(c.req.param("token"))),
+  );
   app.delete("/api/projects/:projectId/members/:actor", (c) =>
-    c.json(access?.remove("project", c.req.param("projectId"), c.req.param("actor"))));
+    c.json(access?.remove("project", c.req.param("projectId"), c.req.param("actor"))),
+  );
   app.delete("/api/threads/:threadId/members/:actor", (c) =>
-    c.json(access?.remove("thread", c.req.param("threadId"), c.req.param("actor"))));
+    c.json(access?.remove("thread", c.req.param("threadId"), c.req.param("actor"))),
+  );
   app.get("/api/projects/:projectId/threads", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
-    return c.json(coordinator.state.threads.filter((thread) => !access || access.visibleThread(thread.id)));
+    return c.json(coordinator.state.threads.filter((thread) => !access || access.visibleThread(thread.id)),
+    );
   });
   app.post("/api/projects/:projectId/threads", async (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
@@ -247,7 +257,8 @@ export function api(
     return c.json(
       coordinator.createThread(body.title as string, body.idempotencyKey as string,
         access?.identity.actor ?? identity.actor,
-        access?.identity.email),
+        access?.identity.email,
+      ),
       201,
     );
   });
@@ -294,7 +305,8 @@ export function api(
     return c.json(
       (coordinator.state.conversationTurns ?? [])
         .filter((turn) => turn.threadId === c.req.param("threadId"))
-        .map(({ input: _input, actor: _actor, membershipActor: _member, ...publicTurn }) => publicTurn),
+        .map(({ input: _input, actor: _actor, membershipActor: _member, ...publicTurn }) => publicTurn,
+        ),
     );
   });
   app.get("/api/threads/:threadId/messages", (c) => {
@@ -309,7 +321,8 @@ export function api(
       return c.json(coordinator.appendNote(
       c.req.param("threadId"), body.content as string,
       body.idempotencyKey as string, identity.actor, access?.identity,
-      ), 201);
+      ), 201,
+      );
     }
     if (conversation) {
       const result = coordinator.queueTurn(
@@ -375,7 +388,8 @@ export function api(
     const scanned = coordinator.eventsAfter(after);
     const page = scanned.filter((event) =>
       !access || !(event.provenance?.threadId ?? event.knowledge?.threadId) ||
-      access.visibleThread((event.provenance?.threadId ?? event.knowledge?.threadId)!));
+      access.visibleThread((event.provenance?.threadId ?? event.knowledge?.threadId)!),
+    );
     c.header("X-Next-Sequence", String(scanned.at(-1)?.sequence ?? after));
     return c.json(page);
   });
@@ -448,18 +462,18 @@ export function api(
       authorizationId: string(c.get("body").authorizationId, "authorization_id"),
     });
     const receipt = { ...result, backend: context.backend };
-    coordinator.confirmFixtureLanding(c.req.param("runId"), receipt);
+    coordinator.confirmLanding(c.req.param("runId"), receipt);
     return c.json(receipt);
   });
   app.post("/api/runs/:runId/landing/reconcile", async (c) => {
     const context = configured();
-    const result = await context.service.reconcile({
+    const result = await (context.reconcile ?? context.service.reconcile.bind(context.service))({
       runId: c.req.param("runId"),
       actor: context.actor,
       authorizationId: string(c.get("body").authorizationId, "authorization_id"),
     });
     const receipt = { ...result, backend: context.backend };
-    coordinator.confirmFixtureLanding(c.req.param("runId"), receipt);
+    coordinator.confirmLanding(c.req.param("runId"), receipt);
     return c.json(receipt);
   });
   return app;

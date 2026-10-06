@@ -36,6 +36,12 @@ import { DurableChangePipeline, type PipelineState } from "./durable-pipeline";
 import { DurableJobs } from "./durable-jobs";
 import { KnowledgeOutbox, type KnowledgeDelivery } from "./knowledge-outbox";
 import { knowledgeReporting, candidateKnowledgeSource } from "./knowledge-reporting";
+import type { TrustedPublisherAgent } from "./trusted-publisher-agent";
+import {
+  exportCandidateBundle,
+  publisherBundleDigest,
+} from "../../../packages/execution/src/trusted-publisher";
+import type { WorkspaceTransport } from "../../../packages/execution/src/contracts";
 import type { RepositoryAgent } from "./index";
 // The coordinator owner supplies this RPC. Keep the worker seam independent of its implementation.
 interface WorkerKnowledgeReceiver {
@@ -55,6 +61,9 @@ export interface PiEnv extends CredentialEnv {
   MODEL_CONFIGURATION?: string;
   MODELS_CONFIGURATION?: string;
   CONFIGURATION_REVISION?: string;
+  TRUSTED_PUBLISHER?: DurableObjectNamespace<TrustedPublisherAgent>;
+  TRUSTED_PUBLISHER_ENABLED?: string;
+  TRUSTED_PUBLISHER_AUTH_KEY?: string;
   AI?: Ai;
   ARTIFACTS?: Artifacts;
   SANDBOX_IMAGE?: string;
@@ -68,6 +77,7 @@ interface Context {
   brief?: ReviewBrief;
 }
 export interface TaskAdmission {
+  artifactAdmission?: ExecutionInput["artifactAdmission"];
   credentialActor?: string;
   runModels?: ExecutionInput["runModels"];
   role: "implementer" | "reviewer";
@@ -123,6 +133,7 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
           admission.role,
           admission.deadline,
           admission.credentialActor,
+          admission.artifactAdmission,
         ),
       ),
     );
@@ -278,6 +289,7 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     role: TaskAdmission["role"] = "implementer",
     deadline?: number,
     credentialActor?: string,
+    artifactAdmission?: ExecutionInput["artifactAdmission"],
   ) {
     void this
       .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
@@ -286,8 +298,11 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     // start() rebinds only models; it must preserve the parent's immutable deadline.
     deadline ??= admitted?.deadline;
     credentialActor ??= admitted?.credentialActor;
+    artifactAdmission ??= admitted?.artifactAdmission;
     const serialized = JSON.stringify(
-      runModels || deadline !== undefined ? { runModels, role, deadline, credentialActor } : null,
+      runModels || deadline !== undefined
+        ? { runModels, role, deadline, credentialActor, artifactAdmission }
+        : null,
     );
     if (prior && prior.value !== serialized) throw Error("context_conflict");
     void this.sql`INSERT OR IGNORE INTO task_models VALUES(1,${serialized})`;
@@ -354,6 +369,17 @@ export class ChangeAgent extends TaskAgent {
       },
     );
   }
+  private async assertRunActive() {
+    this.assertTaskActive();
+    const input = this.pipeline.status()?.input;
+    if (input?.artifactAdmission) {
+      await this.env.REPOSITORY.get(this.env.REPOSITORY.idFromName("pitcrew")).assertRunAdmission(
+        input.runId,
+        input.artifactAdmission,
+      );
+      this.assertTaskActive();
+    }
+  }
   private transport() {
     if (!this.env.ARTIFACTS || !this.ctx.container || !this.env.SANDBOX_IMAGE)
       throw Error("execution_not_configured");
@@ -367,32 +393,47 @@ export class ChangeAgent extends TaskAgent {
     if (this.pipeline.status()?.input.knowledgeContext) {
       this.registry.install(
         knowledgeReporting({
+          beforeTool: () => this.countTool(),
           context: () => {
             const context = this.context().input?.knowledgeContext;
             if (!context) throw Error("knowledge_not_configured");
             return context;
           },
           readSource: async (path, revision) => {
+            await this.assertRunActive();
             const { workspace, input } = this.context();
             if (revision === "base") {
               if (!this.env.ARTIFACTS || !input) throw Error("knowledge_not_configured");
               using fork = await this.env.ARTIFACTS.get(workspace.artifactId);
+              await this.assertRunActive();
               const blob = await fork.readFile({ ref: input.baseSha, path });
+              await this.assertRunActive();
               if (!blob || blob.size > 65536) throw Error("knowledge_source_unavailable");
-              return { text: await blob.text(), sha: input.baseSha };
+              const text = await blob.text();
+              await this.assertRunActive();
+              return { text, sha: input.baseSha };
             }
-            return candidateKnowledgeSource(this.transport(), workspace, path);
+            const result = await candidateKnowledgeSource(this.transport(), workspace, path);
+            await this.assertRunActive();
+            return result;
           },
-          refresh: () => {
+          refresh: async () => {
+            await this.assertRunActive();
             const context = this.context().input?.knowledgeContext;
             if (!context) throw Error("knowledge_not_configured");
-            return (
+            const checkpoint = await (
               this.env.REPOSITORY.get(
                 this.env.REPOSITORY.idFromName("pitcrew"),
               ) as unknown as WorkerKnowledgeReceiver
             ).refreshWorkerKnowledge(context);
+            await this.assertRunActive();
+            return checkpoint;
           },
-          enqueue: (delivery) => this.enqueueKnowledge(delivery),
+          enqueue: async (delivery) => {
+            await this.assertRunActive();
+            await this.enqueueKnowledge(delivery);
+            await this.assertRunActive();
+          },
           flush: () =>
             this.knowledgeJobs.enqueue("delivery", { runId: this.context().workspace.runId }),
         }),
@@ -590,6 +631,7 @@ export class ChangeAgent extends TaskAgent {
                 credentialActor: input.credentialActor,
                 role: "reviewer",
                 deadline: this.taskDeadline(),
+                artifactAdmission: input.artifactAdmission,
               },
             });
             return reviewer.evaluate(workspace, evidence, 500, {
@@ -616,7 +658,39 @@ export class ChangeAgent extends TaskAgent {
     this.lifecycle.use(this.jobs);
   }
   private coordinator() {
-    const transport = this.transport();
+    const sandbox = this.transport();
+    const transport: WorkspaceTransport = {
+      prepare: (workspace) => sandbox.prepare(workspace),
+      run: (workspace, command, signal) => sandbox.run(workspace, command, signal),
+      inspect: (workspace) => sandbox.inspect(workspace),
+      readFile: (workspace, path) => sandbox.readFile(workspace, path),
+      writeFile: (workspace, path, content) => sandbox.writeFile(workspace, path, content),
+      stop: (workspace) => sandbox.stop(workspace),
+      publish: async (workspace, candidateSha) => {
+        if (this.env.TRUSTED_PUBLISHER_ENABLED !== "true" || !this.env.TRUSTED_PUBLISHER)
+          return sandbox.publish(workspace, candidateSha);
+        await this.assertRunActive();
+        const bundleBase64 = await exportCandidateBundle(
+          workspace,
+          candidateSha,
+          (workspace, command) => sandbox.run(workspace, command),
+          () => this.assertRunActive(),
+        );
+        const bundleDigest = await publisherBundleDigest(bundleBase64);
+        await this.assertRunActive();
+        const signed = await this.env.REPOSITORY.get(
+          this.env.REPOSITORY.idFromName("pitcrew"),
+        ).authorizePublisherCandidate(workspace.runId, candidateSha, bundleDigest);
+        await this.assertRunActive();
+        const publisher = this.env.TRUSTED_PUBLISHER.get(
+          this.env.TRUSTED_PUBLISHER.idFromName(`publisher:${signed.operationId}`),
+        );
+        const result = await publisher.publish({ ...signed, bundleBase64 });
+        await this.assertRunActive();
+        if (result.status !== "published" || !result.cleanupVerified)
+          throw Error("reconciliation_required");
+      },
+    };
     void this
       .sql`CREATE TABLE IF NOT EXISTS operation_journal(key TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,result TEXT)`;
     const journal = {
@@ -652,7 +726,13 @@ export class ChangeAgent extends TaskAgent {
   }
   async start(input: ExecutionInput) {
     if (this.pipeline.status()) {
-      this.bindModelAdmission(input.runModels, "implementer", undefined, input.credentialActor);
+      this.bindModelAdmission(
+        input.runModels,
+        "implementer",
+        undefined,
+        input.credentialActor,
+        input.artifactAdmission,
+      );
       const existing = this.pipeline.start(input); // Validate the immutable request identity.
       if (
         existing.stage === "stop" ||
@@ -698,6 +778,15 @@ export class ChangeAgent extends TaskAgent {
   private async stopOwners(workspace: Workspace) {
     this.recordStop(workspace.runId);
     const results = await Promise.allSettled([
+      Promise.resolve().then(async () => {
+        if (
+          this.env.TRUSTED_PUBLISHER_ENABLED === "true" &&
+          !(await this.env.REPOSITORY.get(
+            this.env.REPOSITORY.idFromName("pitcrew"),
+          ).cleanupCandidatePublisher(workspace.runId))
+        )
+          throw Error("publisher_cleanup_failed");
+      }),
       Promise.resolve().then(() => this.coordinator().coordinator.stop(workspace)),
       // dispose closes only an already-open Pi; session().abort() would open and resume it.
       Promise.resolve().then(() => this.harness.dispose()),

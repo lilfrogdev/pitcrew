@@ -56,11 +56,12 @@ This key provisioning/check has not been performed, and source admission current
 checks configured credentials rather than enforcing this rollout-specific budget.
 
 Infrastructure is separately proposed as one active run, ten-minute task deadline,
-32 tool calls per implementation/review loop, and one bounded isolated publisher
-container overlapping the candidate. A later source landing owns its own bounded
-reservation and cleanup. The existing $5/run and $75/month values are **internal
-reservations**, not measured billing or an account spending cap. The publisher
-must be included in the resource envelope before any paid run is enabled.
+32 tool calls per implementation/review task, including knowledge tools, and one
+isolated publisher container overlapping the candidate. Publisher entrypoints are
+limited to 120 seconds and write leases to 60 seconds. A later source landing
+owns its own reservation and cleanup after worker cleanup is positively verified. The existing $5/run and $75/month values are **internal
+reservations**, not measured billing or an account spending cap. The worker and publisher resource owners are included in durable cleanup. Unknown
+or failed cleanup holds the reservation; it is never treated as a refund.
 
 For scale only: using current published rates, two `lite` containers at full CPU
 for ten minutes each have about **$0.0024 compute/memory/disk cost** before included
@@ -74,9 +75,16 @@ cleanup and provider key limit must be verified at approved rollout time.
 
 The reviewed account slice `ad1e178` has two-account real-library D1/workerd tests
 and independent security review. Native trusted publisher, source landing and
-execution cleanup are separate work in progress. They need combined tests and
-independent review, then an approved disposable Artifacts old-ref/CAS conformance
-probe before real landing is configured. Local Git conformance proves local Git
+execution cleanup are implemented and have local fixture tests. Combined independent
+review is pending. An approved disposable Artifacts old-ref/CAS conformance probe is
+required before real source landing is configured. Production source apply requires
+`ARTIFACTS_CAS_CONFORMANCE_VERIFIED=true` in addition to `LANDING_MODE=artifacts`,
+publisher, execution and infrastructure gates. All rollout gates remain off. The
+probe must demonstrate stale-base rejection, a competing write during receive-pack,
+rejection of divergent history, and exact final SHA/tree readback. The example
+`apps/worker/wrangler.artifacts.example.jsonc` does not change the active backend.
+Its dedicated backend-private `TRUSTED_PUBLISHER_AUTH_KEY` must be provisioned
+separately and never sent to a candidate container. Local Git conformance proves local Git
 semantics; it does not prove the hosted Artifacts provider's behavior.
 
 Required approvals remain: exact sender/domain and email binding/DNS; auth D1 and
