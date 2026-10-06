@@ -83,8 +83,9 @@ cleanup and provider key limit must be verified at approved rollout time.
 
 The reviewed account slice `ad1e178` has two-account real-library D1/workerd tests
 and independent security review. Native trusted publisher, source landing and
-execution cleanup are implemented and have local fixture tests. Combined independent
-review is pending. An approved disposable Artifacts old-ref/CAS conformance probe is
+execution cleanup are implemented and have local fixture tests. Independent review of the local execution implementation is complete with no
+remaining blocking finding. Final local verification passed 219 backend tests,
+104 execution tests, and backend, execution and web TypeScript checks. An approved disposable Artifacts old-ref/CAS conformance probe is
 required before real source landing is configured. Production source apply requires
 `ARTIFACTS_CAS_CONFORMANCE_VERIFIED=true` in addition to `LANDING_MODE=artifacts`,
 publisher, execution and infrastructure gates. All rollout gates remain off. The
