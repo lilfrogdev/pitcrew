@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { IconBrandOpenai, IconChevronDown, IconCpu, IconSettings } from "@tabler/icons-react";
+import { IconBrandOpenai, IconCpu, IconSettings } from "@tabler/icons-react";
 import type { ModelChoice, ModelSelection, ModelSettings } from "@pitcrew/protocol";
 import styles from "./ModelPicker.module.css";
+import { Select } from "./Select";
 import openRouterLogo from "./assets/openrouter.svg";
 
 export interface ModelPickerProps {
@@ -56,55 +57,45 @@ export function ModelPicker({
               <IconCpu size={18} stroke={1.5} aria-hidden="true" />
             )}
           </span>
-          <select
-            aria-label={`${label} model`}
-            aria-describedby={error ? `${id}-error` : undefined}
-            aria-invalid={!model || undefined}
+          <Select
+            label={`${label} model`}
+            describedBy={error ? `${id}-error` : undefined}
+            invalid={!model}
             value={model ? selection.modelId : ""}
-            disabled={disabled || !models.some((choice) => choice.efforts.length)}
-            onChange={(event) => {
-              const choice = models.find((item) => item.id === event.target.value);
+            disabled={disabled}
+            placeholder="Model unavailable"
+            compact
+            options={models.map((choice) => ({
+              value: choice.id,
+              label: choice.label,
+              disabled: !choice.efforts.length,
+            }))}
+            onChange={(value) => {
+              const choice = models.find((item) => item.id === value);
               const effort = choice && preferredEffort(choice);
               if (choice && effort) onSelection({ modelId: choice.id, effort });
             }}
-          >
-            {!model && (
-              <option value="" disabled>
-                Model unavailable
-              </option>
-            )}
-            {models.map((choice) => (
-              <option key={choice.id} value={choice.id} disabled={!choice.efforts.length}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-          <IconChevronDown size={14} stroke={1.5} aria-hidden="true" />
+          />
         </label>
         <label className={styles.control}>
           <span className={styles.srOnly}>{label} effort</span>
-          <select
-            aria-describedby={error ? `${id}-error` : undefined}
-            aria-invalid={(!!model && !!error) || undefined}
+          <Select
+            label={`${label} effort`}
+            describedBy={error ? `${id}-error` : undefined}
+            invalid={!!model && !!error}
             value={model?.efforts.includes(selection.effort) ? selection.effort : ""}
-            disabled={disabled || !model?.efforts.length}
-            onChange={(event) => {
-              const effort = model?.efforts.find((item) => item === event.target.value);
+            disabled={disabled}
+            placeholder="Effort unavailable"
+            compact
+            options={(model?.efforts ?? []).map((effort) => ({
+              value: effort,
+              label: effort === "off" ? "Off" : effort.charAt(0).toUpperCase() + effort.slice(1),
+            }))}
+            onChange={(value) => {
+              const effort = model?.efforts.find((item) => item === value);
               if (effort) onSelection({ ...selection, effort });
             }}
-          >
-            {(!model || !model.efforts.includes(selection.effort)) && (
-              <option value="" disabled>
-                Effort unavailable
-              </option>
-            )}
-            {model?.efforts.map((effort) => (
-              <option key={effort} value={effort}>
-                {effort === "off" ? "Off" : effort.charAt(0).toUpperCase() + effort.slice(1)}
-              </option>
-            ))}
-          </select>
-          <IconChevronDown size={14} stroke={1.5} aria-hidden="true" />
+          />
         </label>
       </div>
       {error && (
@@ -171,12 +162,21 @@ export function WorkerModelSettings({
             <div className={styles.role} key={role}>
               <label className={styles.roleLabel}>
                 {name} model source
-                <select
+                <Select
+                  label={`${name} model source`}
                   value={override ? "override" : "inherit"}
                   disabled={disabled || saving}
-                  onChange={(event) => {
+                  options={[
+                    { value: "inherit", label: "Inherit repo agent model and effort" },
+                    {
+                      value: "override",
+                      label: "Use role override",
+                      disabled: !models.some((model) => model.efforts.length),
+                    },
+                  ]}
+                  onChange={(value) => {
                     const roles = { ...draft.roles };
-                    if (event.target.value === "inherit") delete roles[role];
+                    if (value === "inherit") delete roles[role];
                     else {
                       const choice =
                         models.find(
@@ -188,12 +188,7 @@ export function WorkerModelSettings({
                     }
                     update({ ...draft, roles });
                   }}
-                >
-                  <option value="inherit">Inherit repo agent model and effort</option>
-                  <option value="override" disabled={!models.some((model) => model.efforts.length)}>
-                    Use role override
-                  </option>
-                </select>
+                />
               </label>
               {override && (
                 <ModelPicker

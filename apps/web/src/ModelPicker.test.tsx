@@ -1,8 +1,14 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import type { ModelChoice, ModelSettings } from "@pitcrew/protocol";
 import { ModelPicker, WorkerModelSettings } from "./ModelPicker";
 afterEach(cleanup);
+function choose(label: string, name: string) {
+  fireEvent.click(screen.getByRole("combobox", { name: label }));
+  fireEvent.click(
+    within(screen.getByRole("listbox", { name: label })).getByRole("option", { name }),
+  );
+}
 const models: ModelChoice[] = [
   {
     id: "a",
@@ -35,7 +41,10 @@ it("uses the transport provider for the glyph without inferring a brand from the
     screen.getByRole("img", { name: "openrouter provider" }).querySelector("img"),
   ).not.toBeNull();
   expect(screen.getByRole("combobox", { name: "Repo agent model" })).toHaveProperty("value", "a");
+  fireEvent.click(screen.getByRole("combobox", { name: "Repo agent model" }));
   expect(screen.getByRole("option", { name: "Qwen custom label" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("combobox", { name: "Repo agent model" }));
+  fireEvent.click(screen.getByRole("combobox", { name: "Repo agent effort" }));
   expect(screen.getByRole("option", { name: "High" })).toBeTruthy();
   rerender(
     <ModelPicker
@@ -58,7 +67,7 @@ it("shows supported efforts and chooses a supported default on model change", ()
     />,
   );
   expect(screen.queryByRole("option", { name: "Max" })).toBeNull();
-  fireEvent.change(screen.getByLabelText("Repo agent model"), { target: { value: "b" } });
+  choose("Repo agent model", "Model B");
   expect(onSelection).toHaveBeenCalledWith({ modelId: "b", effort: "off" });
   rerender(
     <ModelPicker
@@ -70,7 +79,7 @@ it("shows supported efforts and chooses a supported default on model change", ()
   );
   expect(screen.getByLabelText("Repo agent effort")).toHaveProperty("value", "off");
   expect(screen.queryByRole("option", { name: "High" })).toBeNull();
-  fireEvent.change(screen.getByLabelText("Repo agent model"), { target: { value: "a" } });
+  choose("Repo agent model", "Model A");
   expect(onSelection).toHaveBeenLastCalledWith({ modelId: "a", effort: "medium" });
 });
 it("keeps unavailable preferences explicit without silently routing", () => {
@@ -108,14 +117,10 @@ it("removes inherited overrides and saves supported role selections", async () =
     <WorkerModelSettings models={models} settings={settings} onSave={onSave} disabled={false} />,
   );
   fireEvent.click(screen.getByText("Repository model defaults"));
-  fireEvent.change(screen.getByLabelText("Implementer model source"), {
-    target: { value: "inherit" },
-  });
+  choose("Implementer model source", "Inherit repo agent model and effort");
   expect(screen.queryByLabelText("Implementer model")).toBeNull();
-  fireEvent.change(screen.getByLabelText("Reviewer model source"), {
-    target: { value: "override" },
-  });
-  fireEvent.change(screen.getByLabelText("Reviewer model"), { target: { value: "b" } });
+  choose("Reviewer model source", "Use role override");
+  choose("Reviewer model", "Model B");
   fireEvent.click(screen.getByRole("button", { name: "Save repository model defaults" }));
   await waitFor(() =>
     expect(onSave).toHaveBeenCalledWith({
@@ -167,9 +172,7 @@ it("blocks saving an unavailable worker override until removed or corrected", ()
     "disabled",
     true,
   );
-  fireEvent.change(screen.getByLabelText("Reviewer model source"), {
-    target: { value: "inherit" },
-  });
+  choose("Reviewer model source", "Inherit repo agent model and effort");
   expect(screen.getByRole("button", { name: "Save repository model defaults" })).toHaveProperty(
     "disabled",
     false,

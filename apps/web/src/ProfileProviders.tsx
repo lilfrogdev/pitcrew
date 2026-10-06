@@ -8,12 +8,19 @@ const unavailable: OpenRouterStatus = {
   executionEnabled: false,
 };
 
-export function ProfileProviders({ api }: { api?: OpenRouterConnectionApi }) {
+export function ProfileProviders({
+  api,
+  onChange,
+}: {
+  api?: OpenRouterConnectionApi;
+  onChange?: () => void;
+}) {
   const [status, setStatus] = useState(unavailable);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const content = useRef<HTMLElement>(null);
   const field = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
   const setField = useCallback((node: HTMLInputElement | null) => {
@@ -22,6 +29,7 @@ export function ProfileProviders({ api }: { api?: OpenRouterConnectionApi }) {
   }, []);
   useEffect(() => {
     mounted.current = true;
+    content.current?.focus();
     setStatus(unavailable);
     setLoading(true);
     void (api?.status() ?? Promise.resolve(unavailable))
@@ -52,6 +60,7 @@ export function ProfileProviders({ api }: { api?: OpenRouterConnectionApi }) {
         setStatus(result);
         setMessage(action === "store" ? "Saved" : "Removed");
       }
+      onChange?.();
     } catch {
       if (mounted.current)
         setError(
@@ -73,7 +82,7 @@ export function ProfileProviders({ api }: { api?: OpenRouterConnectionApi }) {
           </button>
         </nav>
       </aside>
-      <main id="workspace-content" className={styles.content} tabIndex={-1}>
+      <main ref={content} id="workspace-content" className={styles.content} tabIndex={-1}>
         <header>
           <p>Profile</p>
           <h1>Providers</h1>
@@ -97,11 +106,7 @@ export function ProfileProviders({ api }: { api?: OpenRouterConnectionApi }) {
               required
               disabled={!writable}
               placeholder={status.configured ? "Replace API key" : "Enter API key"}
-              aria-describedby="openrouter-storage"
             />
-            <p id="openrouter-storage" className={styles.hint}>
-              Stored in your Pitcrew Cloudflare Worker.
-            </p>
             <div className={styles.actions}>
               <button type="submit" disabled={!writable}>
                 Save
@@ -111,11 +116,6 @@ export function ProfileProviders({ api }: { api?: OpenRouterConnectionApi }) {
               </button>
             </div>
           </form>
-          {!loading && (!status.available || !status.storageAvailable) && (
-            <p className={styles.hint} role="status">
-              Saving is unavailable until local provider access is enabled.
-            </p>
-          )}
           {message && <p role="status">{message}</p>}
           {error && (
             <p className={styles.error} role="alert">

@@ -9,7 +9,7 @@ const ready = {
   executionEnabled: false,
 };
 const fixture = () => ({
-  status: async () => ready,
+  status: vi.fn(async () => ready),
   store: vi.fn().mockResolvedValue({ ...ready, configured: true }),
   remove: vi.fn().mockResolvedValue(ready),
 });
@@ -41,9 +41,13 @@ it("removes through an explicit ordinary action without transmitting typed text"
   expect(api.store).not.toHaveBeenCalled();
 });
 it("does not claim saving works merely because the route is available", async () => {
-  const api = { ...fixture(), status: async () => ({ ...ready, storageAvailable: false }) };
+  const api = { ...fixture(), status: vi.fn(async () => ({ ...ready, storageAvailable: false })) };
   render(<ProfileProviders api={api} />);
-  await screen.findByText("Saving is unavailable until local provider access is enabled.");
+  await waitFor(() => expect(api.status).toHaveBeenCalled());
+  expect(screen.queryByText("Stored in your Pitcrew Cloudflare Worker.")).toBeNull();
+  expect(
+    screen.queryByText("Saving is unavailable until local provider access is enabled."),
+  ).toBeNull();
   expect((screen.getByLabelText("API key") as HTMLInputElement).disabled).toBe(true);
   expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.submit(screen.getByLabelText("API key").closest("form")!);

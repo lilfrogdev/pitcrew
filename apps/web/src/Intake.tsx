@@ -1,4 +1,5 @@
 import { apiFetch } from "./api";
+import { Select } from "./Select";
 import { useEffect, useRef, useState } from "react";
 import type { VerificationProfile } from "../../../packages/verification/src/index";
 import type { intakeGroups } from "../../worker/src/intake";
@@ -99,16 +100,17 @@ export function Intake({ projectId, onDispatch }: { projectId: string; onDispatc
       </label>
       <label>
         Move selected reports to
-        <select value={target} onChange={(e) => setTarget(e.target.value)}>
-          <option value="">New problem (split)</option>
-          {groups
-            .filter((g) => g.reports.length)
-            .map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.title}
-              </option>
-            ))}
-        </select>
+        <Select
+          label="Move selected reports to"
+          value={target}
+          onChange={setTarget}
+          options={[
+            { value: "", label: "New problem (split)" },
+            ...groups
+              .filter((group) => group.reports.length)
+              .map((group) => ({ value: group.id, label: group.title })),
+          ]}
+        />
       </label>
       <button
         disabled={busy || !selected.length}

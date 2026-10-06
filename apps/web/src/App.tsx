@@ -37,6 +37,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const keyboardFocus = useKeyboardFocus();
   const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
+  const [providerRevision, setProviderRevision] = useState(0);
+  const [providersLoading, setProvidersLoading] = useState(true);
   const [composerCapabilities, setComposerCapabilities] =
     useState<LandingCapabilities["composer"]>();
   const [selections, setSelections] = useState<Record<string, ModelSelection>>({});
@@ -86,11 +88,14 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   useEffect(() => {
     let cancelled = false;
     setLandingEnabled(false);
+    setProvidersLoading(true);
+    setComposerCapabilities(undefined);
     api
       .capabilities()
       .then((capabilities) => {
         if (!cancelled) {
           setComposerCapabilities(capabilities.composer);
+          setProvidersLoading(false);
           setLandingEnabled(
             capabilities.landing.enabled && capabilities.landing.backend === "fixture",
           );
@@ -100,12 +105,13 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         if (!cancelled) {
           setLandingEnabled(false);
           setComposerCapabilities(undefined);
+          setProvidersLoading(false);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [api, revision]);
+  }, [api, revision, providerRevision]);
   useEffect(() => {
     let cancelled = false;
     setProjectsLoading(true);
@@ -223,15 +229,23 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     selections[threadId] ??
     threads.find((thread) => thread.id === threadId)?.modelSelection ??
     composerCapabilities?.settings.default;
+  const usableModels = composerCapabilities?.conversation
+    ? composerCapabilities.models.filter(
+        (model) =>
+          model.efforts.length &&
+          (demo || !["fixture", "pitcrew-fixture"].includes(model.provider)),
+      )
+    : [];
+  const providerConnected = usableModels.length > 0;
   const modelValid =
-    !composerCapabilities ||
-    (!!selection &&
-      composerCapabilities.models.some(
-        (model) => model.id === selection.modelId && model.efforts.includes(selection.effort),
-      ));
+    providerConnected &&
+    !!selection &&
+    usableModels.some(
+      (model) => model.id === selection.modelId && model.efforts.includes(selection.effort),
+    );
   const attachmentCapabilities =
-    composerCapabilities?.conversation && selection
-      ? selectionAttachmentCapabilities(composerCapabilities.models, {
+    providerConnected && composerCapabilities?.conversation && selection
+      ? selectionAttachmentCapabilities(usableModels, {
           repoAgent: selection,
           implementer: composerCapabilities.settings.roles?.implementer ?? selection,
           reviewer: composerCapabilities.settings.roles?.reviewer ?? selection,
@@ -657,14 +671,26 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             }
             capabilities={attachmentCapabilities}
             modelControls={
-              composerCapabilities && selection ? (
+              providerConnected && selection ? (
                 <ModelPicker
-                  models={composerCapabilities.models}
+                  models={usableModels}
                   selection={selection}
                   onSelection={(next) => void chooseModel(next)}
                   disabled={!threadId || busy || !!selectionSaving[threadId]}
                 />
-              ) : undefined
+              ) : providersLoading ? (
+                <span className="provider-setup" role="status">
+                  Checking providers…
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="provider-setup"
+                  onClick={() => setSection("account")}
+                >
+                  Set up a provider
+                </button>
+              )
             }
           />
           <p className="sr-only" role="status">
@@ -845,7 +871,16 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           </div>
         </Workspace>
       </div>
-      {section === "account" && <ProfileProviders api={api.openrouter} />}
+      {section === "account" && (
+        <ProfileProviders
+          api={api.openrouter}
+          onChange={() => {
+            setComposerCapabilities(undefined);
+            setProvidersLoading(true);
+            setProviderRevision((value) => value + 1);
+          }}
+        />
+      )}
       {section === "repositories" && <Repositories api={api.repositories} />}
       {section === "tickets" && <WorkspacePlaceholder section={section} />}
     </div>
