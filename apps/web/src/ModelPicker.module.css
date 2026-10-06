@@ -16,25 +16,6 @@
   color: var(--muted);
   border-radius: 8px;
 }
-.control select {
-  appearance: none;
-  color: inherit;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 6px 22px 6px 6px;
-  font: inherit;
-  font-size: 12px;
-  max-width: 200px;
-  min-height: 32px;
-  cursor: pointer;
-  text-overflow: ellipsis;
-}
-.control > svg {
-  position: absolute;
-  right: 6px;
-  pointer-events: none;
-}
 .provider {
   display: grid;
   place-items: center;
@@ -46,22 +27,6 @@
 .provider img {
   width: 18px;
   height: auto;
-}
-.control select:hover {
-  background: var(--canvas);
-  color: var(--text);
-}
-.control select:focus-visible,
-.roleLabel select:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: 2px;
-}
-.control select:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.control select[aria-invalid="true"] {
-  border-color: var(--error, #a83232);
 }
 .error {
   color: var(--error, #a83232);
@@ -94,11 +59,6 @@
   width: fit-content;
   padding: 6px 0;
 }
-.settings summary:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: 3px;
-  border-radius: 3px;
-}
 .settingsBody {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -124,20 +84,6 @@
   gap: 6px;
   color: var(--text);
 }
-.roleLabel select {
-  font: inherit;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  max-width: 100%;
-}
 .settingsBody button {
   justify-self: start;
-}
-@media (max-width: 600px) {
-  .control select {
-    max-width: 125px;
-  }
 }

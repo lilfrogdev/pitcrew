@@ -66,14 +66,10 @@
   color: var(--text);
   font: inherit;
 }
-.hint {
-  font-size: 12px;
-  color: var(--muted);
-  margin: 8px 0 16px;
-}
 .actions {
   display: flex;
   gap: 8px;
+  margin-top: 16px;
 }
 .actions button {
   padding: 8px 16px;

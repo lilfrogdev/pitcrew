@@ -9,6 +9,7 @@ import {
 } from "@tabler/icons-react";
 import type { Api, Project, Snapshot } from "./api";
 import "./Workspace.css";
+import { Select } from "./Select";
 
 type Tab = "browser" | "files" | "diffs" | "review";
 const tabs = [
@@ -207,16 +208,12 @@ export function Workspace({
             <>
               <label className="workspace-select">
                 File
-                <select
+                <Select
+                  label="File"
                   value={selectedFile?.key ?? ""}
-                  onChange={(event) => update({ file: event.target.value })}
-                >
-                  {files.map((file) => (
-                    <option key={file.key} value={file.key}>
-                      {file.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(value) => update({ file: value })}
+                  options={files.map((file) => ({ value: file.key, label: file.name }))}
+                />
               </label>
               {selectedFile && (
                 <article className="workspace-file">
@@ -256,16 +253,15 @@ export function Workspace({
             <>
               <label className="workspace-select">
                 Change run
-                <select
+                <Select
+                  label="Change run"
                   value={selectedRun.id}
-                  onChange={(event) => update({ run: event.target.value })}
-                >
-                  {[...snapshot.runs].reverse().map((run) => (
-                    <option key={run.id} value={run.id}>
-                      {run.id} · {run.status.replaceAll("_", " ")}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(value) => update({ run: value })}
+                  options={[...snapshot.runs].reverse().map((run) => ({
+                    value: run.id,
+                    label: `${run.id} · ${run.status.replaceAll("_", " ")}`,
+                  }))}
+                />
               </label>
               <dl>
                 <dt>Base</dt>

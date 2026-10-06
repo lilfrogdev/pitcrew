@@ -1,0 +1,88 @@
+.select {
+  position: relative;
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  text-align: left;
+  color: inherit;
+}
+.trigger svg {
+  flex-shrink: 0;
+}
+.value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact .trigger {
+  border-color: transparent;
+  background: transparent;
+  padding: 6px;
+  font-size: 12px;
+  max-width: 200px;
+  border-radius: 8px;
+}
+.compact .trigger:hover:not(:disabled) {
+  background: var(--canvas);
+  color: var(--text);
+}
+.trigger[aria-invalid="true"] {
+  border-color: var(--error);
+}
+.options {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  max-width: min(320px, 80vw);
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 8%);
+  font-size: 12px;
+}
+.compact .options {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.option[data-active="true"] {
+  background: var(--hover);
+}
+.option[aria-disabled="true"] {
+  color: var(--muted);
+  cursor: default;
+}
+.option svg {
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .compact .trigger {
+    max-width: 125px;
+  }
+}
