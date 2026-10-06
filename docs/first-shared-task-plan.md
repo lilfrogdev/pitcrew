@@ -9,7 +9,15 @@ Use the owner-selected existing Cloudflare Artifacts `pitcrew/pitcrew-test` only
 after fresh metadata confirms its immutable ID (historically
 `b6ljpouyr0i72xku`), default branch and token state. The historical repository was
 empty. Registering it does not initialize it: an approved initial commit is
-required before execution can use a real base SHA.
+required before execution can use a real base SHA. The current pipeline bootstraps
+with `pnpm install --frozen-lockfile --ignore-scripts` and runs `pnpm test`; a bare
+README repository cannot pass those stages. The approved initialization must also
+include a dependency-free `package.json` with `test` and `typecheck` scripts set to
+`git diff --check HEAD^ HEAD`, and the matching `pnpm-lock.yaml`. Both commands
+serve the proposed whitespace acceptance check; no TypeScript check is claimed.
+The pinned container image must already contain Git and the approved pnpm version.
+No initialization or scaffold write has occurred. A future Git-only execution
+profile can remove this scaffold requirement, but is outside this implementation.
 
 First task proposal: add a short `README.md` describing the test repository and
 one collaborator workflow. No dependencies, network tools, executable files,

@@ -228,6 +228,14 @@ export class RepositoryAgent extends Agent<Env> {
         (authorization) => this.landArtifact(authorization),
       );
       context.reconcile = async (input) => {
+        const record = context.store.get(input.authorizationId, input.actor, input.runId);
+        const run = core.evidence(input.runId).run, current = this.artifactSource(core);
+        if (!core.actorAuthorized(input.actor, run.threadId) || !core.runAuthorized(run.id) ||
+          !current || current.name !== record.authorization.repository ||
+          current.repositoryId !== run.artifactAdmission?.sourceRepositoryId)
+          throw new ExecutionError("LANDING_AUTHORITY_REVOKED");
+        if (record.state === "authorized") throw new ExecutionError("LANDING_NOT_STARTED");
+        if (record.state === "landed" || record.state === "rejected") return record.result!;
         const operationId = `land:${input.authorizationId}`;
         const stored = this.publisherAuthority(operationId);
         if (stored) {
@@ -801,7 +809,7 @@ export class RepositoryAgent extends Agent<Env> {
         }
         const source = this.artifactSource(core);
         const repository = source?.name ?? this.env.ARTIFACT_REPOSITORY;
-        if (!repository || !this.env.MODEL_CONFIGURATION || /^0{40}$/.test(input.baseSha)) {
+        if ((!source && this.env.ENVIRONMENT === "production") || !repository || !this.env.MODEL_CONFIGURATION || /^0{40}$/.test(input.baseSha)) {
           core.fail(runId, true);
           return;
         }
@@ -895,6 +903,7 @@ export class RepositoryAgent extends Agent<Env> {
                   role: "implementer",
                   deadline: admitted.reservation.deadline,
                   artifactAdmission: input.artifactAdmission,
+                  runId: input.runId,
                 },
               })
             : this.env.CHANGE.get(

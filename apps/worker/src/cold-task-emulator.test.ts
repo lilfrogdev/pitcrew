@@ -35,7 +35,7 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
     compatibilityDate: "2026-10-03",
     compatibilityFlags: ["nodejs_compat"],
     bindings: {
-      ENVIRONMENT: "production",
+      ENVIRONMENT: "development",
       EXECUTION_MODE: "cloud",
       INFRASTRUCTURE_ADMISSION_ENABLED: "true",
       MODEL_CONFIGURATION: '{"provider":"fake"}',
@@ -430,6 +430,10 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
       error: "reconciliation_required",
       cleanupVerified: false,
     });
+    await call("production-missing-grant", "seed", { deadline, stage: "done" });
+    await reload({ ENVIRONMENT: "production" });
+    expect(await call("production-missing-grant", "direct")).toMatchObject({ error: "execution_disabled" });
+    expect((await call("production-missing-grant", "result")).snapshot).toMatchObject({ opens: 0, resumes: 0, effects: 0 });
   } finally {
     await mf.dispose();
   }

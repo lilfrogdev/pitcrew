@@ -140,6 +140,15 @@ it("lands verified Artifacts evidence, holds uncertain cleanup, reconciles lost 
       });
       if (mode === "cleanup-failure") {
         expect((await get("/state", mode)).active).toHaveLength(1);
+        await get("/actor?value=other-actor", mode);
+        expect(await post(`${runPath}/landing/reconcile`, { authorizationId: permitted.body.authorizationId }, mode))
+          .toMatchObject({ status: 409, body: { error: "AUTHORIZATION_NOT_FOUND" } });
+        expect(await get("/state", mode)).toMatchObject({ reconciliations: 0 });
+        expect((await get("/state", mode)).active).toHaveLength(1);
+        await get("/actor?value=fixture-owner", mode);
+        expect(await post(`/api/runs/another-run/landing/reconcile`, { authorizationId: permitted.body.authorizationId }, mode))
+          .toMatchObject({ status: 409, body: { error: "AUTHORIZATION_NOT_FOUND" } });
+        expect(await get("/state", mode)).toMatchObject({ reconciliations: 0 });
         expect(
           await post(
             `${runPath}/landing/reconcile`,
@@ -177,6 +186,12 @@ it("lands verified Artifacts evidence, holds uncertain cleanup, reconciles lost 
       head: revoked.expectedTargetSha,
       project: { baseSha: revoked.expectedTargetSha },
     });
+    const expired = await get("/seed", "expired"), expiredPath = `/api/runs/${expired.runId}`;
+    const expiredApproval = await post(`${expiredPath}/merge-approval`, expired, "expired");
+    await get(`/expire?id=${expiredApproval.body.authorizationId}`, "expired");
+    expect(await post(`${expiredPath}/landing`, { authorizationId: expiredApproval.body.authorizationId }, "expired"))
+      .toMatchObject({ status: 409, body: { error: "AUTHORIZATION_EXPIRED" } });
+    expect(await get("/state", "expired")).toMatchObject({ active: [], head: expired.expectedTargetSha });
     const stale = await get("/seed", "stale"),
       stalePath = `/api/runs/${stale.runId}`;
     const staleApproval = await post(`${stalePath}/merge-approval`, stale, "stale");

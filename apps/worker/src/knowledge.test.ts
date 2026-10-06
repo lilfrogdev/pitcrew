@@ -324,3 +324,15 @@ it("matches frozen knowledge context by fields after JSON keys are reordered", (
     recovered.refreshWorkerKnowledge({ ...context, extra: "forged" } as typeof context).status,
   ).toBe("stale");
 });
+it("revoked initiating membership immediately fences knowledge refresh and delayed note delivery", () => {
+  const f = fixture(), thread = f.core.createThread("current access", "thread", "owner"),
+    { run } = f.core.submit(thread.id, "work", "message", "owner"), input = f.core.begin(run.id)!;
+  const member = { actor: "owner", email: "owner@example.com", role: "owner" as const };
+  f.core.updateCollaboration((state) => { state.collaboration = { projectMembers: { owner: member },
+    threadMembers: { [thread.id]: { owner: member } }, invitations: {} }; });
+  expect(f.core.refreshWorkerKnowledge(input.knowledgeContext!).status).toBe("current");
+  f.core.updateCollaboration((state) => { delete state.collaboration!.threadMembers[thread.id].owner; });
+  expect(f.core.refreshWorkerKnowledge(input.knowledgeContext!).status).toBe("stale");
+  expect(f.core.appendWorkerKnowledge(input.knowledgeContext!, { key: "delayed", text: "bounded discovered note",
+    kind: "discovery", sourceRefs: [{ kind: "code", id: "README.md", revision: run.baseSha, path: "README.md" }] }).status).toBe("stale");
+});
