@@ -111,7 +111,7 @@ it("enforces local origin and per-session capability on every unsafe method befo
         }),
         env,
       ),
-    ).toEqual({ actor: "lilfrogdev" });
+    ).toEqual({ actor: "lilfrogdev", email: "dev@lilfrogdev.com" });
   }
   for (const headers of [
     { origin: "https://attacker.example" },

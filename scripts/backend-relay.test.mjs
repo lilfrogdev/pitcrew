@@ -490,6 +490,7 @@ test("cached-token command is fixed, no login, token argv/env/log or inherited c
   const child = childFixture();
   let invocation;
   const result = readCachedAccessToken({
+    homeDirectory: "/Users/bryan",
     spawnProcess: (...args) => {
       invocation = args;
       return child;
@@ -500,10 +501,10 @@ test("cached-token command is fixed, no login, token argv/env/log or inherited c
   assert.equal(await result, "synthetic.jwt.signature");
   assert.equal(
     invocation[0],
-    "/Users/lilfrogdev/Library/Application Support/Pitcrew/bin/cloudflared",
+    "/Users/bryan/Library/Application Support/Pitcrew/bin/cloudflared",
   );
   assert.deepEqual(invocation[1], ["access", "token", `--app=${BACKEND_ACCESS.origin}`]);
-  assert.deepEqual(invocation[2].env, { HOME: "/Users/lilfrogdev", PATH: "/usr/bin:/bin" });
+  assert.deepEqual(invocation[2].env, { HOME: "/Users/bryan", PATH: "/usr/bin:/bin" });
   assert.deepEqual(invocation[2].stdio, ["ignore", "pipe", "ignore"]);
   assert.equal(invocation[2].shell, false);
 });
@@ -596,4 +597,35 @@ test("malformed request targets return sanitized errors with both opt-ins off or
     }
     assert.equal(f.tokens.length + f.calls.length, 0);
   }
+});
+
+test("shared routes bind server-held account cookies, nonce writes, deny arbitrary APIs and retain event cursor", async () => {
+  const cloud = [];
+  const f = fixture({sharedApi:true, sessionHeaders:async (_req,token) => {
+    assert.equal(token,"synthetic.jwt.signature"); return {Cookie:"__Secure-pitcrew-auth.session_token=server-only"};
+  },fetchImpl:async (url,init) => {
+    if (url.endsWith("/api/local-session")) return new Response(null,{status:302,
+      headers:{location:`${BACKEND_ACCESS.issuer}/cdn-cgi/access/login/backend`}});
+    cloud.push({url,init});
+    return Response.json([{sequence:9}], {headers:{"x-next-sequence":"10"}});
+  }});
+  const session = await request(f.handler,"/api/local-session");
+  const cookie = session.headers["Set-Cookie"].split(";",1)[0];
+  const get = await request(f.handler,"/api/projects/repo/events?after=1",{
+    headers:{cookie:`${cookie}; browser-secret=must-not-forward`,authorization:"browser-secret"}});
+  assert.equal(get.status,200); assert.equal(get.headers["X-Next-Sequence"],"10");
+  assert.equal(cloud[0].init.headers.Cookie,"__Secure-pitcrew-auth.session_token=server-only");
+  assert.equal(cloud[0].init.headers.Authorization,undefined);
+  const denied = await request(f.handler,"/api/threads/task/messages",{method:"POST",
+    headers:{origin,"content-type":"application/json",cookie},body:JSON.stringify({content:"note",idempotencyKey:"note"})});
+  assert.equal(denied.status,403);
+  const allowed = await request(f.handler,"/api/threads/task/messages",{method:"POST",
+    headers:{origin,"content-type":"application/json",cookie,"x-pitcrew-local-nonce":session.json.nonce},
+    body:JSON.stringify({content:"note",idempotencyKey:"note"})});
+  assert.equal(allowed.status,200); assert.equal(cloud[1].init.headers.Origin,BACKEND_ACCESS.origin);
+  assert.equal((await request(f.handler,"/api/arbitrary-secrets")).status,404);
+  assert.equal((await request(f.handler,"/api/projects/repo/events?credentialActor=forged")).status,400);
+  const loggedOut = fixture({sharedApi:true,sessionHeaders:async()=>({})});
+  assert.equal((await request(loggedOut.handler,"/api/projects")).status,401);
+  assert.equal(loggedOut.calls.length,1); // Access protection check only, no product read.
 });

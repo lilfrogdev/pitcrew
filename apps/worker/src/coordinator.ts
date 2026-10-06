@@ -90,6 +90,7 @@ export interface State {
   changes?: Change[];
   requests?: Record<string, ExecutionInput>;
   credentialActors?: Record<string, string>;
+  runActors?: Record<string, string>;
 }
 export const initialState = (overrides: Partial<Project> = {}): State => {
   const project: Project = {
@@ -166,7 +167,8 @@ export class Coordinator {
       (this.state.identityBindings ??= {})[accessActor] = { userId, email };
     });
   }
-  addOwnedProject(sourceName: string, sourceId: string, actor: string, email: string) {
+  addOwnedProject(sourceName: string, sourceId: string, actor: string, email: string,
+    configuration?: Pick<Project, "baseSha" | "configurationRevision">) {
     return this.durableUpdate(() => {
       const directory = this.state.ownedProjects ??= {};
       if (Object.values(directory).some((entry) => entry.sourceId === sourceId))
@@ -180,6 +182,7 @@ export class Coordinator {
         // independently verified initial commit supplies a real base SHA.
         baseSha: "0".repeat(40),
         configurationRevision: "uninitialized-v1",
+        ...configuration,
       });
       projectState.collaboration = {
         projectMembers: { [actor]: { actor, email, role: "owner" } },
@@ -194,6 +197,8 @@ export class Coordinator {
       const entry = this.state.ownedProjects?.[id];
       if (!entry) throw new AdmissionError("not_found", 404);
       entry.state = structuredClone(state);
+      if (new TextEncoder().encode(JSON.stringify(this.state)).byteLength > 16 * 1024 * 1024)
+        throw new AdmissionError("repository_storage_limit", 413);
     });
   }
   updateCollaboration<T>(operation: (state: State) => T): T {
@@ -208,6 +213,7 @@ export class Coordinator {
     private atomic: <T>(operation: () => T) => T = (operation) => operation(),
   ) {
     const needsMigration =
+      Object.keys(state.keys).some((key) => key.startsWith("conversation_") && !key.startsWith("conversation_[")) ||
       state.threads.some((thread) => thread.archived === undefined) ||
       !state.changes ||
       state.runs.some(
@@ -236,6 +242,14 @@ export class Coordinator {
           run.changeId = change.id;
         }
         for (const [key, entry] of Object.entries(this.state.keys)) {
+          if (key.startsWith("conversation_") && !key.startsWith("conversation_[")) {
+            const turn = (entry.result as { turn?: ConversationTurn })?.turn;
+            if (turn?.actor) {
+              const scoped = `conversation_${JSON.stringify([turn.actor, key.slice("conversation_".length)])}`;
+              this.state.keys[scoped] ??= entry;
+              delete this.state.keys[key];
+            }
+          }
           if (!key.startsWith("message_")) continue;
           const result = entry.result as SubmitResult;
           const run = result?.run && this.state.runs.find((run) => run.id === result.run.id);
@@ -332,6 +346,16 @@ export class Coordinator {
     };
     return this.transaction(`knowledge_${actor}_${key}`, body, () => {
       const previous = this.currentKnowledge().entries.find((entry) => entry.id === body.id);
+      if (previous?.threadId && !this.actorAuthorized(actor, previous.threadId))
+        throw new AdmissionError("not_found", 404);
+      for (const ref of body.sourceRefs) {
+        const message = ref.kind === "message" && this.state.messages.find((item) => item.id === ref.id);
+        const review = ref.kind === "review" && this.state.reviews.find((item) => item.id === ref.id);
+        const run = ref.kind === "artifact" ? this.state.runs.find((item) => item.artifactId === ref.id) :
+          review ? this.state.runs.find((item) => item.id === review.runId) : undefined;
+        const threadId = message ? message.threadId : run?.threadId;
+        if (threadId && !this.actorAuthorized(actor, threadId)) throw new AdmissionError("not_found", 404);
+      }
       if ((previous?.version ?? 0) !== body.expectedVersion)
         throw new AdmissionError("knowledge_version_conflict", 409);
       if (
@@ -369,7 +393,8 @@ export class Coordinator {
       context.configurationRevision !== this.state.project.configurationRevision
     )
       return { status: "stale" };
-    const currentKnowledge = this.currentKnowledge();
+    const currentKnowledge = this.repositoryContext(this.state.runActors?.[context.runId] ??
+      this.state.credentialActors?.[context.runId]).currentKnowledge!;
     this.durableUpdate(() => {
       (this.state.knowledgeObservations ??= {})[context.runId] = currentKnowledge.revision;
     });
@@ -478,7 +503,7 @@ export class Coordinator {
       },
     );
   }
-  async updateProfile(profile: VerificationProfile, expectedRevision: string) {
+  async updateProfile(profile: VerificationProfile, expectedRevision: string, authorize = () => {}) {
     const old = this.profile();
     if (old.revision !== expectedRevision || profile.revision === old.revision)
       throw new AdmissionError("profile_revision_conflict", 409);
@@ -501,6 +526,7 @@ export class Coordinator {
       },
       reproduceBaseline: false,
     });
+    authorize();
     if (this.profile().revision !== expectedRevision)
       throw new AdmissionError("profile_revision_conflict", 409);
     this.durableUpdate(() => {
@@ -569,14 +595,18 @@ export class Coordinator {
     return this.transaction(
       `intake_dispatch_${actor}_${key}`,
       { input, acceptance, profileRevision },
-      () =>
-        dispatchIntake(
+      () => {
+        if (this.state.collaboration && !this.state.collaboration.projectMembers[membershipActor])
+          throw new AdmissionError("not_found", 404);
+        return dispatchIntake(
           (this.state.intake ??= initialIntake()),
           this.intakeContext(actor),
           key,
           input,
           {
             verifyActive: (scope, link) => {
+              if (!this.actorAuthorized(membershipActor, link.threadId))
+                throw new AdmissionError("not_found", 404);
               if (
                 this.state.intake!.reports.some(
                   (r) => r.scope === scope && r.groupId === input.groupId && !r.dispatch,
@@ -653,6 +683,7 @@ export class Coordinator {
               };
               this.state.runs.push(run);
               (this.state.credentialActors ??= {})[run.id] = actor;
+              (this.state.runActors ??= {})[run.id] = membershipActor;
               (this.state.plans ??= {})[run.id] = plan;
               this.event("thread.created", thread.id);
               messages.forEach((m) =>
@@ -663,7 +694,8 @@ export class Coordinator {
               return { threadId: thread.id, changeId, runId: run.id };
             },
           },
-        ),
+        );
+      },
     );
   }
   async requireCurrentVerification(runId: string) {
@@ -930,15 +962,17 @@ export class Coordinator {
     catalog: ModelCatalog,
     selection?: unknown,
     attachments?: unknown,
+    author?: Message["author"],
   ) {
     this.validateKey(key);
+    const storageKey = `conversation_${JSON.stringify([actor, key])}`;
     // Leave room for the bounded pending replies and terminal worker/event records.
     if (
-      !this.state.keys[`conversation_${key}`] &&
+      !this.state.keys[storageKey] &&
       new TextEncoder().encode(JSON.stringify(this.state)).byteLength > 15 * 1024 * 1024
     )
       throw new AdmissionError("repository_storage_limit", 413);
-    const previous = this.state.keys[`conversation_${key}`]?.result as
+    const previous = this.state.keys[storageKey]?.result as
       | { message: Message; turn: ConversationTurn }
       | undefined;
     const thread = this.thread(threadId);
@@ -972,7 +1006,7 @@ export class Coordinator {
       "data" in item ? { id: item.id, name: item.name, mediaType: item.mediaType } : item,
     );
     return this.transaction(
-      `conversation_${key}`,
+      storageKey,
       { threadId, content, actor, selection: chosen, attachments: descriptor },
       () => {
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
@@ -1055,6 +1089,7 @@ export class Coordinator {
           id: this.id(),
           threadId,
           role: "user",
+          ...(author ? { author: structuredClone(author) } : {}),
           content: content.trim(),
           attachments: stored?.length ? stored : undefined,
           createdAt: this.now(),
@@ -1069,6 +1104,7 @@ export class Coordinator {
           status: "queued",
           models,
           actor,
+          membershipActor: author?.actor ?? actor,
           contextBudgetBytes: contextLimit,
           baseSha: this.state.project.baseSha,
           configurationRevision: this.state.project.configurationRevision,
@@ -1141,7 +1177,7 @@ export class Coordinator {
         models: structuredClone(turn.models),
         baseSha: turn.baseSha,
         configurationRevision: turn.configurationRevision,
-        repositoryContext: this.repositoryContext(),
+        repositoryContext: this.repositoryContext(turn.membershipActor ?? turn.actor),
         messages: structuredClone(messages),
       };
       this.event("conversation.started", id);
@@ -1171,7 +1207,7 @@ export class Coordinator {
       this.event(error ? "conversation.failed" : "conversation.completed", id);
     });
   }
-  appendNote(threadId: string, content: string, key: string, actor: string): Message {
+  appendNote(threadId: string, content: string, key: string, actor: string, author?: Message["author"]): Message {
     this.validateKey(key);
     return this.transaction(`note_${JSON.stringify([actor, key])}`, { threadId, content }, () => {
       this.thread(threadId);
@@ -1180,6 +1216,7 @@ export class Coordinator {
       if (this.state.messages.length >= 500) throw new AdmissionError("capacity", 429);
       const message: Message = {
         id: this.id(), threadId, role: "user", content: content.trim(), createdAt: this.now(),
+        ...(author ? { author: structuredClone(author) } : {}),
       };
       this.state.messages.push(message);
       this.event("message.created", message.id, { kind: "principal", id: actor });
@@ -1188,6 +1225,8 @@ export class Coordinator {
   }
   delegateConversation(id: string) {
     const turn = this.conversationTurn(id);
+    if (!this.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId))
+      throw new AdmissionError("not_found", 404);
     if (turn.runId) return structuredClone(this.evidence(turn.runId).run);
     if (turn.status !== "running" || !turn.input)
       throw new AdmissionError("conversation_not_running", 409);
@@ -1222,6 +1261,7 @@ export class Coordinator {
       this.state.runs.push(run);
       turn.runId = run.id;
       (this.state.credentialActors ??= {})[run.id] = turn.actor;
+      (this.state.runActors ??= {})[run.id] = turn.membershipActor ?? turn.actor;
       this.event("change.created", change.id);
       this.event("run.queued", run.id);
       return structuredClone(run);
@@ -1233,6 +1273,7 @@ export class Coordinator {
     key: string,
     actor = "local-fixture",
     attachments?: unknown,
+    author?: Message["author"],
   ): SubmitResult {
     this.validateKey(key);
     let acceptedAttachments;
@@ -1266,6 +1307,7 @@ export class Coordinator {
           id: this.id(),
           threadId,
           role: "user",
+          ...(author ? { author: structuredClone(author) } : {}),
           content: content.trim(),
           ...(acceptedAttachments.length ? { attachments: acceptedAttachments } : {}),
           createdAt: this.now(),
@@ -1289,6 +1331,7 @@ export class Coordinator {
         this.state.messages.push(message);
         this.state.runs.push(run);
         (this.state.credentialActors ??= {})[run.id] = actor;
+        (this.state.runActors ??= {})[run.id] = author?.actor ?? actor;
         this.event("message.created", message.id, { kind: "principal", id: actor });
         this.event("change.created", change.id, { kind: "principal", id: actor });
         this.event("run.queued", run.id);
@@ -1301,7 +1344,7 @@ export class Coordinator {
     if (!change) throw new AdmissionError("not_found", 404);
     return change;
   }
-  retryChange(changeId: string, key: string, catalog?: ModelCatalog, actor = "local-fixture"): Run {
+  retryChange(changeId: string, key: string, catalog?: ModelCatalog, actor = "local-fixture", membershipActor = actor): Run {
     this.validateKey(key);
     return this.transaction(`retry_${JSON.stringify([actor, key])}`, { changeId, actor }, () => {
       const change = this.change(changeId);
@@ -1345,6 +1388,7 @@ export class Coordinator {
       };
       this.state.runs.push(run);
       (this.state.credentialActors ??= {})[run.id] = actor;
+      (this.state.runActors ??= {})[run.id] = membershipActor;
       if (sourcePlan) (this.state.plans ??= {})[run.id] = structuredClone(sourcePlan);
       this.event("run.queued", run.id);
       return run;
@@ -1370,8 +1414,13 @@ export class Coordinator {
     }
     return structuredClone(this.state.events.slice(low, low + 256));
   }
-  repositoryContext(): RepositoryContext {
+  repositoryContext(actor?: string): RepositoryContext {
     const currentKnowledge = this.currentKnowledge();
+    if (actor !== undefined) currentKnowledge.entries = currentKnowledge.entries.filter((entry) =>
+      !entry.threadId || this.actorAuthorized(actor, entry.threadId));
+    const active = this.state.runs.filter((run) =>
+      ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status) &&
+      (actor === undefined || this.actorAuthorized(actor, run.threadId)));
     return {
       revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}:${currentKnowledge.revision}`,
       baseSha: this.state.project.baseSha,
@@ -1384,16 +1433,8 @@ export class Coordinator {
           text: entry.text,
           sourceRevision: entry.configurationRevision,
         })),
-      activeWorkOmitted: Math.max(
-        0,
-        this.state.runs.filter((run) =>
-          ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status),
-        ).length - 20,
-      ),
-      activeWork: this.state.runs
-        .filter((run) =>
-          ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status),
-        )
+      activeWorkOmitted: Math.max(0, active.length - 20),
+      activeWork: active
         .slice(0, 20)
         .map((run) => ({
           runId: run.id,
@@ -1415,6 +1456,15 @@ export class Coordinator {
         run.error = "reconciliation_required";
       }
     this.persist(this.state);
+  }
+  actorAuthorized(actor: string | undefined, threadId: string) {
+    const access = this.state.collaboration;
+    return !access || !!(actor && access.projectMembers[actor] && access.threadMembers[threadId]?.[actor]);
+  }
+  runAuthorized(runId: string) {
+    const run = this.state.runs.find((item) => item.id === runId);
+    return !!run && this.actorAuthorized(this.state.runActors?.[runId] ??
+      this.state.credentialActors?.[runId], run.threadId);
   }
   begin(runId: string): ExecutionInput | undefined {
     const run = this.evidence(runId).run;
@@ -1447,7 +1497,7 @@ export class Coordinator {
         repository: this.state.project.repository,
         baseSha: run.baseSha,
         configurationRevision: run.configurationRevision,
-        repositoryContext: this.repositoryContext(),
+        repositoryContext: this.repositoryContext(this.state.runActors?.[runId] ?? this.state.credentialActors?.[runId]),
         conversationContext: structuredClone(this.change(run.changeId!).conversationContext),
         messages: structuredClone(
           this.state.messages.filter((m) =>

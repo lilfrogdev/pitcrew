@@ -126,7 +126,12 @@ export function api(
   app.get("/api/projects/:projectId/context", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
-    return c.json(coordinator.repositoryContext());
+    const context = coordinator.repositoryContext(access?.identity.actor);
+    if (access) {
+      context.activeWork = context.activeWork.filter((work) => access.visibleThread(work.threadId));
+      context.activeWorkOmitted = 0;
+    }
+    return c.json(context);
   });
   app.post("/api/projects/:projectId/knowledge", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
@@ -134,7 +139,7 @@ export function api(
     const body = c.get("body");
     return c.json(
       coordinator.appendKnowledge(
-        identity.actor,
+        access?.identity.actor ?? identity.actor,
         body.idempotencyKey as string,
         body.mutation as Parameters<Coordinator["appendKnowledge"]>[2],
       ),
@@ -149,6 +154,7 @@ export function api(
       await coordinator.updateProfile(
         body.profile as Parameters<Coordinator["updateProfile"]>[0],
         body.expectedRevision as string,
+        () => access?.requireProject(c.req.param("projectId")),
       ),
     );
   });
@@ -160,14 +166,20 @@ export function api(
   app.get("/api/projects/:projectId/intake", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
-    return c.json({ groups: coordinator.groups(), profile: coordinator.profile() });
+    const groups = coordinator.groups();
+    if (access) for (const group of groups) {
+      group.links = group.links.filter((link) => access.visibleThread(link.threadId));
+      for (const report of group.reports)
+        if (report.dispatch && !access.visibleThread(report.dispatch.threadId)) delete report.dispatch;
+    }
+    return c.json({ groups, profile: coordinator.profile() });
   });
   app.post("/api/projects/:projectId/reports", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
     return c.json(
       coordinator.receive(
-        identity.actor,
+        access?.identity.actor ?? identity.actor,
         c.get("body") as unknown as Parameters<Coordinator["receive"]>[1],
       ),
       201,
@@ -179,13 +191,14 @@ export function api(
     const body = c.get("body");
     return c.json(
       coordinator.move(
-        identity.actor,
+        access?.identity.actor ?? identity.actor,
         body.idempotencyKey as string,
         body as unknown as Parameters<Coordinator["move"]>[2],
       ),
     );
   });
   app.post("/api/projects/:projectId/intake/dispatch", async (c) => {
+    if (executionDisabled) throw new AdmissionError("execution_disabled", 503);
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
     const body = c.get("body");
@@ -281,7 +294,7 @@ export function api(
     return c.json(
       (coordinator.state.conversationTurns ?? [])
         .filter((turn) => turn.threadId === c.req.param("threadId"))
-        .map(({ input: _input, actor: _actor, ...publicTurn }) => publicTurn),
+        .map(({ input: _input, actor: _actor, membershipActor: _member, ...publicTurn }) => publicTurn),
     );
   });
   app.get("/api/threads/:threadId/messages", (c) => {
@@ -290,10 +303,14 @@ export function api(
   });
   app.post("/api/threads/:threadId/messages", async (c) => {
     const body = c.get("body");
-    if (executionDisabled) return c.json(coordinator.appendNote(
+    if (executionDisabled) {
+      if (body.attachments !== undefined && (!Array.isArray(body.attachments) || body.attachments.length))
+        throw new AdmissionError("note_attachments_unavailable");
+      return c.json(coordinator.appendNote(
       c.req.param("threadId"), body.content as string,
-      body.idempotencyKey as string, identity.actor,
-    ), 201);
+      body.idempotencyKey as string, identity.actor, access?.identity,
+      ), 201);
+    }
     if (conversation) {
       const result = coordinator.queueTurn(
         c.req.param("threadId"),
@@ -303,6 +320,7 @@ export function api(
         conversation.catalog,
         body.modelSelection,
         body.attachments,
+        access?.identity,
       );
       await conversation.dispatch(result.turn.id);
       return c.json(result, 201);
@@ -313,6 +331,7 @@ export function api(
       body.idempotencyKey as string,
       identity.actor,
       body.attachments,
+      access?.identity,
     );
     await dispatch(result.run.id);
     return c.json(result, 201);
@@ -329,11 +348,13 @@ export function api(
     return c.json(coordinator.state.runs.filter((run) => run.changeId === c.req.param("changeId")));
   });
   app.post("/api/changes/:changeId/runs", async (c) => {
+    if (executionDisabled) throw new AdmissionError("execution_disabled", 503);
     const run = coordinator.retryChange(
       c.req.param("changeId"),
       c.get("body").idempotencyKey as string,
       conversation?.catalog,
       identity.actor,
+      access?.identity.actor,
     );
     await dispatch(run.id);
     return c.json(run, 201);
@@ -350,16 +371,18 @@ export function api(
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);
     const after = Number(c.req.query("after") ?? 0);
-    if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_cursor");
     if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_event_cursor");
-    const page = coordinator.eventsAfter(after).filter((event) =>
-      !access || !event.provenance?.threadId || access.visibleThread(event.provenance.threadId));
-    c.header("X-Next-Sequence", String(page.at(-1)?.sequence ?? after));
+    const scanned = coordinator.eventsAfter(after);
+    const page = scanned.filter((event) =>
+      !access || !(event.provenance?.threadId ?? event.knowledge?.threadId) ||
+      access.visibleThread((event.provenance?.threadId ?? event.knowledge?.threadId)!));
+    c.header("X-Next-Sequence", String(scanned.at(-1)?.sequence ?? after));
     return c.json(page);
   });
   app.get("/api/capabilities", (c) =>
     c.json({
       landing: { enabled: !!landing, backend: landing?.backend ?? null },
+      ...(executionDisabled ? { notesEnabled: true } : {}),
       ...(conversation
         ? {
             composer: {

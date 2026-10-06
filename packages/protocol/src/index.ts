@@ -35,6 +35,8 @@ export interface Change {
   contextRevision: string;
 }
 export interface Message {
+  /** Verified application identity snapshot; never supplied by the message body. */
+  author?: { actor: string; email: string; displayName?: string; username?: string; avatar?: string | null };
   attachments?: MessageAttachment[];
   id: string;
   threadId: string;

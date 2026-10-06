@@ -59,23 +59,49 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
 }
 export class RepositoryAgent extends Agent<Env> {
   private coordinator?: Coordinator;
+  private readonly projectCoordinators = new Map<string, Coordinator>();
   private projectCoordinator(id: string): Coordinator | undefined {
     const root = this.getCoordinator();
     if (id === root.state.project.id) return root;
     const entry = root.state.ownedProjects?.[id];
     if (!entry) return;
-    return new Coordinator(entry.state, (state) => root.updateOwnedProject(id, state));
+    let core = this.projectCoordinators.get(id);
+    if (!core) {
+      core = new Coordinator(structuredClone(entry.state),
+        (state) => root.updateOwnedProject(id, state), undefined, undefined,
+        this.getImages(), (operation) => this.ctx.storage.transactionSync(operation));
+      this.projectCoordinators.set(id, core);
+      core.recover(this.env.EXECUTION_MODE === "cloud");
+    }
+    return core;
   }
-  private requestCoordinator(path: string): Coordinator | undefined {
+  private coordinators() {
+    const root = this.getCoordinator();
+    return [root, ...Object.keys(root.state.ownedProjects ?? {}).map((id) => this.projectCoordinator(id)!)];
+  }
+  private runCoordinator(id: string) {
+    return this.coordinators().find((core) => core.state.runs.some((run) => run.id === id));
+  }
+  private turnCoordinator(id: string) {
+    return this.coordinators().find((core) => core.state.conversationTurns?.some((turn) => turn.id === id));
+  }
+  private async requestCoordinator(path: string, projectId?: string | null): Promise<Coordinator | undefined> {
     const parts = path.split("/").slice(1);
     if (parts[0] !== "api") return;
     if (parts[1] === "projects" && parts[2]) return this.projectCoordinator(parts[2]);
+    if (parts[1] === "capabilities" && projectId) return this.projectCoordinator(projectId);
     const root = this.getCoordinator();
-    const candidates = [root, ...Object.keys(root.state.ownedProjects ?? {}).map((id) =>
-      this.projectCoordinator(id)!)];
+    const candidates = this.coordinators();
     if (parts[1] === "threads") return candidates.find((core) => core.state.threads.some((t) => t.id === parts[2]));
     if (parts[1] === "changes") return candidates.find((core) => core.state.changes?.some((item) => item.id === parts[2]));
     if (parts[1] === "runs") return candidates.find((core) => core.state.runs.some((item) => item.id === parts[2]));
+    if (parts[1] === "invitations") {
+      if (!/^[a-f0-9]{64}$/.test(parts[2] ?? "")) return;
+      const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",
+        new TextEncoder().encode(parts[2]))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return candidates.find((core) => Object.values(core.state.collaboration?.invitations ?? {})
+        .some((invite) => invite.digest === digest));
+    }
     return root;
   }
   private repositoryLifecycle?: RepositoryLifecycle;
@@ -118,7 +144,8 @@ export class RepositoryAgent extends Agent<Env> {
           },
         },
         (name) =>
-          name === this.env.ARTIFACT_REPOSITORY || name === "pitcrew" || name === "pitcrew-test",
+          name === this.env.ARTIFACT_REPOSITORY || name === "pitcrew" || name === "pitcrew-test" ||
+          Object.values(this.getCoordinator().state.ownedProjects ?? {}).some((entry) => entry.sourceName === name),
       );
     }
     return this.repositoryLifecycle;
@@ -182,17 +209,23 @@ export class RepositoryAgent extends Agent<Env> {
   }
   private readonly conversationJobs: DurableJobs;
   private async dispatchRun(id: string) {
+    const core = this.runCoordinator(id);
+    if (!core) throw Error("run_not_found");
     if (this.env.EXECUTION_MODE === "fake")
-      this.ctx.waitUntil(this.getCoordinator().dispatch(id, fakeExecution));
+      this.ctx.waitUntil(core.dispatch(id, fakeExecution));
     if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
   }
   async delegateRepoTurn(turnId: string) {
-    const run = this.getCoordinator().delegateConversation(turnId);
+    const core = this.turnCoordinator(turnId);
+    if (!core) throw Error("turn_not_found");
+    const run = core.delegateConversation(turnId);
     await this.dispatchRun(run.id);
     return run;
   }
   async readConversationAttachment(turnId: string, reference: StoredImageAttachment) {
-    const turn = this.getCoordinator().conversationTurn(turnId);
+    const core = this.turnCoordinator(turnId);
+    if (!core) throw Error("turn_not_found");
+    const turn = core.conversationTurn(turnId);
     if (
       !turn.input ||
       !turn.input.messages.some((message) =>
@@ -205,7 +238,7 @@ export class RepositoryAgent extends Agent<Env> {
     return this.getImages().get(reference);
   }
   async readWorkerAttachment(context: WorkerKnowledgeContext, reference: StoredImageAttachment) {
-    const input = this.getCoordinator().state.requests?.[context.runId];
+    const input = this.projectCoordinator(context.projectId)?.state.requests?.[context.runId];
     if (
       !input?.knowledgeContext ||
       !sameKnowledgeContext(input.knowledgeContext, context) ||
@@ -235,19 +268,19 @@ export class RepositoryAgent extends Agent<Env> {
       async () => {
         const gate = this.getAdmission();
         for (const reservation of gate.monitored()) {
+          const core = this.runCoordinator(reservation.runId);
           if (
             !gate.stopRequired(
               reservation.runId,
               this.env.EXECUTION_MODE === "cloud" &&
-                this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true",
+                this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
+                !!core?.runAuthorized(reservation.runId),
             )
           )
             continue;
           if (!gate.beginCleanupAttempt(reservation.runId)) continue;
-          // The singleton coordinator derives worker identity; no client controls the target.
-          const core = this.getCoordinator();
-          const run = core.state.runs.find((item) => item.id === reservation.runId);
-          if (!run) continue; // Uncertain ownership retains its slot for reconciliation.
+          const run = core?.state.runs.find((item) => item.id === reservation.runId);
+          if (!core || !run) continue; // Uncertain ownership retains its slot for reconciliation.
           const worker = this.env.CHANGE.get(
             this.env.CHANGE.idFromName(`change:${core.state.project.id}:${run.id}`),
           );
@@ -267,15 +300,19 @@ export class RepositoryAgent extends Agent<Env> {
       "repository-results",
       async (jobs) => {
         if (this.env.EXECUTION_MODE !== "cloud") return;
-        const core = this.getCoordinator();
-        for (const run of core.state.runs)
+        for (const core of this.coordinators()) for (const run of core.state.runs)
           if (["queued", "running", "awaiting_review"].includes(run.status))
             await jobs.enqueue(run.id, { runId: run.id });
       },
       async (payload) => {
-        const runId = (payload as { runId: string }).runId,
-          core = this.getCoordinator();
+        const runId = (payload as { runId: string }).runId;
+        const core = this.runCoordinator(runId);
+        if (!core) return;
         const run = core.evidence(runId).run;
+        if (!core.runAuthorized(runId) && !this.getAdmission().hasReservation(runId)) {
+          core.fail(runId, true);
+          return;
+        }
         const input =
           core.begin(runId) ??
           (run.status === "awaiting_review" ? core.state.requests?.[runId] : undefined);
@@ -286,12 +323,22 @@ export class RepositoryAgent extends Agent<Env> {
           core.blockModelConfiguration(runId);
           return;
         }
-        if (!this.env.ARTIFACT_REPOSITORY || !this.env.MODEL_CONFIGURATION) {
+        const source = this.getCoordinator().state.ownedProjects?.[core.state.project.id];
+        const repository = source?.sourceName ?? this.env.ARTIFACT_REPOSITORY;
+        if (!repository || !this.env.MODEL_CONFIGURATION || /^0{40}$/.test(input.baseSha)) {
           core.fail(runId, true);
           return;
         }
         try {
-          const request = { ...input, repository: this.env.ARTIFACT_REPOSITORY };
+          if (source && !this.getAdmission().hasReservation(runId)) {
+            if (!this.env.ARTIFACTS) throw Error("repository_backend_unavailable");
+            using repo = await this.env.ARTIFACTS.get(source.sourceName);
+            if ((await repo.info()).id !== source.sourceId) {
+              core.fail(runId, true);
+              return;
+            }
+          }
+          const request = { ...input, repository };
           const fingerprint = Array.from(
             new Uint8Array(
               await crypto.subtle.digest(
@@ -321,11 +368,12 @@ export class RepositoryAgent extends Agent<Env> {
             return;
           }
           let admitted: ReturnType<InfrastructureAdmission["reserve"]>;
+          const firstReservation = !gate.hasReservation(runId);
           try {
             admitted = gate.reserve(
               runId,
               fingerprint,
-              this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true",
+              this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" && core.runAuthorized(runId),
             );
           } catch (error) {
             if (
@@ -346,7 +394,9 @@ export class RepositoryAgent extends Agent<Env> {
             core.fail(runId, true);
             return;
           }
-          await this.budgetJobs.enqueue("watchdog", {}, Date.now() + 5000);
+          // Only a new reservation schedules the watchdog. Result polling must
+          // not continuously postpone an existing cleanup deadline.
+          if (admitted.allowed && firstReservation) await this.budgetJobs.enqueue("watchdog", {});
           // getAgentByName activates lifecycle capabilities, including the harness.
           // Reserve first. Only synchronous control/observation RPCs may be used on denial.
           const worker = admitted.allowed
@@ -361,6 +411,10 @@ export class RepositoryAgent extends Agent<Env> {
             : this.env.CHANGE.get(
                 this.env.CHANGE.idFromName(`change:${input.projectId}:${input.runId}`),
               );
+          if (admitted.allowed && !core.runAuthorized(runId)) {
+            gate.stopRequired(runId, false);
+            return { rescheduleAt: Date.now() + 1000 };
+          }
           // Dedicated cleanup job owns bounded stop retries; the result job only observes.
           const admission = admitted.allowed ? await worker.start(request) : { stage: "existing" };
           if (
@@ -396,15 +450,26 @@ export class RepositoryAgent extends Agent<Env> {
     this.conversationJobs = new DurableJobs(
       "repository-conversation-results",
       async (jobs) => {
-        for (const turn of this.getCoordinator().state.conversationTurns ?? [])
+        for (const core of this.coordinators()) for (const turn of core.state.conversationTurns ?? [])
           if (["queued", "running"].includes(turn.status))
             await jobs.enqueue(turn.id, { turnId: turn.id });
       },
       async (payload) => {
         const id = (payload as { turnId: string }).turnId;
-        const core = this.getCoordinator();
+        const core = this.turnCoordinator(id);
+        if (!core) return;
         const turn = core.conversationTurn(id);
         if (["completed", "failed"].includes(turn.status)) return;
+        if (!core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId)) {
+          if (turn.status === "running" && this.env.CONVERSATION) {
+            try {
+              await boundedCleanupRpc(this.env.CONVERSATION.get(this.env.CONVERSATION.idFromName(
+                `repo:${core.state.project.id}:${id}`)).stop(id));
+            } catch { return { rescheduleAt: Date.now() + 1000 }; }
+          }
+          core.completeConversation(id, undefined, "membership_revoked");
+          return;
+        }
         if (!this.conversationsEnabled()) {
           core.completeConversation(id, undefined, "execution_unavailable");
           return;
@@ -437,11 +502,16 @@ export class RepositoryAgent extends Agent<Env> {
             core.completeConversation(id, undefined, "conversation_unavailable");
             return;
           }
+          // Credential/catalog lookups yield; revocation must fence child startup too.
+          if (!core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId))
+            return { rescheduleAt: Date.now() };
           const worker = await getAgentByName(
             this.env.CONVERSATION,
             `repo:${input.projectId}:${input.turnId}`,
             { props: input },
           );
+          if (!core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId))
+            return { rescheduleAt: Date.now() };
           await worker.start(input);
           const receipt = await worker.result(id);
           if (receipt.status === "completed") {
@@ -464,10 +534,14 @@ export class RepositoryAgent extends Agent<Env> {
   // Internal DO RPC only. The coordinator verifies this against its own frozen
   // request; worker-supplied principals/statuses cannot grant acceptance.
   async refreshWorkerKnowledge(context: WorkerKnowledgeContext) {
-    return this.getCoordinator().refreshWorkerKnowledge(context);
+    const core = this.projectCoordinator(context.projectId);
+    if (!core) throw Error("project_not_found");
+    return core.refreshWorkerKnowledge(context);
   }
   async appendWorkerKnowledge(context: WorkerKnowledgeContext, report: KnowledgeReport) {
-    return this.getCoordinator().appendWorkerKnowledge(context, report);
+    const core = this.projectCoordinator(context.projectId);
+    if (!core) throw Error("project_not_found");
+    return core.appendWorkerKnowledge(context, report);
   }
   protected getCoordinator() {
     if (this.coordinator) return this.coordinator;
@@ -502,7 +576,7 @@ export class RepositoryAgent extends Agent<Env> {
     const accessIdentity = await principal(request, this.env);
     if (!accessIdentity) return Response.json({ error: "access_not_configured" }, { status: 403 });
     const auth = this.env.AUTH_MODE === "better-auth"
-      ? configuredAuth(this.env, request, (task) => this.ctx.waitUntil(task)) : undefined;
+      ? configuredAuth(this.env, request, (task) => this.ctx.waitUntil(task), accessIdentity) : undefined;
     if (this.env.AUTH_MODE === "better-auth" && !auth)
       return Response.json({ error: "auth_unavailable" }, { status: 503 });
     const path = new URL(request.url).pathname;
@@ -512,8 +586,8 @@ export class RepositoryAgent extends Agent<Env> {
     const user = auth ? await authUser(auth, request, accessIdentity) : undefined;
     if (auth && !user) return Response.json({ error: "unauthorized" }, { status: 401 });
     const identity = user
-      ? { actor: `user:${user.id}`, email: user.email.toLowerCase(),
-          displayName: user.name, avatar: user.image }
+      ? { actor: `account:${user.id}`, email: user.email.toLowerCase(),
+          displayName: user.name, username: user.username, avatar: user.image }
       : accessIdentity;
     const ownerEmail = this.env.ACCESS_EMAIL?.toLowerCase() ??
         (this.env.ENVIRONMENT === "development" && this.env.FIXTURE_IDENTITY === "lilfrogdev"
@@ -523,16 +597,22 @@ export class RepositoryAgent extends Agent<Env> {
     const rootAccess = new Collaboration(root, identity, ownerEmail);
     if (user) rootAccess.rebindLegacy(accessIdentity.actor);
     rootAccess.bootstrap();
-    if (request.method === "GET" && path === "/api/projects") {
-      const projects = Object.keys(root.state.ownedProjects ?? {}).map((id) =>
-        this.projectCoordinator(id)!).filter((core) =>
+    if (request.method === "GET" && ["/api/projects", "/api/repositories"].includes(path)) {
+      const fixture = this.env.ENVIRONMENT === "development" && this.env.AUTH_MODE !== "better-auth" &&
+        this.env.FIXTURE_IDENTITY === "lilfrogdev";
+      const projects = [...(fixture ? [root] : []), ...Object.keys(root.state.ownedProjects ?? {}).map((id) =>
+        this.projectCoordinator(id)!)].filter((core) =>
         !!new Collaboration(core, identity, ownerEmail).projectRole(),
-      ).map((core) => core.state.project);
-      return Response.json(projects);
+      );
+      return Response.json(path === "/api/projects" ? projects.map((core) => core.state.project) : {
+        repositories: projects.map((core) => ({ projectId: core.state.project.id,
+          name: core.state.project.name, role: new Collaboration(core, identity, ownerEmail).projectRole(),
+          status: "present", lifecycle: "registered", deletable: false })), cursor: null });
     }
     if (request.method === "GET" && path === "/api/account")
       return Response.json({ actor: identity.actor, email: identity.email,
         displayName: "displayName" in identity ? identity.displayName : undefined,
+        username: "username" in identity ? identity.username : undefined,
         avatar: "avatar" in identity ? identity.avatar : undefined });
     if (request.method === "POST" && path === "/api/projects") {
       if (identity.email !== ownerEmail || !rootAccess.projectRole() ||
@@ -566,13 +646,19 @@ export class RepositoryAgent extends Agent<Env> {
           return Response.json({ error: "repository_identity_changed" }, { status: 409 });
         if (rootAccess.projectRole() !== "owner")
           return Response.json({ error: "not_found" }, { status: 404 });
-        const project = root.addOwnedProject(name, info.id, identity.actor, identity.email);
+        const [head] = await repo.log({ ref: info.defaultBranch, limit: 1 });
+        if (head && !/^[a-f0-9]{40}$/.test(head.hash)) throw Error("invalid_head");
+        if (rootAccess.projectRole() !== "owner")
+          return Response.json({ error: "not_found" }, { status: 404 });
+        const project = root.addOwnedProject(name, info.id, identity.actor, identity.email,
+          head ? { baseSha: head.hash, configurationRevision: this.env.CONFIGURATION_REVISION ?? "unconfigured-v1" }
+            : undefined);
         return Response.json(project, { status: 201 });
       } catch {
         return Response.json({ error: "repository_verification_failed" }, { status: 503 });
       }
     }
-    const coordinator = this.requestCoordinator(path);
+    const coordinator = await this.requestCoordinator(path, new URL(request.url).searchParams.get("projectId"));
     if (!coordinator) return Response.json({ error: "not_found" }, { status: 404 });
     const access = new Collaboration(coordinator, identity, ownerEmail);
     if (user && coordinator !== root) access.rebindLegacy(accessIdentity.actor);
@@ -580,18 +666,28 @@ export class RepositoryAgent extends Agent<Env> {
       return providerConnectionRequest(request, this.env, accessIdentity.actor);
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter/models")
       return providerModelsRequest(request, this.env, accessIdentity.actor);
-    if (
-      this.env.EXECUTION_MODE === "disabled" &&
-      request.method === "POST" &&
-      (/^\/api\/changes\/[^/]+\/runs$/.test(new URL(request.url).pathname) ||
-        /^\/api\/projects\/[^/]+\/intake\/dispatch$/.test(new URL(request.url).pathname))
-    )
-      return Response.json({ error: "execution_disabled" }, { status: 503 });
     if (/^\/api\/repositories(?:\/|$)/.test(path)) {
-      if (access.projectRole() !== "owner")
+      if (!user && identity.email !== ownerEmail)
         return Response.json({ error: "not_found" }, { status: 404 });
       return lifecycleRequest(request, this.getRepositoryLifecycle(request), (task) =>
         this.ctx.waitUntil(task),
+        identity.actor,
+        async (record) => {
+          if (!record.id || record.ownerActor !== identity.actor || !this.env.ARTIFACTS)
+            throw Error("repository_identity_changed");
+          const existing = Object.values(root.state.ownedProjects ?? {}).find((entry) => entry.sourceId === record.id);
+          if (existing) {
+            if (existing.ownerActor !== identity.actor) throw Error("repository_identity_changed");
+            return;
+          }
+          using repo = await this.env.ARTIFACTS.get(record.name);
+          const info = await repo.info();
+          if (info.id !== record.id) throw Error("repository_identity_changed");
+          const [head] = await repo.log({ ref: info.defaultBranch, limit: 1 });
+          if (head && !/^[a-f0-9]{40}$/.test(head.hash)) throw Error("invalid_head");
+          root.addOwnedProject(record.name, info.id, identity.actor, identity.email,
+            head ? { baseSha: head.hash, configurationRevision: this.env.CONFIGURATION_REVISION ?? "unconfigured-v1" } : undefined);
+        },
       );
     }
     const bodyLimit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
@@ -608,14 +704,21 @@ export class RepositoryAgent extends Agent<Env> {
       }
     }
     if (
-      this.env.EXECUTION_MODE !== "fake" &&
+      this.env.EXECUTION_MODE === "cloud" &&
       !providerReady &&
       request.method === "POST" &&
       (/^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname) ||
         /^\/api\/changes\/[^/]+\/runs$/.test(new URL(request.url).pathname) ||
         /^\/api\/projects\/[^/]+\/intake\/dispatch$/.test(new URL(request.url).pathname))
     )
-      return Response.json({ error: "provider_credential_unavailable" }, { status: 409 });
+      {
+        try {
+          if (path.startsWith("/api/threads/")) access.requireThread(path.split("/")[3]);
+          else if (path.startsWith("/api/changes/")) access.requireThread(coordinator.change(path.split("/")[3]).threadId);
+          else access.requireProject(coordinator.state.project.id);
+        } catch { return Response.json({ error: "not_found" }, { status: 404 }); }
+        return Response.json({ error: "provider_credential_unavailable" }, { status: 409 });
+      }
     const app = api(
       coordinator,
       (id) => this.env.EXECUTION_MODE === "fake"

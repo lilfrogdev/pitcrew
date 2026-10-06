@@ -185,8 +185,7 @@ it("stores synthetic images by immutable reference, replays exact bytes and reje
     ),
   ).toEqual(first);
   expect(rows.size).toBe(1);
-  expect(() =>
-    core.queueTurn(
+  const otherUser = core.queueTurn(
       thread.id,
       "Inspect this synthetic square",
       "image",
@@ -194,14 +193,15 @@ it("stores synthetic images by immutable reference, replays exact bytes and reje
       catalog,
       undefined,
       [image],
-    ),
-  ).toThrow("idempotency_conflict");
+    );
+  expect(otherUser.turn.id).not.toBe(first.turn.id);
+  expect(otherUser.turn.actor).toBe("other");
   const unsupported = structuredClone(catalog);
   unsupported.choices[0].imageLimits = undefined;
   expect(() => core.queueTurn(thread.id, "Followup", "next", "owner", unsupported)).toThrow(
     "attachment_images_unsupported",
   );
-  expect(core.state.messages).toHaveLength(1);
+  expect(core.state.messages).toHaveLength(2);
 });
 it("quarantines catalog-changed runs without accepting a late worker completion", async () => {
   const { fakeExecution } = await import("./coordinator");
