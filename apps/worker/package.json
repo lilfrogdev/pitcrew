@@ -4,12 +4,19 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@better-auth/drizzle-adapter": "1.7.7",
     "@earendil-works/pi-ai": "1.0.1",
     "@earendil-works/pi-durable": "1.0.1",
     "@pitcrew/execution": "workspace:*",
     "@pitcrew/protocol": "workspace:*",
     "agents": "0.26.0",
+    "better-auth": "1.7.7",
+    "drizzle-orm": "0.45.2",
     "hono": "4.13.12",
     "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "auth": "1.7.7",
+    "drizzle-kit": "0.31.4"
   }
 }
