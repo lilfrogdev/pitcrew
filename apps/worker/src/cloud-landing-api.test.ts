@@ -140,6 +140,10 @@ it("lands verified Artifacts evidence, holds uncertain cleanup, reconciles lost 
       });
       if (mode === "cleanup-failure") {
         expect((await get("/state", mode)).active).toHaveLength(1);
+        expect(await post("/api/projects/pitcrew/verification-profile", { expectedRevision: "poc-checks-v1",
+          profile: { projectId: "pitcrew", revision: "changed-profile", checks: [{ id: "whitespace", kind: "command",
+            command: { argv: ["git", "diff", "--check"], timeoutMs: 1000, maxOutputBytes: 1024 } }] } }, mode))
+          .toMatchObject({ status: 409, body: { error: "REPOSITORY_LANDING_BUSY" } });
         await get("/actor?value=other-actor", mode);
         expect(await post(`${runPath}/landing/reconcile`, { authorizationId: permitted.body.authorizationId }, mode))
           .toMatchObject({ status: 409, body: { error: "AUTHORIZATION_NOT_FOUND" } });

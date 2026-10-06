@@ -468,6 +468,9 @@ export class RepositoryAgent extends Agent<Env> {
         a = record.authorization;
       const evidence = core.evidence(run.id),
         review = evidence.reviews.at(-1);
+      const plan = core.state.plans?.[run.id];
+      if (plan && JSON.stringify(plan.profile) !== JSON.stringify(core.profile()))
+        throw new ExecutionError("LANDING_EVIDENCE_REJECTED");
       if (
         !["pending", "uncertain"].includes(record.state) ||
         a.expiresAt <= Date.now() ||
@@ -1065,8 +1068,17 @@ export class RepositoryAgent extends Agent<Env> {
             );
           if (previous) {
             const prior = JSON.parse(previous) as State;
+            const configuration = (entry: State) => JSON.stringify([entry.project.id, entry.project.repository,
+              entry.project.baseSha, entry.project.configurationRevision, entry.profile]);
+            if (this.env.ARTIFACT_REPOSITORY && configuration(prior) !== configuration(state))
+              this.getLandingStore().assertRepositoryIdle(this.env.ARTIFACT_REPOSITORY);
             for (const [id, entry] of Object.entries(prior.ownedProjects ?? {})) {
               const next = state.ownedProjects?.[id];
+              if (next && (configuration(entry.state) !== configuration(next.state) ||
+                entry.sourceName !== next.sourceName || entry.sourceId !== next.sourceId)) {
+                this.getLandingStore().assertRepositoryIdle(entry.sourceName);
+                this.getLandingStore().assertRepositoryIdle(next.sourceName);
+              }
               if (next)
                 assertConfigurationIdle(
                   this.getLandingStore(),
