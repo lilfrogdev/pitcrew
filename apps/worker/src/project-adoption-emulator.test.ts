@@ -78,6 +78,7 @@ async function fixture() {
     snapshot(): Promise<{ calls: string[] }>;
   };
   const cookies = new Map<string, string>();
+  const usernames = new Map<string, string>();
   let seq = 0;
   const request = (path: string, email = ownerEmail, body?: unknown) =>
     mf.dispatchFetch(base + "/app/api" + path, {
@@ -91,7 +92,10 @@ async function fixture() {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   const login = async (email: string) => {
-    const response = await request("/auth/sign-in/email", email, { email, password });
+    const response = await request("/auth/sign-in/username", email, {
+      username: usernames.get(email),
+      password,
+    });
     expect(response.status, await response.clone().text()).toBe(200);
     cookies.set(
       email,
@@ -122,6 +126,7 @@ async function fixture() {
       username,
     });
     expect(response.status, await response.clone().text()).toBe(200);
+    usernames.set(email, username);
     return login(email);
   };
   const waitPaused = async () => {
@@ -200,8 +205,14 @@ it("empty native accounts adopt only the exact approved source through productio
     expect(after.collaboration).toEqual(before.collaboration);
     expect(after.identityBindings).toEqual(before.identityBindings);
     expect(after.ownedProjects![legacy.id]).toEqual(before.ownedProjects![legacy.id]);
-    expect(after.ownedProjects![project.id].state.collaboration!.projectMembers).toEqual({
-      [owner]: { actor: owner, email: ownerEmail, role: "owner" },
+    expect(after.ownedProjects![project.id].state.collaboration!.projectMembers).toMatchObject({
+      [owner]: {
+        actor: owner,
+        email: ownerEmail,
+        role: "owner",
+        username: "owner",
+        displayName: "owner",
+      },
     });
     expect(await credentials.ciphertext()).toBe(ciphertext);
     expect(await (await f.request("/projects", bryanEmail)).json()).toEqual([]);
@@ -215,7 +226,13 @@ it("empty native accounts adopt only the exact approved source through productio
     const members = await (await f.request(`/projects/${project.id}/members`)).json();
     expect(members).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ actor: bryan, email: bryanEmail, role: "editor" }),
+        expect.objectContaining({
+          actor: bryan,
+          email: bryanEmail,
+          role: "editor",
+          username: "bryan",
+          displayName: "bryan",
+        }),
       ]),
     );
     expect(

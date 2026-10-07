@@ -70,8 +70,10 @@ it("offers only password sign-in without public signup, reset, verification, or 
     "Retry session",
   ]);
   expect(screen.queryByRole("link")).toBeNull();
-  expect(screen.queryByLabelText("Name")).toBeNull();
-  expect(screen.queryByLabelText("Username")).toBeNull();
+  expect(screen.queryByLabelText("Full name (optional)")).toBeNull();
+  expect(screen.getByLabelText("Username")).toHaveProperty("autocomplete", "username");
+  expect(screen.getByLabelText("Password")).toHaveProperty("autocomplete", "current-password");
+  expect(screen.queryByLabelText("Email")).toBeNull();
 });
 
 it("clears a failed sign-in password without reflecting sensitive diagnostics", async () => {
@@ -84,12 +86,12 @@ it("clears a failed sign-in password without reflecting sensitive diagnostics", 
     </AuthGate>,
   );
   await screen.findByRole("heading", { name: "Sign in" });
-  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  await user.type(screen.getByLabelText("Username"), "Owner_Handle");
   const password = screen.getByLabelText("Password") as HTMLInputElement;
   await user.type(password, "wrong-password");
   await user.click(screen.getByRole("button", { name: "Sign in" }));
-  await screen.findByText("Could not sign in. Check your email and password.");
-  expect(api.signIn).toHaveBeenCalledWith("owner@example.com", "wrong-password");
+  await screen.findByText("Could not sign in. Check your username and password.");
+  expect(api.signIn).toHaveBeenCalledWith("owner_handle", "wrong-password");
   expect(password.value).toBe("");
   expect(screen.queryByText("Private work")).toBeNull();
   expect(document.body.textContent).not.toContain("synthetic-sensitive-diagnostic");
@@ -108,13 +110,13 @@ it("checks the session after personally entered credentials succeed", async () =
     </AuthGate>,
   );
   await screen.findByRole("heading", { name: "Sign in" });
-  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  await user.type(screen.getByLabelText("Username"), "Owner_Handle");
   const password = screen.getByLabelText("Password") as HTMLInputElement;
   await user.type(password, "synthetic-password");
   await user.click(screen.getByRole("button", { name: "Sign in" }));
   await screen.findByText("Private work");
   expect(password.value).toBe("");
-  expect(api.signIn).toHaveBeenCalledWith("owner@example.com", "synthetic-password");
+  expect(api.signIn).toHaveBeenCalledWith("owner_handle", "synthetic-password");
   expect(api.session).toHaveBeenCalledTimes(2);
 });
 
@@ -130,7 +132,7 @@ it("ignores a session read started before sign-in and suppresses background chec
     </AuthGate>,
   );
   await screen.findByRole("heading", { name: "Sign in" });
-  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  await user.type(screen.getByLabelText("Username"), "Owner_Handle");
   await user.type(screen.getByLabelText("Password"), "synthetic-password");
   vi.mocked(api.session).mockImplementationOnce(
     () =>
@@ -189,12 +191,12 @@ it("strips the private setup fragment before any API request and submits the rec
   expect(screen.queryByLabelText("Email")).toBeNull();
   expect(screen.queryByLabelText("Code")).toBeNull();
   expect(document.body.innerHTML).not.toContain(setupCode);
-  await user.type(screen.getByLabelText("Name"), "Lilfrog");
+  await user.type(screen.getByLabelText("Full name (optional)"), "Lilfrog");
   await user.type(screen.getByLabelText("Username"), "lilfrog");
   const password = screen.getByLabelText("Password") as HTMLInputElement;
   await user.type(password, "synthetic-password");
   await user.click(screen.getByRole("button", { name: "Set password" }));
-  await screen.findByText("Account ready. Sign in with your email and password.");
+  await screen.findByText("Account ready. Sign in with your username and password.");
   expect(api.enroll).toHaveBeenCalledOnce();
   expect(api.enroll).toHaveBeenCalledWith("Lilfrog", "lilfrog", setupCode, "synthetic-password");
   expect(api.signIn).not.toHaveBeenCalled();
@@ -237,8 +239,8 @@ it("allows an enrollment retry without retaining passwords or leaking the setup 
       <div>Private work</div>
     </AuthGate>,
   );
-  await screen.findByLabelText("Name");
-  await user.type(screen.getByLabelText("Name"), "Lilfrog");
+  await screen.findByLabelText("Full name (optional)");
+  await user.type(screen.getByLabelText("Full name (optional)"), "Lilfrog");
   await user.type(screen.getByLabelText("Username"), "lilfrog");
   await user.type(screen.getByLabelText("Password"), "synthetic-password");
   await user.click(screen.getByRole("button", { name: "Set password" }));
@@ -365,7 +367,7 @@ it("does not revive work when a pending sign-in finishes after auth is required"
     </AuthGate>,
   );
   await screen.findByRole("heading", { name: "Sign in" });
-  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  await user.type(screen.getByLabelText("Username"), "Owner_Handle");
   await user.type(screen.getByLabelText("Password"), "synthetic-password");
   await user.click(screen.getByRole("button", { name: "Sign in" }));
   fireEvent(window, new Event("pitcrew-auth-required"));
@@ -374,6 +376,51 @@ it("does not revive work when a pending sign-in finishes after auth is required"
   await act(async () => complete());
   expect(api.session).toHaveBeenCalledTimes(2);
   expect(screen.queryByText("Private work")).toBeNull();
-  expect(screen.getByLabelText("Email")).toHaveProperty("value", "");
+  expect(screen.getByLabelText("Username")).toHaveProperty("value", "");
   expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+});
+
+it.each(["ab", "two-words", "élise"])(
+  "rejects invalid username %s before sign-in",
+  async (username) => {
+    const api = auth();
+    const user = userEvent.setup();
+    render(
+      <AuthGate api={api}>
+        <div>Private work</div>
+      </AuthGate>,
+    );
+    const input = await screen.findByLabelText("Username");
+    expect(input).toHaveProperty("minLength", 3);
+    expect(input).toHaveProperty("maxLength", 32);
+    expect(input).toHaveProperty("pattern", "[a-zA-Z0-9_]{3,32}");
+    await user.type(input, username);
+    await user.type(screen.getByLabelText("Password"), "synthetic-password");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(api.signIn).not.toHaveBeenCalled();
+  },
+);
+
+it("enrolls with a canonical username and an optional full name", async () => {
+  history.replaceState(null, "", `/auth/enroll#code=${setupCode}`);
+  const api = auth();
+  const user = userEvent.setup();
+  render(
+    <AuthGate api={api}>
+      <div>Private work</div>
+    </AuthGate>,
+  );
+  const name = await screen.findByLabelText("Full name (optional)");
+  expect(name).toHaveProperty("required", false);
+  expect(screen.getByLabelText("Password")).toHaveProperty("autocomplete", "new-password");
+  await user.type(screen.getByLabelText("Username"), "Crew_Mate");
+  await user.type(screen.getByLabelText("Password"), "synthetic-password");
+  await user.click(screen.getByRole("button", { name: "Set password" }));
+  await screen.findByRole("heading", { name: "Sign in" });
+  expect(api.enroll).toHaveBeenCalledExactlyOnceWith(
+    "",
+    "crew_mate",
+    setupCode,
+    "synthetic-password",
+  );
 });

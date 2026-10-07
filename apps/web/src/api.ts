@@ -59,6 +59,7 @@ export type Account = {
   actor: string;
   email: string;
   displayName?: string;
+  username?: string;
   avatar?: string | null;
 };
 export type Member = Account & { role: "owner" | "editor" };

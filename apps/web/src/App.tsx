@@ -902,9 +902,12 @@ export function App({
             ) : (
               snapshot.messages.map((message) => {
                 const isSelf = !!viewer && message.author?.actor === `account:${viewer.id}`;
-                const authorName = isSelf
-                  ? viewer.username || viewer.name
-                  : message.author?.displayName || message.author?.email || "Participant";
+                const authorName =
+                  message.author?.username ||
+                  (isSelf ? viewer.username || viewer.name : undefined) ||
+                  message.author?.displayName ||
+                  message.author?.email ||
+                  "Participant";
                 const authorImage = isSelf ? viewer.image : message.author?.avatar;
                 return (
                   <article className={`message ${message.role}`} key={message.id}>

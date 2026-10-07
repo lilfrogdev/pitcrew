@@ -6,7 +6,10 @@ the frontend; it has not been pushed, merged or deployed.
 
 ## Delivered UI
 
-- Sign in, enroll, verification, reset, sign out and name/username editing.
+- Native username/password sign-in, private controlled enrollment, sign out and
+  username editing with optional full name. Usernames are case-insensitive;
+  enrollment/profile requests normalize to lowercase. Native recovery and public
+  signup remain unavailable. Earlier verification/reset support is legacy-only.
   Passwords are not retained in component state. Verification/reset tokens are
   removed from the location immediately. Auth changes remount private app state.
 - Account-scoped repository directory, with honest empty and interrupted states.
@@ -16,6 +19,10 @@ the frontend; it has not been pushed, merged or deployed.
 - Server participant identity and shared messages, with reconnect polling,
   visibility refresh and access-loss cleanup. Disabled execution permits human
   notes and creates no agent run. Attachments require execution.
+- Messages for self and other participants prefer the actual verified author
+  username. Account/member labels prefer usernames too. Full name and email are
+  fallbacks for historical records without usernames. Stable account IDs select
+  authorization and the local viewer picture; mutable usernames never do.
 - A shared Avatar renderer for account navigation and transcript authors. It uses
   the approved account image when present and a neutral fallback when absent.
   The two supplied reference images were inspected: transcript username/initial

@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { NATIVE_AUTH_RECIPIENTS } from "../packages/protocol/src/native-auth-recipients.mjs";
 import { createRequire } from "node:module";
 import { BACKEND_ACCESS, readCachedAccessToken, verifyUserAccessToken } from "./backend-relay.mjs";
 const requireWorker = createRequire(new URL("../apps/worker/package.json", import.meta.url));
@@ -22,7 +23,7 @@ const routes = new Map([
 ]);
 const passwordRoutes = new Map([
   ["/api/auth/enroll", "POST"],
-  ["/api/auth/sign-in/email", "POST"],
+  ["/api/auth/sign-in/username", "POST"],
   ["/api/auth/sign-out", "POST"],
   ["/api/auth/get-session", "GET"],
   ["/api/auth/update-user", "POST"],
@@ -120,7 +121,7 @@ function safeUser(value, passwordMode) {
     !u ||
     typeof u.id !== "string" ||
     u.id.length > 128 ||
-    !BACKEND_ACCESS.emails.includes(u.email) ||
+    !(passwordMode ? NATIVE_AUTH_RECIPIENTS : BACKEND_ACCESS.emails).includes(u.email) ||
     (passwordMode ? typeof u.emailVerified !== "boolean" : u.emailVerified !== true) ||
     typeof u.name !== "string" ||
     u.name.length > 80 ||
@@ -270,6 +271,7 @@ export function createAuthRelayMiddleware({
     if (
       [
         "/api/auth/sign-in/email",
+        "/api/auth/sign-in/username",
         "/api/auth/sign-out",
         "/api/auth/revoke-sessions",
         "/api/auth/reset-password",
@@ -290,7 +292,8 @@ export function createAuthRelayMiddleware({
             Origin: BACKEND_ACCESS.origin,
             ...(!passwordMode ? { "Cf-Access-Token": token } : {}),
             ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-            ...(sentCookie && url.pathname !== "/api/auth/sign-in/email"
+            ...(sentCookie &&
+            !["/api/auth/sign-in/email", "/api/auth/sign-in/username"].includes(url.pathname)
               ? { Cookie: sentCookie }
               : {}),
           },
@@ -331,7 +334,10 @@ export function createAuthRelayMiddleware({
         if (url.pathname === "/api/auth/get-session" && output === null) nextCookie = undefined;
         // Installing a sign-in cookie is a second boundary: refreshes issued
         // while sign-in was pending queried the previous (empty) state.
-        if (nextCookie !== s.cloudCookie || url.pathname === "/api/auth/sign-in/email") {
+        if (
+          nextCookie !== s.cloudCookie ||
+          ["/api/auth/sign-in/email", "/api/auth/sign-in/username"].includes(url.pathname)
+        ) {
           s.cloudCookie = nextCookie;
           s.generation++;
         }

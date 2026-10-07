@@ -67,7 +67,8 @@ it("denies lifecycle, paid runs, publisher routes and unused auth methods", () =
     "/api/runs/r/landing",
     "/api/runs/r/landing/reconcile",
     "/api/auth/sign-up/email",
-    "/api/auth/sign-in/username",
+    "/api/auth/sign-in/email",
+    "/api/auth/is-username-available",
     "/api/auth/send-verification-email",
     "/api/auth/request-password-reset",
     "/api/projects/p/threads/t/visualizations",
@@ -84,7 +85,7 @@ it("denies lifecycle, paid runs, publisher routes and unused auth methods", () =
   }
   for (const action of [
     "enroll",
-    "sign-in/email",
+    "sign-in/username",
     "sign-out",
     "revoke-sessions",
     "update-user",
@@ -133,4 +134,18 @@ it("fails closed on wrong mode, origin, methods, selectors and ambiguous encodin
     "/app/api/projects/p/events?after=-1",
   ])
     expect(status(passwordIngressRequest(request(path), env))).toBeGreaterThanOrEqual(400);
+});
+
+it("admits native username sign-in without admitting legacy email or enumeration routes", () => {
+  const input = new Request(base + "/app/api/auth/sign-in/username", {
+    method: "POST",
+    headers: { origin: base, "content-type": "application/json", "cf-connecting-ip": "192.0.2.1" },
+    body: JSON.stringify({ username: "MiXeD_owner", password: "synthetic-password" }),
+  });
+  const normalized = passwordIngressRequest(input, env);
+  expect(normalized).toBeInstanceOf(Request);
+  if (!(normalized instanceof Request)) throw Error();
+  expect(normalized.url).toBe(base + "/api/auth/sign-in/username");
+  expect(normalized.headers.get("cf-connecting-ip")).toBe("192.0.2.1");
+  expect(passwordApiRoute("/api/auth/sign-in/username", "GET")).toBe(false);
 });

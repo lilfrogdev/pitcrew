@@ -1,15 +1,17 @@
 import { betterAuth } from "better-auth";
+import { username } from "better-auth/plugins";
+import { normalizeUsername, validUsername } from "./auth-username";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./auth-schema";
 import { authOptions } from "./auth-options";
 import type { AuthEnv } from "./auth";
+import { NATIVE_AUTH_RECIPIENTS as recipients } from "../../../packages/protocol/src/native-auth-recipients.mjs";
 
-const recipients = ["dev@lilfrogdev.com", "bryan.aldair.zamora@gmail.com"];
 type Grant = { id: string; recipient_email: string };
 export const passwordAuthPaths = new Map([
   ["/api/auth/enroll", "POST"],
-  ["/api/auth/sign-in/email", "POST"],
+  ["/api/auth/sign-in/username", "POST"],
   ["/api/auth/get-session", "GET"],
   ["/api/auth/sign-out", "POST"],
   ["/api/auth/revoke-sessions", "POST"],
@@ -18,7 +20,7 @@ export const passwordAuthPaths = new Map([
 ]);
 const fields: Record<string, string[]> = {
   enroll: ["code", "password", "name", "username", "image"],
-  "sign-in/email": ["email", "password"],
+  "sign-in/username": ["username", "password"],
   "sign-out": [],
   "revoke-sessions": [],
   "update-user": ["name", "username", "image"],
@@ -49,6 +51,16 @@ function buildAuth(
 ) {
   return betterAuth({
     ...authOptions,
+    plugins: [
+      username({
+        displayUsername: false,
+        minUsernameLength: 3,
+        maxUsernameLength: 32,
+        usernameValidator: validUsername,
+        usernameNormalization: normalizeUsername,
+      }),
+    ],
+    disabledPaths: ["/is-username-available"],
     database: drizzleAdapter(drizzle(env.AUTH_DB, { schema }), {
       provider: "sqlite",
       schema,
@@ -163,12 +175,12 @@ export function configuredPasswordAuth(
       const rule =
         action === "enroll"
           ? { window: 3600, max: 30 }
-          : ["sign-in/email", "change-password"].includes(action)
+          : ["sign-in/username", "change-password"].includes(action)
             ? { window: 300, max: 120 }
             : { window: 60, max: 300 };
       retry = await consume(`password:global:${action}`, rule.window, rule.max);
       if (retry !== null) return retry;
-      const sensitive = ["enroll", "sign-in/email", "change-password"].includes(action);
+      const sensitive = ["enroll", "sign-in/username", "change-password"].includes(action);
       return consume(
         `password:ip:${await capabilityHash(JSON.stringify([ip, action]))}`,
         sensitive ? 300 : 60,
@@ -204,7 +216,7 @@ export function configuredPasswordAuth(
         body: {
           email: grant.recipient_email,
           password: body.password as string,
-          name: body.name as string,
+          name: (body.name as string | undefined) ?? "",
           username: body.username as string,
           ...(body.image ? { image: body.image as string } : {}),
         },
@@ -281,10 +293,8 @@ async function bodyJSON(request: Request) {
 }
 function validProfile(body: Record<string, unknown>, required: boolean) {
   return (
-    ((!required && !("name" in body)) ||
-      (typeof body.name === "string" && !!body.name.trim() && body.name.length <= 80)) &&
-    ((!required && !("username" in body)) ||
-      (typeof body.username === "string" && /^[a-zA-Z0-9_]{3,32}$/.test(body.username))) &&
+    (body.name === undefined || (typeof body.name === "string" && body.name.length <= 80)) &&
+    ((!required && !("username" in body)) || validUsername(body.username)) &&
     (body.image === undefined ||
       body.image === null ||
       (typeof body.image === "string" && /^\/avatars\/[a-z0-9_-]{1,40}\.svg$/.test(body.image)))
@@ -338,31 +348,32 @@ export async function passwordAuthRequest(
         if (retry !== null) return errorResponse("rate_limited", 429, retry);
         return await auth.enroll(body, request.headers);
       }
-      if (action === "sign-in/email") {
+      if (action === "sign-in/username") {
         if (
-          typeof body.email !== "string" ||
-          body.email.length > 254 ||
+          !validUsername(body.username) ||
           typeof body.password !== "string" ||
           body.password.length > 128
         )
           return errorResponse("invalid_credentials", 401);
-        const email = body.email.toLowerCase();
-        // Nonexistent and ineligible identities share the same public error.
-        const retry = await auth.consumePurpose(
-          "sign-in/email",
-          recipients.includes(email) ? email : "unknown",
-        );
+        const normalized = normalizeUsername(body.username as string);
+        const retry = await auth.consumePurpose("sign-in/username", normalized);
         if (retry !== null) return errorResponse("rate_limited", 429, retry);
         const context = await auth.$context;
-        const found = recipients.includes(email)
-          ? await context.internalAdapter.findUserByEmail(email)
-          : null;
-        if (!found || !(await eligible(auth, found.user))) {
-          // Preserve the password hash work for unknown/ineligible accounts.
+        const found = await context.adapter.findOne<{
+          id: string;
+          email: string;
+          accessActor?: unknown;
+        }>({
+          model: "user",
+          where: [{ field: "username", value: normalized }],
+        });
+        // Username lookup never grants authority: only the original consumed
+        // enrollment capability and immutable account ID admit a principal.
+        if (!found || !(await eligible(auth, found))) {
           await context.password.hash(body.password);
           return errorResponse("invalid_credentials", 401);
         }
-        body.email = email;
+        body.username = normalized;
       } else if (action !== "get-session") {
         const user = await passwordAuthUser(auth, request);
         if (!user) return errorResponse("unauthorized", 401);
@@ -370,6 +381,7 @@ export async function passwordAuthRequest(
       }
       if (action === "update-user" && !validProfile(body, false))
         return errorResponse("invalid_profile", 400);
+      if (typeof body.username === "string") body.username = normalizeUsername(body.username);
       if (action === "change-password") {
         if (
           !validPassword(body.newPassword) ||
@@ -405,10 +417,14 @@ export async function passwordAuthRequest(
         return errorResponse(
           response.status === 429
             ? "rate_limited"
-            : action === "sign-in/email"
+            : action === "sign-in/username"
               ? "invalid_credentials"
               : "auth_request_failed",
-          response.status >= 500 ? 503 : response.status,
+          response.status >= 500
+            ? 503
+            : action === "sign-in/username" && response.status !== 429
+              ? 401
+              : response.status,
         );
       if (action === "sign-out") {
         // The library can swallow a failed deletion; success requires its

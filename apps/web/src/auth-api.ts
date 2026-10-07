@@ -9,7 +9,7 @@ export type AuthUser = {
 export type AuthSession = { user: AuthUser };
 export interface AuthApi {
   session(): Promise<AuthSession | null>;
-  signIn(email: string, password: string): Promise<void>;
+  signIn(username: string, password: string): Promise<void>;
   enroll(name: string, username: string, code: string, password: string): Promise<void>;
   signOut(): Promise<void>;
   updateUser(profile: { name: string; username: string }): Promise<void>;
@@ -90,17 +90,20 @@ export const httpAuthApi: AuthApi = {
       },
     };
   },
-  signIn: async (email, password) => {
-    await authRequest("sign-in/email", { email, password });
+  signIn: async (username, password) => {
+    await authRequest("sign-in/username", { username: username.trim().toLowerCase(), password });
   },
   enroll: async (name, username, code, password) => {
-    await authRequest("enroll", { name, username, code, password });
+    await authRequest("enroll", { name, username: username.trim().toLowerCase(), code, password });
   },
   signOut: async () => {
     await authRequest("sign-out", {});
   },
   updateUser: async (profile) => {
-    await authRequest("update-user", profile);
+    await authRequest("update-user", {
+      ...profile,
+      username: profile.username.trim().toLowerCase(),
+    });
     window.dispatchEvent(new Event("pitcrew-auth-updated"));
   },
 };

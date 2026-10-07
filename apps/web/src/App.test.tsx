@@ -126,7 +126,9 @@ describe("project conversations", () => {
     render(<App api={api} demo viewer={owner} />);
     await openReview();
     expect(
-      screen.getByRole("button", { name: "Land approved candidate" }).hasAttribute("disabled"),
+      (await screen.findByRole("button", { name: "Land approved candidate" })).hasAttribute(
+        "disabled",
+      ),
     ).toBe(true);
     expect(screen.queryByText("Completed")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Check landing receipt" }));

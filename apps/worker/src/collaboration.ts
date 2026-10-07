@@ -25,6 +25,9 @@ export type Identity = {
   username?: string;
   avatar?: string | null;
 };
+export type CollaborationAuthority = <T>(
+  operation: (identity: Identity) => T | Promise<T>,
+) => Promise<T>;
 const emailPattern = /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/;
 const missing = (): never => {
   throw new AdmissionError("not_found", 404);
@@ -87,6 +90,37 @@ export class Collaboration {
   }
   account() {
     return { ...this.identity };
+  }
+  /** Refresh labels from a verified session, without changing membership or authorship. */
+  refreshProfile() {
+    const access = this.state();
+    if (!access?.projectMembers[this.identity.actor]) return;
+    const profile = {
+      displayName: this.identity.displayName,
+      username: this.identity.username,
+      avatar: this.identity.avatar,
+    };
+    const differs = (member: Member) =>
+      member.displayName !== profile.displayName ||
+      member.username !== profile.username ||
+      member.avatar !== profile.avatar;
+    const members = [
+      access.projectMembers[this.identity.actor],
+      ...Object.values(access.threadMembers).flatMap((thread) =>
+        thread[this.identity.actor] ? [thread[this.identity.actor]] : [],
+      ),
+    ];
+    if (!members.some(differs)) return;
+    this.core.updateCollaboration((state) => {
+      const current = state.collaboration!;
+      const member = current.projectMembers[this.identity.actor];
+      if (!member) return;
+      current.projectMembers[this.identity.actor] = { ...member, ...profile };
+      for (const thread of Object.values(current.threadMembers)) {
+        const prior = thread[this.identity.actor];
+        if (prior) thread[this.identity.actor] = { ...prior, ...profile };
+      }
+    });
   }
   rebindLegacy(accessActor: string) {
     if (accessActor === this.identity.actor || !this.core.state.collaboration) return;
@@ -202,9 +236,10 @@ export class Collaboration {
     if (invite.email !== this.identity.email && this.projectRole() !== "owner") missing();
     return this.publicInvitation(invite);
   }
-  async accept(token: string) {
+  async accept(token: string, identity = this.identity) {
+    if (identity.actor !== this.identity.actor || identity.email !== this.identity.email) missing();
     const invite = await this.find(token);
-    if (invite.email !== this.identity.email) missing();
+    if (invite.email !== identity.email) missing();
     return this.core.updateCollaboration((state) => {
       const current = state.collaboration?.invitations[invite.id];
       if (
@@ -226,7 +261,7 @@ export class Collaboration {
           : !threadInviter || (threadInviter.role !== "owner" && inviter.role !== "owner"))
       )
         throw new AdmissionError("invitation_unavailable", 410);
-      const member: Member = { ...this.identity, role: current.role };
+      const member: Member = { ...identity, role: current.role };
       if (current.scope === "thread") {
         if (
           !state.collaboration?.projectMembers[this.identity.actor] ||

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { createAuthRelayMiddleware, authRelayPlugin } from "./auth-relay.mjs";
 import { BACKEND_ACCESS } from "./backend-relay.mjs";
+import { NATIVE_AUTH_RECIPIENTS } from "../packages/protocol/src/native-auth-recipients.mjs";
 const origin = "http://localhost:5173";
 const jwt = (sub = "owner", email = "dev@lilfrogdev.com") =>
   ["e30", Buffer.from(JSON.stringify({ sub, email })).toString("base64url"), "synthetic"].join(".");
@@ -351,7 +352,7 @@ test("password mode never reads Access, accepts unverified controlled sessions a
             }
           : { status: true, token: "must-not-leak" },
         {
-          headers: url.endsWith("sign-in/email")
+          headers: url.endsWith("sign-in/username")
             ? { "Set-Cookie": cloudCookie + "; HttpOnly; Secure" }
             : {},
         },
@@ -369,6 +370,8 @@ test("password mode never reads Access, accepts unverified controlled sessions a
     "reset-password",
     "send-verification-email",
     "sign-in/social",
+    "sign-in/email",
+    "is-username-available",
   ])
     assert.equal(
       (await call(relay, request(`/api/auth/${path}`, { ...options, method: "POST", body: {} })))
@@ -377,16 +380,16 @@ test("password mode never reads Access, accepts unverified controlled sessions a
     );
   const login = await call(
     relay,
-    request("/api/auth/sign-in/email", {
+    request("/api/auth/sign-in/username", {
       ...options,
       method: "POST",
-      body: { email: "dev@lilfrogdev.com", password: "synthetic" },
+      body: { username: "OwNeR", password: "synthetic" },
       headers: { "cf-access-jwt-assertion": "injected", authorization: "injected" },
     }),
   );
   assert.deepEqual(login.value, { status: true });
   assert.equal(login.headers["Set-Cookie"], undefined);
-  assert.equal(calls[0].url, BACKEND_ACCESS.origin + "/app/api/auth/sign-in/email");
+  assert.equal(calls[0].url, BACKEND_ACCESS.origin + "/app/api/auth/sign-in/username");
   assert.deepEqual(calls[0].init.headers, {
     Origin: BACKEND_ACCESS.origin,
     "Content-Type": "application/json",
@@ -419,7 +422,7 @@ test("late sign-in and session responses cannot restore a locally revoked passwo
     enabled: true,
     passwordMode: true,
     requestBackend: async (url) => {
-      if (url.endsWith("sign-in/email")) {
+      if (url.endsWith("sign-in/username")) {
         started();
         await paused;
         return Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } });
@@ -434,7 +437,7 @@ test("late sign-in and session responses cannot restore a locally revoked passwo
   };
   const login = call(
     relay,
-    request("/api/auth/sign-in/email", { ...options, method: "POST", body: {} }),
+    request("/api/auth/sign-in/username", { ...options, method: "POST", body: {} }),
   );
   await seen;
   assert.equal(
@@ -458,7 +461,7 @@ async function passwordFixture(requestBackend) {
     relay,
     options,
     login: () =>
-      call(relay, request("/api/auth/sign-in/email", { ...options, method: "POST", body: {} })),
+      call(relay, request("/api/auth/sign-in/username", { ...options, method: "POST", body: {} })),
     session: () => call(relay, request("/api/auth/get-session", options)),
     headers: () => relay.sessionHeaders(request("/api/projects", options)),
   };
@@ -470,7 +473,7 @@ test("a null refresh started during sign-in cannot clear the subsequently instal
   const loginResponse = Promise.withResolvers();
   const refreshResponse = Promise.withResolvers();
   const f = await passwordFixture(async (url, init) => {
-    if (url.endsWith("sign-in/email")) {
+    if (url.endsWith("sign-in/username")) {
       loginStarted.resolve();
       return loginResponse.promise;
     }
@@ -497,7 +500,7 @@ test("a failing refresh of an empty session cannot cancel a pending successful s
       const started = Promise.withResolvers();
       const response = Promise.withResolvers();
       const f = await passwordFixture(async (url) => {
-        if (url.endsWith("sign-in/email")) {
+        if (url.endsWith("sign-in/username")) {
           started.resolve();
           return response.promise;
         }
@@ -531,7 +534,7 @@ test("delayed failures and logout from another tab cannot wipe a newer sign-in",
         const delayed = Promise.withResolvers();
         let loginCount = 0;
         const f = await passwordFixture(async (url) => {
-          if (url.endsWith("sign-in/email")) {
+          if (url.endsWith("sign-in/username")) {
             loginCount++;
             return Response.json(
               { status: true },
@@ -598,7 +601,7 @@ test("a logout waiting for its request body cannot acquire a newer sign-in cooki
   body.push(null);
   assert.equal((await pending).status, 409);
   assert.equal(calls.length, 1);
-  assert.ok(calls[0].url.endsWith("sign-in/email"));
+  assert.ok(calls[0].url.endsWith("sign-in/username"));
   assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
 });
 
@@ -606,7 +609,7 @@ test("repeated overlapping tab refreshes cannot restore or clear later session s
   let pending;
   let counter = 0;
   const f = await passwordFixture(async (url) => {
-    if (url.endsWith("sign-in/email"))
+    if (url.endsWith("sign-in/username"))
       return Response.json(
         { status: true },
         {
@@ -628,5 +631,110 @@ test("repeated overlapping tab refreshes cannot restore or clear later session s
     pending.response.resolve(Response.json(null));
     await old;
     assert.deepEqual(await f.headers(), { Cookie: cloudCookie + counter });
+  }
+});
+
+test("native relay accepts exactly the four ordinary account identifiers without reading Access or exposing credentials", async () => {
+  for (const email of [
+    ...NATIVE_AUTH_RECIPIENTS,
+    "outsider@example.com",
+    "John.Cena@example.com",
+  ]) {
+    let accessReads = 0;
+    const relay = createAuthRelayMiddleware({
+      enabled: true,
+      passwordMode: true,
+      tokenProvider: async () => {
+        accessReads++;
+        throw Error("No Access fallback");
+      },
+      verifyAccess: async () => {
+        accessReads++;
+        throw Error("No Access fallback");
+      },
+      requestBackend: async (url) =>
+        Response.json(
+          url.endsWith("get-session")
+            ? {
+                user: {
+                  id: "ordinary-stable-account",
+                  email,
+                  emailVerified: false,
+                  name: "",
+                  username: "johncena",
+                  image: null,
+                  accessActor: "must-not-leak",
+                  token: "must-not-leak",
+                },
+              }
+            : { status: true, token: "must-not-leak" },
+          { headers: { "Set-Cookie": cloudCookie } },
+        ),
+    });
+    const local = await call(relay, request("/api/auth/local-session"));
+    const options = {
+      cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+      nonce: local.value.nonce,
+    };
+    const login = await call(
+      relay,
+      request("/api/auth/sign-in/username", {
+        ...options,
+        method: "POST",
+        body: { username: "johncena", password: "synthetic" },
+      }),
+    );
+    assert.deepEqual(login.value, { status: true });
+    assert.equal(login.headers["Set-Cookie"], undefined);
+    const session = await call(relay, request("/api/auth/get-session", options));
+    assert.equal(session.status, NATIVE_AUTH_RECIPIENTS.includes(email) ? 200 : 502);
+    assert.equal(JSON.stringify(session.value).includes("must-not-leak"), false);
+    assert.equal(accessReads, 0);
+  }
+});
+test("demo identifiers never expand legacy Access admission or legacy session projection", async () => {
+  assert.deepEqual(BACKEND_ACCESS.emails, ["dev@lilfrogdev.com", "bryan.aldair.zamora@gmail.com"]);
+  for (const email of ["john.cena@example.com", "lara.croft@example.com"]) {
+    let backendCalls = 0;
+    const relay = createAuthRelayMiddleware({
+      enabled: true,
+      userAccessSession: true,
+      tokenProvider: async () => jwt("synthetic-demo-subject", email),
+      verifyAccess: async () => Math.floor(Date.now() / 1000) + 1800,
+      requestBackend: async () => {
+        backendCalls++;
+        return Response.json({ status: true });
+      },
+    });
+    const local = await call(relay, request("/api/auth/local-session"));
+    const options = {
+      cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+      nonce: local.value.nonce,
+    };
+    const denied = await call(
+      relay,
+      request("/api/auth/sign-in/email", {
+        ...options,
+        method: "POST",
+        body: { email, password: "synthetic" },
+      }),
+    );
+    assert.equal(denied.status, 401);
+    assert.equal(backendCalls, 0);
+    assert.deepEqual(await relay.sessionHeaders(request("/api/projects", options)), {});
+    const legacy = await fixture(async () =>
+      Response.json({
+        user: {
+          id: "demo",
+          email,
+          emailVerified: true,
+          name: "Demo",
+          username: "johncena",
+          image: null,
+        },
+      }),
+    );
+    const session = await call(legacy.relay, request("/api/auth/get-session", legacy));
+    assert.equal(session.status, 502);
   }
 });

@@ -178,6 +178,7 @@ export class Coordinator {
     actor: string,
     email: string,
     configuration?: Pick<Project, "baseSha" | "configurationRevision">,
+    profile?: import("./collaboration").Identity,
   ) {
     return this.durableUpdate(() => {
       const directory = (this.state.ownedProjects ??= {});
@@ -196,7 +197,20 @@ export class Coordinator {
         ...configuration,
       });
       projectState.collaboration = {
-        projectMembers: { [actor]: { actor, email, role: "owner" } },
+        projectMembers: {
+          [actor]: {
+            actor,
+            email,
+            role: "owner",
+            ...(profile
+              ? {
+                  username: profile.username,
+                  displayName: profile.displayName,
+                  avatar: profile.avatar,
+                }
+              : {}),
+          },
+        },
         threadMembers: {},
         invitations: {},
       };

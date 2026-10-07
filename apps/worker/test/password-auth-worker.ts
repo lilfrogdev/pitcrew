@@ -56,7 +56,9 @@ export class PasswordAuthFixture extends DurableObject<AuthEnv> {
         ? Response.json({ actor: `account:${user.id}`, credentialActor: `account:${user.id}` })
         : new Response(null, { status: 401 });
     }
-    return authRequest(auth, request, undefined, (operation) => this.authority.run(operation));
+    return authRequest(auth, request, undefined, (operation) =>
+      request.headers.has("x-test-bypass-queue") ? operation() : this.authority.run(operation),
+    );
   }
 }
 export default {

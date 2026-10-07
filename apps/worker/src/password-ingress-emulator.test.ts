@@ -122,6 +122,7 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       turns: number;
       bindings: object;
       members: Record<string, unknown>;
+      profiles: unknown[];
       calls: string[];
     }>;
   };
@@ -186,7 +187,17 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
         image: "/avatars/frog.svg",
       });
       expect(enrollment.status, await enrollment.clone().text()).toBe(200);
-      const login = await app("/auth/sign-in/email", email, "POST", { email, password });
+      expect((await app("/auth/sign-in/email", email, "POST", { email, password })).status).toBe(
+        404,
+      );
+      expect(
+        (await app("/auth/is-username-available", email, "POST", { username: "user_" + index }))
+          .status,
+      ).toBe(404);
+      const login = await app("/auth/sign-in/username", email, "POST", {
+        username: "USER_" + index,
+        password,
+      });
       expect(login.status, await login.clone().text()).toBe(200);
       cookies.set(
         email,
@@ -198,8 +209,12 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       const account = (await (await app("/account", email)).json()) as {
         actor: string;
         email: string;
+        username: string;
+        displayName: string;
       };
       expect(account.actor.startsWith("account:")).toBe(true);
+      expect(account.username).toBe("user_" + index);
+      expect(account.displayName).toBe("User " + index);
       actors.set(email, account.actor);
       expect(await (await app("/projects", email)).json()).toEqual([]);
       expect(await (await app("/repositories", email)).json()).toEqual({
@@ -290,7 +305,8 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
           {
             content: "shared note " + index,
             idempotencyKey: "note-" + index,
-            author: { actor: "access:forged" },
+            author: { actor: "access:forged", username: "forged" },
+            username: "forged",
           },
           { "cf-access-jwt-assertion": "forged", "x-pitcrew-actor": "access:forged" },
         ),
@@ -298,10 +314,90 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     );
     expect(notes.map((r) => r.status)).toEqual(Array(8).fill(201));
     const messages = (await (await app(`/threads/${thread.id}/messages`, emails[1])).json()) as {
-      author: { actor: string };
+      author: { actor: string; username: string; displayName: string };
     }[];
     expect(messages).toHaveLength(8);
     expect(messages.every((note) => [...actors.values()].includes(note.author.actor))).toBe(true);
+    for (const [index, email] of emails.entries()) {
+      expect(messages.filter((note) => note.author.actor === actor(email))).toHaveLength(4);
+      expect(
+        messages
+          .filter((note) => note.author.actor === actor(email))
+          .every(
+            (note) =>
+              note.author.username === "user_" + index &&
+              note.author.displayName === "User " + index,
+          ),
+      ).toBe(true);
+    }
+    const beforeProfile = await repository.snapshot();
+    const waitPending = async (count: number) => {
+      for (let index = 0; index < 200 && (await repository.authorityPending()) !== count; index++)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(await repository.authorityPending()).toBe(count);
+    };
+    // The product request captures the old user outside the gate while the
+    // earlier profile update is queued. Its admitted snapshot must be reread.
+    await repository.holdAuthority();
+    let rename: ReturnType<typeof app> | undefined;
+    let profileRead: ReturnType<typeof app> | undefined;
+    let profileNote: ReturnType<typeof app> | undefined;
+    try {
+      rename = app("/auth/update-user", emails[1], "POST", {
+        username: "renamed_colleague",
+        name: "",
+      });
+      await waitPending(2);
+      profileRead = app(`/projects/${project.id}/members`, emails[1]);
+      await waitPending(3);
+      profileNote = app(`/threads/${thread.id}/messages`, emails[1], "POST", {
+        content: "new verified label",
+        idempotencyKey: "renamed-profile-note",
+        author: { actor: "account:forged", username: "forged" },
+      });
+      await waitPending(4);
+      expect((await repository.snapshot()).profiles).toEqual(beforeProfile.profiles);
+    } finally {
+      await repository.releaseAuthority();
+    }
+    expect((await rename!).status).toBe(200);
+    expect(await (await profileRead!).json()).toContainEqual(
+      expect.objectContaining({
+        actor: actor(emails[1]),
+        username: "renamed_colleague",
+        displayName: "",
+      }),
+    );
+    expect(await (await app("/account", emails[1])).json()).toMatchObject({
+      actor: actor(emails[1]),
+      username: "renamed_colleague",
+      displayName: "",
+    });
+    for (const path of [`/projects/${project.id}/members`, `/threads/${thread.id}/members`]) {
+      const members = (await (await app(path)).json()) as { actor: string; username: string }[];
+      expect(members.find((member) => member.actor === actor(emails[1]))).toMatchObject({
+        username: "renamed_colleague",
+        displayName: "",
+        role: "editor",
+      });
+    }
+    expect((await profileNote!).status).toBe(201);
+    const historical = (await (await app(`/threads/${thread.id}/messages`)).json()) as unknown[];
+    expect(historical.slice(0, messages.length)).toEqual(messages);
+    expect(await (await app(`/threads/${thread.id}/messages`)).json()).toMatchObject([
+      ...messages,
+      { author: { actor: actor(emails[1]), username: "renamed_colleague", displayName: "" } },
+    ]);
+    expect((await app(presencePath, emails[1], "POST", { ...typing, sequence: 2 })).status).toBe(
+      200,
+    );
+    expect(await (await app(presencePath)).json()).toMatchObject({
+      typers: [{ username: "renamed_colleague" }],
+    });
+    expect((await app(`/projects/${legacyProject.id}/context`, emails[1])).status).toBe(404);
+    const afterProfile = await repository.snapshot();
+    expect(afterProfile.bindings).toEqual(beforeProfile.bindings);
+    expect(afterProfile.members).toEqual(beforeProfile.members);
     // Actual production ingress/account/session/DO path, synthetic bytes only.
     const upload = (id: string, bytes: Uint8Array, name: string, type: string, email = emails[0]) =>
       mf.dispatchFetch(`${base}/app/api/threads/${thread.id}/uploads/${id}`, {
@@ -426,12 +522,7 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     });
     expect(await credentials("access:legacy").ciphertext()).toBe(legacyCiphertext);
     expect(await credentials("access:legacy").read("access:legacy")).toBe(legacyKey);
-    const waitPending = async (count: number) => {
-      for (let index = 0; index < 200 && (await repository.authorityPending()) !== count; index++)
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      expect(await repository.authorityPending()).toBe(count);
-    };
-    const holdReadBeforeAuth = async (path: string, body: object) => {
+    const holdReadBeforeAuth = async (path: string, body: object, readStatus = 200) => {
       await repository.holdAuthority();
       const read = app(visualizationPath);
       let mutation: ReturnType<typeof app> | undefined;
@@ -442,15 +533,15 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       } finally {
         await repository.releaseAuthority();
       }
-      expect((await read).status).toBe(200);
+      expect((await read).status).toBe(readStatus);
       const result = await mutation!;
       expect(result.status, await result.clone().text()).toBe(200);
       return result;
     };
     // Auth admission and private visualization disclosure share this exact
     // RepositoryAgent queue, including fresh checks and response construction.
-    const racingLogin = await holdReadBeforeAuth("/auth/sign-in/email", {
-      email: emails[0],
+    const racingLogin = await holdReadBeforeAuth("/auth/sign-in/username", {
+      username: "user_0",
       password,
     });
     const extraCookie = racingLogin.headers
@@ -458,11 +549,13 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       .map((cookie) => cookie.split(";", 1)[0])
       .join("; ");
     const newPassword = password + "-changed";
-    const changed = await holdReadBeforeAuth("/auth/change-password", {
-      currentPassword: password,
-      newPassword,
-      revokeOtherSessions: false,
-    });
+    // Changing the password rotates this original session before the later
+    // private disclosure gate; initial identity admission cannot revive it.
+    const changed = await holdReadBeforeAuth(
+      "/auth/change-password",
+      { currentPassword: password, newPassword, revokeOtherSessions: false },
+      401,
+    );
     const changedCookie = changed.headers
       .getSetCookie()
       .map((cookie) => cookie.split(";", 1)[0])
@@ -473,6 +566,13 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     ).toBe(401);
     // Revocation admitted first must win against a read which passed the
     // outer account lookup but has not entered the private disclosure queue.
+    // Deliberately make the captured D1 labels differ from the persisted member
+    // labels. A revoked request must never project those unadmitted values.
+    const beforeRevocationProfiles = (await repository.snapshot()).profiles;
+    await db
+      .prepare("UPDATE user SET username=?,name=? WHERE id=?")
+      .bind("unprojected_owner", "Unadmitted Name", actor(emails[0]).slice("account:".length))
+      .run();
     await repository.holdAuthority();
     const revocation = app("/auth/revoke-sessions", emails[0], "POST", {});
     let staleRead: ReturnType<typeof app> | undefined;
@@ -497,6 +597,7 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
         "application/octet-stream",
       );
       await waitPending(7);
+      expect((await repository.snapshot()).profiles).toEqual(beforeRevocationProfiles);
     } finally {
       await repository.releaseAuthority();
     }
@@ -506,9 +607,14 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     expect((await stalePeers!).status).toBe(401);
     expect((await staleDownload!).status).toBe(401);
     expect((await staleUpload!).status).toBe(401);
+    expect((await repository.snapshot()).profiles).toEqual(beforeRevocationProfiles);
     expect((await app(visualizationPath)).status).toBe(401);
-    const replacement = await app("/auth/sign-in/email", emails[0], "POST", {
-      email: emails[0],
+    await db
+      .prepare("UPDATE user SET username=?,name=? WHERE id=?")
+      .bind("user_0", "User 0", actor(emails[0]).slice("account:".length))
+      .run();
+    const replacement = await app("/auth/sign-in/username", emails[0], "POST", {
+      username: "user_0",
       password: newPassword,
     });
     expect(replacement.status).toBe(200);
@@ -534,14 +640,14 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       200,
     );
     expect(await (await app(presencePath)).json()).toMatchObject({
-      typers: [{ username: "user_1" }],
+      typers: [{ username: "renamed_colleague" }],
     });
     expect(await credentials("access:legacy").ciphertext()).toBe(legacyCiphertext);
     expect(await (await connection()).json()).toMatchObject({
       configured: true,
       executionEnabled: false,
     });
-    expect(await (await app(`/threads/${thread.id}/messages`, emails[1])).json()).toHaveLength(9);
+    expect(await (await app(`/threads/${thread.id}/messages`, emails[1])).json()).toHaveLength(10);
     for (const file of syntheticFiles) {
       const download = await app(`/threads/${thread.id}/attachments/${file.id}`);
       expect(download.status).toBe(200);
