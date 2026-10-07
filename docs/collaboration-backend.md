@@ -47,9 +47,12 @@ websocket transport is introduced by this slice.
   Only the scope owner can issue it. The token is returned once; only its SHA-256
   digest is stored. Default lifetime is 24 hours.
 - `GET /api/invitations/:token`, `POST .../accept`, `POST .../revoke`:
-  preview/accept is recipient-bound; revoke is owner-only. Acceptance requires
-  verified email, a live inviter, unused/unexpired/unrevoked token, and project
-  membership for thread invitations. Acceptance is serialized and non-replayable.
+  preview/accept is recipient-bound; revoke is owner-only. Native acceptance uses
+  the immutable identifier from consumed controlled enrollment, without claiming
+  mailbox verification. It requires a current session, live inviter,
+  unused/unexpired/unrevoked token and project membership for thread invitations.
+  Invitation and member operations recheck the original session under the shared
+  auth authority queue through hashing and commit. Acceptance is non-replayable.
 - `DELETE /api/projects/:projectId/members/:actor`,
   `DELETE /api/threads/:threadId/members/:actor`: revokes membership and matching
   pending invitations atomically. Project revocation cascades to threads.
