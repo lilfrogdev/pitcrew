@@ -7,6 +7,7 @@ export function passwordApiRoute(path: string, method: string) {
       "auth/get-session",
       "account",
       "projects",
+      "project-adoptions",
       "repositories",
       "capabilities",
       "provider-connection/openrouter(?:/models)?",
@@ -22,6 +23,7 @@ export function passwordApiRoute(path: string, method: string) {
     POST: [
       "auth/(?:enroll|sign-in/email|sign-out|revoke-sessions|update-user|change-password)",
       "provider-connection/openrouter",
+      "projects",
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
       `threads/${id}/(?:messages|invitations|presence)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
