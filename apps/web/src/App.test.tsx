@@ -113,7 +113,7 @@ describe("project conversations", () => {
     };
     render(<App api={api} demo viewer={owner} />);
     await openReview();
-    fireEvent.click(screen.getByRole("button", { name: "Approve exact candidate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve exact candidate" }));
     fireEvent.click(await screen.findByRole("button", { name: "Land approved candidate" }));
     await screen.findByText(/Landing uncertain/);
     cleanup();
