@@ -173,15 +173,20 @@ export function createAuthRelayMiddleware({
     const s = lookup(req);
     if (!s?.cloudCookie) return {};
     if (passwordMode) return { Cookie: s.cloudCookie };
+    const id = localCookie(req);
+    const generation = s.generation;
+    const current = () =>
+      sessions.get(id) === s && generation === s.generation && s.expiresAt > now();
     try {
       const who = await identity(token);
+      if (!current()) return {};
       if (who.subject !== s.subject || who.email !== s.email) {
-        sessions.delete(localCookie(req));
+        sessions.delete(id);
         return {};
       }
       return { Cookie: s.cloudCookie };
     } catch {
-      sessions.delete(localCookie(req));
+      if (current()) sessions.delete(id);
       return {};
     }
   };
@@ -226,6 +231,11 @@ export function createAuthRelayMiddleware({
     const s = lookup(req);
     if (!s || !equal(req.headers["x-pitcrew-auth-nonce"], s.nonce))
       return reply(res, 403, { error: "auth_relay_denied" });
+    const id = localCookie(req);
+    let generation = s.generation;
+    const current = () =>
+      sessions.get(id) === s && generation === s.generation && s.expiresAt > now();
+    const superseded = () => reply(res, 409, { error: "auth_request_superseded" });
     let body;
     try {
       if (req.method === "POST") body = await jsonBody(req);
@@ -238,11 +248,15 @@ export function createAuthRelayMiddleware({
         token = await tokenProvider();
         who = await identity(token);
       } catch {
-        sessions.delete(localCookie(req));
+        if (!current()) return superseded();
+        sessions.delete(id);
         return reply(res, 401, { error: "backend_sign_in_required" });
       }
+    // Body reads and Access verification can yield to another tab's mutation.
+    // An older operation must not acquire a newer session's credential.
+    if (!current()) return superseded();
     if (!passwordMode && s.subject && (who.subject !== s.subject || who.email !== s.email)) {
-      sessions.delete(localCookie(req));
+      sessions.delete(id);
       return reply(res, 401, { error: "backend_sign_in_required" });
     }
     if (!passwordMode) {
@@ -254,14 +268,17 @@ export function createAuthRelayMiddleware({
     // fails. Keep a private copy only to authorize that one remote request.
     const sentCookie = s.cloudCookie;
     if (
-      ["/api/auth/sign-in/email", "/api/auth/sign-out", "/api/auth/revoke-sessions"].includes(
-        url.pathname,
-      )
+      [
+        "/api/auth/sign-in/email",
+        "/api/auth/sign-out",
+        "/api/auth/revoke-sessions",
+        "/api/auth/reset-password",
+      ].includes(url.pathname)
     ) {
       s.generation++;
       s.cloudCookie = undefined;
     }
-    const generation = s.generation;
+    generation = s.generation;
     try {
       const response = await requestBackend(
         BACKEND_ACCESS.origin + (passwordMode ? "/app" : "") + url.pathname + url.search,
@@ -280,21 +297,25 @@ export function createAuthRelayMiddleware({
           ...(body === undefined ? {} : { body }),
         },
       );
+      if (!current()) return superseded();
       if (response.status >= 300 && response.status < 400) {
-        sessions.delete(localCookie(req));
+        // An empty native session read owns no credential to revoke. Deleting
+        // its nonce record would also cancel a sign-in pending in another tab.
+        if (!passwordMode || url.pathname !== "/api/auth/get-session" || s.cloudCookie)
+          sessions.delete(id);
         return reply(res, 401, { error: "backend_sign_in_required" });
       }
       const value = await responseJson(response);
-      if (generation !== s.generation || sessions.get(localCookie(req)) !== s)
-        return reply(res, 401, { error: "auth_relay_denied" });
+      if (!current()) return superseded();
       if (response.ok) {
+        let nextCookie = s.cloudCookie;
         const cookies = response.headers.getSetCookie();
         for (const cookie of cookies) {
           const pair = cookie.split(";", 1)[0];
           if (pair.startsWith(cloudCookieName + "=")) {
             const v = pair.slice(cloudCookieName.length + 1);
             if (v.length > 4096 || /[\s;\r\n]/.test(v)) throw Error();
-            s.cloudCookie = v ? pair : undefined;
+            nextCookie = v ? pair : undefined;
           }
         }
         if (
@@ -302,15 +323,24 @@ export function createAuthRelayMiddleware({
             url.pathname,
           )
         )
-          s.cloudCookie = undefined;
+          nextCookie = undefined;
         const output =
           url.pathname === "/api/auth/get-session"
             ? safeUser(value, passwordMode)
             : { status: value?.status === true };
-        if (url.pathname === "/api/auth/get-session" && output === null) s.cloudCookie = undefined;
+        if (url.pathname === "/api/auth/get-session" && output === null) nextCookie = undefined;
+        // Installing a sign-in cookie is a second boundary: refreshes issued
+        // while sign-in was pending queried the previous (empty) state.
+        if (nextCookie !== s.cloudCookie || url.pathname === "/api/auth/sign-in/email") {
+          s.cloudCookie = nextCookie;
+          s.generation++;
+        }
         return reply(res, 200, output);
       }
-      if (response.status === 401) s.cloudCookie = undefined;
+      if (response.status === 401 && s.cloudCookie) {
+        s.cloudCookie = undefined;
+        s.generation++;
+      }
       return reply(
         res,
         [400, 401, 403, 404, 409, 422, 429, 503].includes(response.status) ? response.status : 502,
@@ -327,7 +357,11 @@ export function createAuthRelayMiddleware({
           : {},
       );
     } catch {
-      s.cloudCookie = undefined;
+      if (!current()) return superseded();
+      if (s.cloudCookie) {
+        s.cloudCookie = undefined;
+        s.generation++;
+      }
       return reply(res, 502, { error: "auth_backend_unavailable" });
     }
   };

@@ -443,6 +443,190 @@ test("late sign-in and session responses cannot restore a locally revoked passwo
     200,
   );
   release();
-  assert.equal((await login).status, 401);
+  assert.equal((await login).status, 409);
   assert.deepEqual(await relay.sessionHeaders(request("/api/projects", options)), {});
+});
+
+async function passwordFixture(requestBackend) {
+  const relay = createAuthRelayMiddleware({ enabled: true, passwordMode: true, requestBackend });
+  const local = await call(relay, request("/api/auth/local-session"));
+  const options = {
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    nonce: local.value.nonce,
+  };
+  return {
+    relay,
+    options,
+    login: () =>
+      call(relay, request("/api/auth/sign-in/email", { ...options, method: "POST", body: {} })),
+    session: () => call(relay, request("/api/auth/get-session", options)),
+    headers: () => relay.sessionHeaders(request("/api/projects", options)),
+  };
+}
+
+test("a null refresh started during sign-in cannot clear the subsequently installed cookie", async () => {
+  const loginStarted = Promise.withResolvers();
+  const refreshStarted = Promise.withResolvers();
+  const loginResponse = Promise.withResolvers();
+  const refreshResponse = Promise.withResolvers();
+  const f = await passwordFixture(async (url, init) => {
+    if (url.endsWith("sign-in/email")) {
+      loginStarted.resolve();
+      return loginResponse.promise;
+    }
+    assert.equal(init.headers.Cookie, undefined);
+    refreshStarted.resolve();
+    return refreshResponse.promise;
+  });
+  const login = f.login();
+  await loginStarted.promise;
+  const refresh = f.session();
+  await refreshStarted.promise;
+  loginResponse.resolve(
+    Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } }),
+  );
+  assert.equal((await login).status, 200);
+  refreshResponse.resolve(Response.json(null));
+  assert.equal((await refresh).status, 409);
+  assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
+});
+
+test("a failing refresh of an empty session cannot cancel a pending successful sign-in", async (t) => {
+  for (const failure of ["transport", "invalid-json", "redirect", "unauthorized"]) {
+    await t.test(failure, async () => {
+      const started = Promise.withResolvers();
+      const response = Promise.withResolvers();
+      const f = await passwordFixture(async (url) => {
+        if (url.endsWith("sign-in/email")) {
+          started.resolve();
+          return response.promise;
+        }
+        if (failure === "transport") throw Error("synthetic refresh failure");
+        if (failure === "redirect")
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://example.com/private" },
+          });
+        if (failure === "unauthorized") return Response.json({ error: "private" }, { status: 401 });
+        return new Response("invalid", { headers: { "Content-Type": "application/json" } });
+      });
+      const login = f.login();
+      await started.promise;
+      assert.equal(
+        (await f.session()).status,
+        ["redirect", "unauthorized"].includes(failure) ? 401 : 502,
+      );
+      response.resolve(Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } }));
+      assert.equal((await login).status, 200);
+      assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
+    });
+  }
+});
+
+test("delayed failures and logout from another tab cannot wipe a newer sign-in", async (t) => {
+  for (const path of ["get-session", "sign-out"]) {
+    for (const failure of ["transport", "redirect", "invalid-json", "unauthorized", "success"]) {
+      await t.test(`${path}: ${failure}`, async () => {
+        const started = Promise.withResolvers();
+        const delayed = Promise.withResolvers();
+        let loginCount = 0;
+        const f = await passwordFixture(async (url) => {
+          if (url.endsWith("sign-in/email")) {
+            loginCount++;
+            return Response.json(
+              { status: true },
+              {
+                headers: { "Set-Cookie": cloudCookie + loginCount },
+              },
+            );
+          }
+          started.resolve();
+          return delayed.promise;
+        });
+        await f.login();
+        const old = call(
+          f.relay,
+          request(`/api/auth/${path}`, {
+            ...f.options,
+            ...(path === "sign-out" ? { method: "POST", body: {} } : {}),
+          }),
+        );
+        await started.promise;
+        await f.login();
+        if (failure === "transport") delayed.reject(Error("synthetic old transport error"));
+        else
+          delayed.resolve(
+            failure === "redirect"
+              ? new Response(null, {
+                  status: 302,
+                  headers: { Location: "https://example.com/private" },
+                })
+              : failure === "invalid-json"
+                ? new Response("invalid", { headers: { "Content-Type": "application/json" } })
+                : failure === "success"
+                  ? Response.json(
+                      { status: true },
+                      { headers: { "Set-Cookie": cloudCookie + "old" } },
+                    )
+                  : Response.json({ error: "private" }, { status: 401 }),
+          );
+        assert.equal((await old).status, 409);
+        assert.deepEqual(await f.headers(), { Cookie: cloudCookie + "2" });
+      });
+    }
+  }
+});
+
+test("a logout waiting for its request body cannot acquire a newer sign-in cookie", async () => {
+  const calls = [];
+  const f = await passwordFixture(async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } });
+  });
+  const slowLogout = request("/api/auth/sign-out", { ...f.options, method: "POST", body: {} });
+  const body = new Readable({ read() {} });
+  Object.assign(body, {
+    url: slowLogout.url,
+    method: slowLogout.method,
+    headers: slowLogout.headers,
+    rawHeaders: slowLogout.rawHeaders,
+    socket: slowLogout.socket,
+  });
+  const pending = call(f.relay, body);
+  await f.login();
+  body.push(Buffer.from("{}"));
+  body.push(null);
+  assert.equal((await pending).status, 409);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith("sign-in/email"));
+  assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
+});
+
+test("repeated overlapping tab refreshes cannot restore or clear later session state", async () => {
+  let pending;
+  let counter = 0;
+  const f = await passwordFixture(async (url) => {
+    if (url.endsWith("sign-in/email"))
+      return Response.json(
+        { status: true },
+        {
+          headers: { "Set-Cookie": cloudCookie + ++counter },
+        },
+      );
+    if (url.endsWith("sign-out")) return Response.json({ status: true });
+    pending.started.resolve();
+    return pending.response.promise;
+  });
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await f.login();
+    pending = { started: Promise.withResolvers(), response: Promise.withResolvers() };
+    const old = f.session();
+    await pending.started.promise;
+    await call(f.relay, request("/api/auth/sign-out", { ...f.options, method: "POST", body: {} }));
+    assert.deepEqual(await f.headers(), {});
+    await f.login();
+    pending.response.resolve(Response.json(null));
+    await old;
+    assert.deepEqual(await f.headers(), { Cookie: cloudCookie + counter });
+  }
 });

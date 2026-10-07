@@ -279,6 +279,7 @@ export function App({
       cancelled = true;
     };
   }, [api, projectId, revision]);
+  // A refresh also cancels directory reads started before a membership change.
   useEffect(() => {
     if (!api.collaboration) return;
     let cancelled = false;
@@ -328,7 +329,7 @@ export function App({
       window.removeEventListener("online", online);
       document.removeEventListener("visibilitychange", visible);
     };
-  }, [api, projectId, threadId, accessLost]);
+  }, [api, projectId, threadId, accessLost, revision]);
   // Failed writes belong to the selected conversation/repository, not its destination.
   useEffect(() => {
     setMutationError("");
@@ -883,7 +884,7 @@ export function App({
                 <p>
                   {projects.length
                     ? "Select a repository and create a thread to work with your crew."
-                    : "Repositories you own or join will appear here."}
+                    : "Repositories you own or join will appear here. Open Repositories to check for an approved repository, or ask a project owner for an invitation."}
                 </p>
               </div>
             ) : !snapshot.messages.length ? (
@@ -1313,7 +1314,7 @@ export function App({
       )}
       {section === "repositories" &&
         (api.collaboration ? (
-          <AccountRepositories api={api.collaboration} />
+          <AccountRepositories api={api.collaboration} onAdopted={refresh} />
         ) : (
           <Repositories api={api.repositories} />
         ))}

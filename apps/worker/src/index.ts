@@ -110,6 +110,7 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   CLOUD_CONVERSATION_ENABLED?: string;
   ADOPT_REPOSITORY_NAME?: string;
   ADOPT_REPOSITORY_ID?: string;
+  ADOPT_ACCOUNT_ACTOR?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   protected readonly visualizationAuthority = new VisualizationAuthorityGate();
@@ -1380,6 +1381,132 @@ export class RepositoryAgent extends Agent<Env> {
         username: "username" in identity ? identity.username : undefined,
         avatar: "avatar" in identity ? identity.avatar : undefined,
       });
+    // Native accounts never acquire a legacy/root membership. An operator may
+    // approve one exact stable account and immutable existing source instead.
+    if (passwordMode && ["/api/project-adoptions", "/api/projects"].includes(path)) {
+      const approved = () => {
+        const name = this.env.ADOPT_REPOSITORY_NAME,
+          repositoryId = this.env.ADOPT_REPOSITORY_ID;
+        return this.env.AUTH_MODE === "password-only" &&
+          this.env.ADOPT_ACCOUNT_ACTOR === identity.actor &&
+          name &&
+          repositoryId &&
+          this.env.ARTIFACTS
+          ? { name, repositoryId }
+          : undefined;
+      };
+      const registered = (target: { name: string; repositoryId: string }) =>
+        Object.values(root.state.ownedProjects ?? {}).some(
+          (entry) => entry.sourceId === target.repositoryId || entry.sourceName === target.name,
+        );
+      if (request.method === "GET" && path === "/api/project-adoptions") {
+        return this.visualizationAuthority.run(async () => {
+          const grant = await visualizationGrant(auth!, request);
+          const target = approved();
+          return Response.json(
+            grant?.actor === identity.actor && target && !registered(target) ? [target] : [],
+          );
+        });
+      }
+      if (request.method === "POST" && path === "/api/projects") {
+        const target = approved();
+        if (!target) return Response.json({ error: "not_found" }, { status: 404 });
+        let body: unknown;
+        try {
+          if (Number(request.headers.get("content-length") ?? 0) > 2048) throw Error();
+          const reader = request.body?.getReader();
+          if (!reader) throw Error();
+          const chunks: Uint8Array[] = [];
+          let length = 0;
+          while (true) {
+            const next = await reader.read();
+            if (next.done) break;
+            length += next.value.byteLength;
+            if (length > 2048) {
+              await reader.cancel();
+              throw Error();
+            }
+            chunks.push(next.value);
+          }
+          const bytes = new Uint8Array(length);
+          let offset = 0;
+          for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.length;
+          }
+          body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        } catch {
+          return Response.json({ error: "invalid_json" }, { status: 400 });
+        }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          Array.isArray(body) ||
+          Object.keys(body).length !== 2 ||
+          Object.keys(body).some((key) => !["name", "repositoryId"].includes(key))
+        )
+          return Response.json({ error: "invalid_adoption" }, { status: 400 });
+        const input = body as { name?: unknown; repositoryId?: unknown };
+        if (input.name !== target.name || input.repositoryId !== target.repositoryId)
+          return Response.json({ error: "not_found" }, { status: 404 });
+        // Freeze the original session before external metadata awaits; a later
+        // sign-in cannot replace a revoked session's adoption authority.
+        const grant = await this.visualizationAuthority.run(() =>
+          visualizationGrant(auth!, request),
+        );
+        if (!grant || grant.actor !== identity.actor)
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        try {
+          using repo = await this.env.ARTIFACTS!.get(target.name);
+          const info = await repo.info();
+          if (info.id !== target.repositoryId)
+            return Response.json({ error: "repository_identity_changed" }, { status: 409 });
+          const [head] = await repo.log({ ref: info.defaultBranch, limit: 1 });
+          if (head && !/^[a-f0-9]{40}$/.test(head.hash)) throw Error("invalid_head");
+          // Do not assume get(name) pins an immutable source across awaits.
+          // Revalidate after the head read before committing account ownership.
+          if ((await repo.info()).id !== target.repositoryId)
+            return Response.json({ error: "repository_identity_changed" }, { status: 409 });
+          return await this.visualizationAuthority.run(async () => {
+            try {
+              await requireVisualizationSession(this.env.AUTH_DB!, grant);
+            } catch {
+              return Response.json({ error: "unauthorized" }, { status: 401 });
+            }
+            const current = approved();
+            if (
+              !current ||
+              current.name !== target.name ||
+              current.repositoryId !== target.repositoryId
+            )
+              return Response.json({ error: "not_found" }, { status: 404 });
+            if (registered(target))
+              return Response.json({ error: "repository_already_registered" }, { status: 409 });
+            const project = root.addOwnedProject(
+              target.name,
+              target.repositoryId,
+              grant.actor,
+              grant.email,
+              head
+                ? {
+                    baseSha: head.hash,
+                    configurationRevision: this.env.CONFIGURATION_REVISION ?? "unconfigured-v1",
+                  }
+                : undefined,
+            );
+            return Response.json(project, { status: 201 });
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              error:
+                error instanceof AdmissionError ? error.message : "repository_verification_failed",
+            },
+            { status: error instanceof AdmissionError ? error.status : 503 },
+          );
+        }
+      }
+    }
     if (request.method === "POST" && path === "/api/projects") {
       if (
         identity.email !== ownerEmail ||

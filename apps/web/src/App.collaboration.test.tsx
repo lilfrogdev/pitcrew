@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { App } from "./App";
 import { createFixtureApi } from "./fixtures";
-import { ApiError, type Snapshot } from "./api";
+import { ApiError, type CollaborationApi, type Snapshot } from "./api";
 
 afterEach(() => {
   cleanup();
@@ -97,3 +97,84 @@ it("renders peer authors from server identity and clears their transcript after 
   await screen.findByText("No repositories yet");
   expect(screen.queryByRole("button", { name: "Set up a provider" })).toBeNull();
 });
+
+it.each([false, true])(
+  "refreshes the Work sidebar after an approved adoption, including when navigation closes the directory before completion (%s)",
+  async (navigateWhilePending) => {
+    const api = createFixtureApi();
+    const candidate = { name: "Approved workspace", repositoryId: "immutable-123" };
+    const project = {
+      id: "adopted-project",
+      name: candidate.name,
+      repository: candidate.repositoryId,
+      baseSha: "base",
+      configurationRevision: "v1",
+    };
+    let adopted = false;
+    let completeAdoption!: () => void;
+    const adoption = new Promise<void>((resolve) => {
+      completeAdoption = resolve;
+    });
+    api.projects = vi.fn(async () => (adopted ? [project] : []));
+    api.threads = vi.fn(async () => []);
+    api.collaboration = {
+      account: vi.fn(async () => ({ actor: "account:owner", email: viewer.email })),
+      repositories: vi.fn(async () =>
+        adopted
+          ? [
+              {
+                projectId: project.id,
+                name: project.name,
+                role: "owner",
+                status: "present",
+                lifecycle: "registered",
+                deletable: false,
+              },
+            ]
+          : [],
+      ),
+      approvedProjectAdoptions: vi.fn(async () => (adopted ? [] : [candidate])),
+      adoptProject: vi.fn(async () => {
+        await adoption;
+        adopted = true;
+        return project;
+      }),
+      projectMembers: vi.fn(async () => []),
+      threadMembers: vi.fn(async () => []),
+    } as unknown as CollaborationApi;
+    const user = userEvent.setup();
+    render(<App api={api} viewer={viewer} />);
+    await screen.findByText("No repositories yet");
+    expect(screen.getByText(/Open Repositories to check for an approved repository/)).toBeTruthy();
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    await user.click(within(rail).getByRole("button", { name: "Repositories" }));
+    await screen.findByText(candidate.repositoryId);
+    await user.click(screen.getByRole("checkbox", { name: /I confirm adding Approved workspace/ }));
+    await user.click(screen.getByRole("button", { name: "Add approved repository" }));
+    let completeOldDirectory!: () => void;
+    vi.mocked(api.projects).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeOldDirectory = () => resolve([]);
+        }),
+    );
+    fireEvent(window, new Event("online"));
+    if (navigateWhilePending) await user.click(within(rail).getByRole("button", { name: "Work" }));
+    await act(async () => completeAdoption());
+    if (!navigateWhilePending) await screen.findByText("owner");
+    expect(api.collaboration.adoptProject).toHaveBeenCalledExactlyOnceWith(
+      candidate.name,
+      candidate.repositoryId,
+    );
+    expect(api.collaboration.repositories).toHaveBeenCalledTimes(navigateWhilePending ? 1 : 2);
+    await waitFor(() => expect(api.projects).toHaveBeenCalledTimes(3));
+    await act(async () => completeOldDirectory());
+    if (!navigateWhilePending) await user.click(within(rail).getByRole("button", { name: "Work" }));
+    expect(
+      await screen.findByRole("button", { name: "New conversation in Approved workspace" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Your repository conversations" })).toBeTruthy();
+    expect(api.threads).toHaveBeenCalledWith(project.id);
+    expect(screen.queryByText("No repositories yet")).toBeNull();
+  },
+);

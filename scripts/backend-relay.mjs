@@ -91,6 +91,7 @@ function sharedRoute(path, method, passwordMode = false) {
     GET: [
       "account",
       "projects",
+      "project-adoptions",
       "capabilities",
       `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
       `threads/${id}/source/(?:tree|file|diff)`,
@@ -117,6 +118,7 @@ function sharedRoute(path, method, passwordMode = false) {
   };
   if (passwordMode)
     routes.POST = [
+      "projects",
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
       `threads/${id}/(?:messages|invitations|presence)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",

@@ -31,14 +31,45 @@ password accounts cannot read, rebind or migrate them by matching email. Any
 legacy linkage needs separate explicit proof and approval. Provider key entry is
 not needed for account setup or notes, and paid execution remains disabled.
 
+## First native project owner
+
+A newly enrolled native account has zero memberships. Matching the operator's
+email never bootstraps legacy/root ownership. To authorize adoption of one
+existing repository, an operator must approve all three exact backend values:
+`ADOPT_ACCOUNT_ACTOR=account:<native-user.id>`, `ADOPT_REPOSITORY_NAME`, and
+`ADOPT_REPOSITORY_ID` (the immutable ID verified independently for that source).
+Obtain the actor from the authenticated `/app/api/account` response and verify
+that it belongs to the intended existing native account. This is a separate
+operator authorization; enrollment alone cannot grant it. The example config
+contains placeholders and grants no real account access.
+
+`GET /app/api/project-adoptions` returns `[{name,repositoryId}]` only to the
+approved native session, or `[]` when approval is missing, belongs to another
+account, or the source is already registered. `POST /app/api/projects` accepts
+exactly `{name,repositoryId}` and reads that existing source's metadata and real
+head. The source ID must still match. The original session and exact approval
+are rechecked through the shared authority queue after external awaits, and the
+new project is registered atomically with only that stable account as owner.
+Duplicate/concurrent claims fail. This route performs no physical repository
+creation/import and enables no paid execution or infrastructure action.
+
+The resulting project starts with new collaboration state. It does not copy,
+rebind or expose any legacy `access:<sub>` ACL, identity binding, project state,
+or provider ciphertext. Existing legacy projects remain inaccessible unless
+separately authorized. The new owner may invite Bryan through the normal
+project/thread invitation routes; another native account has no visibility
+before accepting its specific invitation. All execution, conversation,
+infrastructure, lifecycle and publisher flags stay disabled during onboarding.
+
 ## HTTP and local transport
 
 The exact cloud origin is `https://pitcrew-backend.pitcrew-004.workers.dev`.
 The password surface is `/app/api/*`, with a method/path allowlist in
 `password-ingress.ts`. It revalidates the path in the singleton repository DO and
 normalizes to `/api/*` only there. Unknown methods/routes, recovery/signup/OAuth,
-paid dispatch, repository adoption/lifecycle and landing/publisher mutations are
-unavailable on that surface. Membership checks still gate shared product routes.
+paid dispatch, repository lifecycle and landing/publisher mutations are
+unavailable on that surface. Explicitly approved adoption of an existing source
+is available as described below. Membership checks still gate shared product routes.
 Caller identity/Access headers never select a principal.
 
 Password auth endpoints are POST `auth/enroll`, `auth/sign-in/email`,

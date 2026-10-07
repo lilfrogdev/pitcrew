@@ -70,6 +70,10 @@ export type SharedRepository = {
   lifecycle: "registered";
   deletable: false;
 };
+export type ApprovedProjectAdoption = {
+  name: string;
+  repositoryId: string;
+};
 export type Invitation = {
   id: string;
   email: string;
@@ -86,6 +90,8 @@ export type CreatedInvitation = { token: string; invitation: Invitation };
 export interface CollaborationApi {
   account(): Promise<Account>;
   repositories(): Promise<SharedRepository[]>;
+  approvedProjectAdoptions?(): Promise<ApprovedProjectAdoption[]>;
+  adoptProject?(name: string, repositoryId: string): Promise<Project>;
   projectMembers(projectId: string): Promise<Member[]>;
   threadMembers(threadId: string): Promise<Member[]>;
   inviteProject(projectId: string, email: string): Promise<CreatedInvitation>;
@@ -195,7 +201,9 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
         // own upstream deadline. Don't free a client slot before that work ends.
         signal: AbortSignal.timeout(body ? 10000 : 45000),
         headers,
-        ...(path.includes("/source/") ? { cache: "no-store" as const } : {}),
+        ...(path.includes("/source/") || path === "/project-adoptions"
+          ? { cache: "no-store" as const }
+          : {}),
         body: body ? JSON.stringify(body) : undefined,
       });
     const response = body ? await perform() : await readWithBudget(perform);
@@ -315,6 +323,23 @@ export const httpApi: Api = {
   },
   collaboration: {
     account: () => request("/account"),
+    approvedProjectAdoptions: async () => {
+      const value = await request<unknown>("/project-adoptions");
+      if (
+        !Array.isArray(value) ||
+        value.some(
+          (item) =>
+            !item ||
+            typeof item.name !== "string" ||
+            !item.name ||
+            typeof item.repositoryId !== "string" ||
+            !item.repositoryId,
+        )
+      )
+        throw new ApiError(0);
+      return value.map(({ name, repositoryId }) => ({ name, repositoryId }));
+    },
+    adoptProject: (name, repositoryId) => request("/projects", { name, repositoryId }),
     repositories: async () => {
       const value = await request<unknown>("/repositories");
       if (

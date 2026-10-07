@@ -118,6 +118,55 @@ it("checks the session after personally entered credentials succeed", async () =
   expect(api.session).toHaveBeenCalledTimes(2);
 });
 
+it("ignores a session read started before sign-in and suppresses background checks until its final session read completes", async () => {
+  const api = auth();
+  let completeStale!: (value: AuthSession | null) => void;
+  let completeSignIn!: () => void;
+  let completeSession!: (value: AuthSession | null) => void;
+  const user = userEvent.setup();
+  render(
+    <AuthGate api={api}>
+      <div>Private work</div>
+    </AuthGate>,
+  );
+  await screen.findByRole("heading", { name: "Sign in" });
+  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  await user.type(screen.getByLabelText("Password"), "synthetic-password");
+  vi.mocked(api.session).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        completeStale = resolve;
+      }),
+  );
+  fireEvent(window, new Event("online"));
+  vi.mocked(api.signIn).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        completeSignIn = resolve;
+      }),
+  );
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  fireEvent(window, new Event("online"));
+  fireEvent(window, new Event("pitcrew-auth-updated"));
+  expect(api.session).toHaveBeenCalledTimes(2);
+  await act(async () => completeStale(signedIn));
+  expect(screen.queryByText("Private work")).toBeNull();
+  expect(screen.getByRole("button", { name: "Working…" })).toHaveProperty("disabled", true);
+  vi.mocked(api.session).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        completeSession = resolve;
+      }),
+  );
+  await act(async () => completeSignIn());
+  expect(api.session).toHaveBeenCalledTimes(3);
+  fireEvent(window, new Event("online"));
+  fireEvent(window, new Event("pitcrew-auth-updated"));
+  expect(api.session).toHaveBeenCalledTimes(3);
+  await act(async () => completeSession(signedIn));
+  expect(await screen.findByText("Private work")).toBeTruthy();
+});
+
 it("strips the private setup fragment before any API request and submits the recipient-bound code under StrictMode", async () => {
   history.replaceState(null, "", `/auth/enroll#code=${setupCode}`);
   const api = auth();

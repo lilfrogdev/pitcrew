@@ -51,11 +51,12 @@ it("normalizes only scoped allowlisted account routes and removes caller identit
     ),
   ).toBe(200);
   expect(passwordApiRoute("/api/threads/t/presence", "DELETE")).toBe(false);
+  expect(passwordApiRoute("/api/project-adoptions", "GET")).toBe(true);
+  expect(passwordApiRoute("/api/projects", "POST")).toBe(true);
 });
 
-it("denies lifecycle, adoption, paid runs, publisher routes and unused auth methods", () => {
+it("denies lifecycle, paid runs, publisher routes and unused auth methods", () => {
   for (const path of [
-    "/api/projects",
     "/api/repositories/create",
     "/api/repositories/import",
     "/api/repositories/delete",

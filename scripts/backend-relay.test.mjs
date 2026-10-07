@@ -706,6 +706,7 @@ test("password mode uses only the held account cookie and scoped ingress without
   const scopedPaths = [
     "/api/projects",
     "/api/account",
+    "/api/project-adoptions",
     "/api/threads/thread/source/diff?path=a.ts",
     "/api/projects/project/threads/thread/visualizations",
     "/api/projects/project/threads/thread/visualizations/visual",
@@ -799,7 +800,6 @@ test("password relay blocks cloud mutation surfaces and missing accounts before 
   const f = fixture({ passwordMode: true, sharedApi: true, sessionHeaders: async () => ({}) });
   assert.equal((await request(f.handler, "/api/projects")).status, 401);
   for (const path of [
-    "/api/projects",
     "/api/repositories/create",
     "/api/repositories/import",
     "/api/repositories/reconcile",
@@ -819,6 +819,68 @@ test("password relay blocks cloud mutation surfaces and missing accounts before 
     assert.equal((await request(f.handler, "/api/projects", { headers })).status, 403);
   assert.equal(f.calls.length + f.tokens.length, 0);
   assert.throws(() => createBackendRelayMiddleware({ passwordMode: "true" }), /invalid_relay_mode/);
+});
+
+test("password project adoption requires the local nonce and held account cookie", async () => {
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({
+      Cookie: "__Secure-pitcrew-auth.session_token=held-account-cookie",
+    }),
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const cookie = local.headers["Set-Cookie"].split(";", 1)[0];
+  const body = JSON.stringify({
+    name: "approved-repository",
+    repositoryId: "immutable-repository-id",
+  });
+  const headers = {
+    origin,
+    cookie,
+    "content-type": "application/json",
+    "x-pitcrew-local-nonce": local.json.nonce,
+  };
+  assert.equal(
+    (
+      await request(f.handler, "/api/projects", {
+        method: "POST",
+        headers: { ...headers, "x-pitcrew-local-nonce": "forged" },
+        body,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(f.calls.length, 0);
+  const adopted = await request(f.handler, "/api/projects", { method: "POST", headers, body });
+  assert.equal(adopted.status, 200);
+  assert.equal(f.calls[0].url, BACKEND_ACCESS.origin + "/app/api/projects");
+  assert.equal(f.calls[0].init.body, body);
+  assert.equal(
+    f.calls[0].init.headers.Cookie,
+    "__Secure-pitcrew-auth.session_token=held-account-cookie",
+  );
+  assert.equal(f.calls[0].init.headers.Origin, BACKEND_ACCESS.origin);
+  assert.equal(f.calls[0].init.headers["Cf-Access-Token"], undefined);
+  assert.equal(f.tokens.length, 0);
+  const loggedOut = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({}),
+  });
+  const anonymousLocal = await request(loggedOut.handler, "/api/local-session");
+  const anonymous = await request(loggedOut.handler, "/api/projects", {
+    method: "POST",
+    headers: {
+      origin,
+      "content-type": "application/json",
+      "x-pitcrew-local-nonce": anonymousLocal.json.nonce,
+      cookie: anonymousLocal.headers["Set-Cookie"].split(";", 1)[0],
+    },
+    body,
+  });
+  assert.equal(anonymous.status, 401);
+  assert.equal(loggedOut.calls.length + loggedOut.tokens.length, 0);
 });
 
 test("visualization relay allows only bounded scoped JSON reads and retains server-held session authority", async () => {
