@@ -32,7 +32,7 @@ async function authNonce(): Promise<string> {
   });
   return bootstrap;
 }
-async function authRequest(path: string, body?: object): Promise<unknown> {
+async function authRequest(path: string, body?: object, retrySession = true): Promise<unknown> {
   const nonce = await authNonce();
   const response = await fetch(`/api/auth/${path}`, {
     method: body ? "POST" : "GET",
@@ -45,12 +45,19 @@ async function authRequest(path: string, body?: object): Promise<unknown> {
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });
-  if (!response.ok)
+  if (!response.ok) {
+    // Only a session read is safe to retry. A newer sign-in/logout may have
+    // superseded the relay request while its backend response was pending.
+    if (path === "get-session" && response.status === 409 && retrySession) {
+      const value = (await response.json().catch(() => null)) as { error?: unknown } | null;
+      if (value?.error === "auth_request_superseded") return authRequest(path, undefined, false);
+    }
     throw Error(
       response.status === 429
         ? "Too many attempts. Try again later."
         : "Authentication could not be completed. Try again.",
     );
+  }
   const text = await response.text();
   return text ? (JSON.parse(text) as unknown) : null;
 }

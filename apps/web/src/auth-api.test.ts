@@ -2,6 +2,55 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 import { httpAuthApi } from "./auth-api";
 afterEach(() => vi.unstubAllGlobals());
 
+it("retries only a superseded session read, once, against the current relay cookie", async () => {
+  const user = {
+    id: "new-account",
+    email: "owner@example.com",
+    emailVerified: false,
+    name: "Owner",
+    username: "owner",
+    image: null,
+  };
+  let sessions = 0;
+  const fetch = vi.fn(async (path: string) => {
+    if (path.endsWith("local-session")) return Response.json({ nonce: "a".repeat(64) });
+    if (++sessions === 1)
+      return Response.json({ error: "auth_request_superseded" }, { status: 409 });
+    return Response.json({ user });
+  });
+  vi.stubGlobal("fetch", fetch);
+  expect(await httpAuthApi.session()).toEqual({ user });
+  expect(sessions).toBe(2);
+  expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+    "/api/auth/local-session",
+    "/api/auth/get-session",
+    "/api/auth/local-session",
+    "/api/auth/get-session",
+  ]);
+});
+
+it("does not repeat mutations or retry unrelated/conflicting session failures indefinitely", async () => {
+  let attempts = 0;
+  let error = "auth_request_superseded";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) => {
+      if (path.endsWith("local-session")) return Response.json({ nonce: "a".repeat(64) });
+      attempts++;
+      return Response.json({ error }, { status: 409 });
+    }),
+  );
+  await expect(httpAuthApi.signIn("owner@example.com", "synthetic-password")).rejects.toThrow();
+  expect(attempts).toBe(1);
+  attempts = 0;
+  await expect(httpAuthApi.session()).rejects.toThrow();
+  expect(attempts).toBe(2);
+  attempts = 0;
+  error = "unrelated_conflict";
+  await expect(httpAuthApi.session()).rejects.toThrow();
+  expect(attempts).toBe(1);
+});
+
 it("uses relay admission and preserves the honest verification flag while projecting public fields", async () => {
   const fetch = vi.fn(async (path: string) =>
     path.endsWith("local-session")
