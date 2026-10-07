@@ -35,6 +35,8 @@ It tests only fixtures, including a separate intentionally unsafe local countere
 that demonstrates why arbitrary generated scripts must remain disabled.
 The actual App polling fixture retains page two and a changed chart control across three
 real 15-second membership polls, then revokes synthetic membership and checks disposal.
+It also checks a temporary read failure, keyboard Retry with a fresh authorization read,
+and failed recovery after membership revocation.
 This adds roughly 45 seconds to the browser check; the polling cadence is unchanged.
 
 The frontend `authorized` flag is a presentation guard. Server adapters require current

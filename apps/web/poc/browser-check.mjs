@@ -476,8 +476,66 @@ try {
     assert.equal(await evaluate("document.body.textContent.includes('Page 2 of 2')"), true);
     assert.equal(await evaluate("document.getElementById('minimum').value", child), "12");
   }
+  await evaluate("visualizationPollingFixture.failNextRead()");
+  await until("document.querySelectorAll('iframe').length===0");
+  assert.equal(
+    await evaluate("document.body.textContent.includes('Private polling description')"),
+    false,
+  );
+  await evaluate(
+    "window.visualizationPollingFailedReads=visualizationPollingFixture.counts.visualizations",
+  );
+  await evaluate(
+    "Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Retry visualizations').focus()",
+  );
+  assert.equal(await evaluate("document.activeElement.textContent"), "Retry visualizations");
+  await screenshot("polling-read-unavailable.png");
+  await cdp("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    text: "\r",
+    unmodifiedText: "\r",
+    windowsVirtualKeyCode: 13,
+  });
+  await cdp("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+  });
+  await until(
+    "visualizationPollingFixture.counts.visualizations===visualizationPollingFailedReads+1",
+  );
+  await until("document.querySelectorAll('iframe').length===1");
+  assert.equal(await evaluate("document.body.textContent.includes('Page 2 of 2')"), true);
+  assert.equal(
+    await evaluate(
+      "visualizationPollingFixture.counts.visualizations===visualizationPollingFailedReads+1",
+    ),
+    true,
+  );
+  assert.equal(
+    await evaluate("document.querySelector('iframe')===visualizationPollingFrame"),
+    false,
+  );
+  await screenshot("polling-read-recovery.png");
   await evaluate("visualizationPollingFixture.revoke()");
   await until("document.querySelectorAll('iframe').length===0");
+  assert.equal(
+    await evaluate("document.body.textContent.includes('Private polling description')"),
+    false,
+  );
+  await evaluate(
+    "window.visualizationPollingRevokedReads=visualizationPollingFixture.counts.visualizations",
+  );
+  await evaluate(
+    "Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Retry visualizations').click()",
+  );
+  await until(
+    "visualizationPollingFixture.counts.visualizations===visualizationPollingRevokedReads+1",
+  );
+  assert.equal(await evaluate("document.querySelectorAll('iframe').length"), 0);
   assert.equal(
     await evaluate("document.body.textContent.includes('Private polling description')"),
     false,
@@ -517,7 +575,9 @@ try {
       "authorization renewal preserves immutable preview controls",
       "remote membership revocation removes running frames and private text on revalidation",
       "actual App preserves page and chart controls across three real 15-second membership polls",
+      "temporary visualization read failure clears private content; keyboard Retry requires a fresh read",
       "actual App membership revocation removes frames and private fallback",
+      "Retry cannot restore revoked visualizations",
     ],
     productionFixtureSentinelHits: productionHits,
     counterexample: hits,
@@ -529,6 +589,8 @@ try {
       "private-admission-mobile.png",
       "polling-page-before.png",
       "polling-page-after.png",
+      "polling-read-unavailable.png",
+      "polling-read-recovery.png",
     ],
     limitations:
       "Chromium only; local service account/session authorization is simulated. Private SQL/API and disposal are exercised with fixtures, not a deployed account system. No arbitrary generated JS or production deployment. The own-frame navigation counterexample remains unsafe and outside the supported content contract.",

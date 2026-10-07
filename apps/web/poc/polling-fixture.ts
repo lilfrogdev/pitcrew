@@ -12,8 +12,9 @@ export function createVisualizationPollingFixture() {
     email: "viewer@fixture.invalid",
     emailVerified: true,
   };
-  const counts = { projects: 0, threads: 0 };
+  const counts = { projects: 0, threads: 0, visualizations: 0 };
   let permitted = true;
+  let failNextRead = false;
   let epoch = "fixture-session-1";
   const projects = api.projects;
   const threads = api.threads;
@@ -42,7 +43,12 @@ export function createVisualizationPollingFixture() {
     removeThreadMember: unsupported,
   };
   api.visualizations = async (projectId, threadId) => {
+    counts.visualizations++;
     if (!permitted) throw new ApiError(404);
+    if (failNextRead) {
+      failNextRead = false;
+      throw new ApiError(503);
+    }
     return {
       accountId: `account:${viewer.id}`,
       repositoryId: projectId,
@@ -77,6 +83,9 @@ export function createVisualizationPollingFixture() {
     api,
     viewer,
     counts,
+    failNextRead: () => {
+      failNextRead = true;
+    },
     revoke: () => {
       permitted = false;
     },

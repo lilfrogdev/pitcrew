@@ -50,6 +50,37 @@ it("disposes the frame when the verified visualization session epoch changes", a
   await waitFor(() => expect(fixture.frame.isConnected).toBe(false), { timeout: 4000 });
   expect(screen.getByTitle("Polling chart 3")).not.toBe(fixture.frame);
 });
+it("recovers a temporary read failure only after a fresh retry, without restoring revoked content", async () => {
+  const fixture = await mount();
+  fixture.failNextRead();
+  await waitFor(() => expect(fixture.frame.isConnected).toBe(false), { timeout: 4000 });
+  const failedReads = fixture.counts.visualizations;
+  for (let poll = 0; poll < 3; poll++) {
+    await act(async () => {
+      fixture.poll();
+    });
+    expect(fixture.view.container.querySelector("iframe")).toBeNull();
+    expect(screen.queryByText(/Private polling description/)).toBeNull();
+  }
+  expect(fixture.counts.visualizations).toBe(failedReads);
+  fireEvent.click(screen.getByRole("button", { name: "Retry visualizations" }));
+  const restored = await screen.findByTitle("Polling chart 3");
+  expect(restored).not.toBe(fixture.frame);
+  expect(fixture.counts.visualizations).toBe(failedReads + 1);
+  expect(screen.getByText("Page 2 of 2")).toBeTruthy();
+  fixture.revoke();
+  await waitFor(() => expect(restored.isConnected).toBe(false), { timeout: 4000 });
+  const revokedReads = fixture.counts.visualizations;
+  fireEvent.click(screen.getByRole("button", { name: "Retry visualizations" }));
+  await act(async () => {});
+  expect(fixture.counts.visualizations).toBe(revokedReads + 1);
+  expect(fixture.view.container.querySelector("iframe")).toBeNull();
+  expect(screen.queryByText(/Private polling description/)).toBeNull();
+  await act(async () => {
+    fixture.poll();
+  });
+  expect(screen.queryByRole("button", { name: "Retry visualizations" })).toBeNull();
+}, 15000);
 it.each(["account", "transport", "project", "thread"])(
   "disposes the old visualization after %s changes",
   async (change) => {
