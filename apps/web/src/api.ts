@@ -134,6 +134,7 @@ export interface Api {
     key: string,
     attachments?: (SubmittedAttachment | UploadSubmission)[],
     selection?: ModelSelection,
+    mentions?: import("@pitcrew/protocol").SubmittedMention[],
   ): Promise<unknown>;
 }
 export class ApiError extends Error {
@@ -471,11 +472,12 @@ export const httpApi: Api = {
     ),
   setModelSettings: (projectId, settings) =>
     request(`/projects/${encodeURIComponent(projectId)}/model-settings`, { settings }),
-  send: (id, content, idempotencyKey, attachments, modelSelection) =>
+  send: (id, content, idempotencyKey, attachments, modelSelection, mentions) =>
     request(`/threads/${encodeURIComponent(id)}/messages`, {
       content,
       idempotencyKey,
       attachments,
       modelSelection,
+      mentions,
     }),
 };

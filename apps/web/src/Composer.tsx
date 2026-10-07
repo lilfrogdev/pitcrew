@@ -1,3 +1,6 @@
+import { useMentionPicker } from "./mentions/Picker";
+import type { Member } from "./api";
+import type { SubmittedMention } from "@pitcrew/protocol";
 import { useLayoutEffect, useRef, useState } from "react";
 import {
   ATTACHMENT_LIMITS,
@@ -55,6 +58,8 @@ export function Composer({
   attachmentsEnabled = true,
   onTyping,
   onTypingStop,
+  mentionMembers = [],
+  onMention,
 }: {
   draft: string;
   onDraft: (text: string) => void;
@@ -74,9 +79,12 @@ export function Composer({
   attachmentsEnabled?: boolean;
   onTyping?: (hasInput: boolean) => void;
   onTypingStop?: () => void;
+  mentionMembers?: Member[];
+  onMention?: (text: string, mention: SubmittedMention) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const mentions = useMentionPicker(draft, disabled ? [] : mentionMembers, sessionKey, textarea, onDraft, onMention);
   const [dragging, setDragging] = useState(false);
   const dictation = useDictation(draft, onDraft, dictationEnabled && !disabled, sessionKey);
   const imagesSupported = capabilities?.images === true;
@@ -111,6 +119,7 @@ export function Composer({
   }, [draft]);
   return (
     <form
+      style={{ position: "relative" }}
       className={`composer${dragging ? " composer-dragging" : ""}`}
       onSubmit={(event) => {
         if (dictation.active) event.preventDefault();
@@ -182,7 +191,12 @@ export function Composer({
       <label className="sr-only" htmlFor="message">
         Message your crew
       </label>
+      {mentions.picker}
       <textarea
+        role="combobox"
+        {...mentions.aria}
+        onFocus={(event) => mentions.selection(event.currentTarget)}
+        onSelect={(event) => mentions.selection(event.currentTarget)}
         ref={textarea}
         id="message"
         placeholder="Describe a change or ask about the work…"
@@ -190,13 +204,13 @@ export function Composer({
         value={draft}
         disabled={disabled}
         onChange={(event) => {
-          onDraft(event.target.value);
+          mentions.change(event.target);
           onTyping?.(event.target.value.length > 0);
         }}
-        onCompositionStart={() => onTyping?.(true)}
+        onCompositionStart={() => { mentions.setComposing(true); onTyping?.(true); }}
         onCompositionUpdate={() => onTyping?.(true)}
-        onCompositionEnd={(event) => onTyping?.(event.currentTarget.value.length > 0)}
-        onBlur={onTypingStop}
+        onCompositionEnd={(event) => { mentions.setComposing(false); mentions.selection(event.currentTarget); onTyping?.(event.currentTarget.value.length > 0); }}
+        onBlur={() => { mentions.blur(); onTypingStop?.(); }}
         onPaste={(event) => {
           if (event.clipboardData.files.length) {
             event.preventDefault();
@@ -204,6 +218,7 @@ export function Composer({
           }
         }}
         onKeyDown={(event) => {
+          if (mentions.key(event)) return;
           if (
             event.key === "Enter" &&
             !event.shiftKey &&

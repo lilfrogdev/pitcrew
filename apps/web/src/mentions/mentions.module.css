@@ -1,0 +1,11 @@
+.picker { position: absolute; z-index: 12; bottom: calc(100% + 6px); left: 0; margin: 0; padding: 4px; list-style: none; width: min(280px, 100%); max-height: 260px; overflow: auto; border: 1px solid var(--border, #3c3c3c); border-radius: 6px; background: var(--surface, #fff); box-shadow: 0 6px 20px #0004; }
+.picker button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; background: transparent; color: inherit; border: 0; border-radius: 4px; text-align: left; }
+.picker [aria-selected="true"] button, .picker button:hover { background: #8882; }
+.picker img, .picker svg, .card img, .card svg { width: 24px; height: 24px; }
+.mention { display: inline; padding: 1px 3px; border: 0; border-radius: 3px; background: #8882; color: inherit; font: inherit; cursor: pointer; }
+.mention:focus-visible { outline: 1px solid currentColor; outline-offset: 2px; }
+.identity { position: relative; display: inline; }
+.card { position: absolute; top: calc(100% + 6px); left: 0; z-index: 14; display: grid; gap: 6px; min-width: 150px; max-width: min(240px, 70vw); padding: 12px; border: 1px solid var(--border, #3c3c3c); border-radius: 6px; background: var(--surface, #fff); box-shadow: 0 6px 20px #0004; white-space: normal; overflow-wrap: anywhere; }
+.addressed { padding: 1px 5px; border-radius: 3px; background: #8882; font-size: 11px; }
+
+.avatar { width: 24px; height: 24px; flex: 0 0 24px; }

@@ -1,3 +1,4 @@
+export * from "./mentions.ts";
 import type {
   CurrentKnowledge,
   KnowledgeRecord,
@@ -36,6 +37,7 @@ export interface Change {
   contextRevision: string;
 }
 export interface Message {
+  mentions?: import("./mentions.ts").MessageMention[];
   /** Verified application identity snapshot; never supplied by the message body. */
   author?: {
     actor: string;
@@ -127,6 +129,7 @@ export interface Event {
   createdAt: string;
 }
 export interface SubmitMessage {
+  mentions?: import("./mentions.ts").SubmittedMention[];
   attachments?: SubmittedAttachment[];
   content: string;
   idempotencyKey: string;
