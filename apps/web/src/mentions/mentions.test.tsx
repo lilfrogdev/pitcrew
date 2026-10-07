@@ -163,6 +163,7 @@ it("renders clickable stable member identity after rename, recipient-only indica
   expect(screen.getByText("Mentioned you")).toBeTruthy();
   await userEvent.setup().click(screen.getByRole("button", { name: "View @renamed" }));
   expect(screen.getByRole("dialog", { name: "@renamed" }).textContent).toContain("Member");
+  expect(screen.getByRole("dialog", { name: "@renamed" }).parentElement).toBe(document.body);
   fireEvent.keyDown(screen.getByRole("button", { name: "View @renamed" }), { key: "Escape" });
   expect(screen.queryByRole("dialog")).toBeNull();
   rerender(
@@ -174,6 +175,40 @@ it("renders clickable stable member identity after rename, recipient-only indica
   expect(screen.queryByRole("button", { name: /View/ })).toBeNull();
   expect(screen.getByText("Hi @johncena and @missing")).toBeTruthy();
   expect(screen.queryByText("Mentioned you")).toBeNull();
+});
+it("keeps the identity card inside a narrow viewport and dismisses it when its anchor scrolls", async () => {
+  const width = vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(390);
+  const message: Snapshot["messages"][number] = {
+    id: "m",
+    threadId: "t",
+    role: "user",
+    content: "@johncena",
+    createdAt: "2026-10-07T12:00:00Z",
+    mentions: [{ actor: john.actor, username: "johncena", start: 0, end: 9 }],
+  };
+  try {
+    render(<MessageContent message={message} members={[john]} />);
+    const button = screen.getByRole("button", { name: "View @johncena" });
+    vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
+      left: 370,
+      right: 450,
+      top: 300,
+      bottom: 320,
+      width: 80,
+      height: 20,
+      x: 370,
+      y: 300,
+      toJSON: () => ({}),
+    });
+    await userEvent.setup().click(button);
+    const card = screen.getByRole("dialog", { name: "@johncena" });
+    expect(Number.parseFloat(card.style.left) + 200).toBeLessThanOrEqual(390);
+    expect(card.parentElement).toBe(document.body);
+    fireEvent.scroll(button.closest("p")!);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  } finally {
+    width.mockRestore();
+  }
 });
 it("fences late rosters after thread/account switches and clears failed reads", async () => {
   let resolve!: (members: Member[]) => void;

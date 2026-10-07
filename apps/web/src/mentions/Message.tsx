@@ -51,7 +51,10 @@ function Mention({ member, label }: { member: Member; label: string }) {
         onClick={(event) => {
           const box = event.currentTarget.getBoundingClientRect();
           setPosition({
-            left: Math.max(8, Math.min(box.left, window.innerWidth - 208)),
+            left: Math.max(
+              8,
+              Math.min(box.left, (document.documentElement.clientWidth || window.innerWidth) - 208),
+            ),
             top:
               box.bottom + 146 < window.innerHeight ? box.bottom + 6 : Math.max(8, box.top - 146),
           });
