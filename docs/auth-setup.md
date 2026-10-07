@@ -66,7 +66,7 @@ creation/import and enables no paid execution or infrastructure action.
 The resulting project starts with new collaboration state. It does not copy,
 rebind or expose any legacy `access:<sub>` ACL, identity binding, project state,
 or provider ciphertext. Existing legacy projects remain inaccessible unless
-separately authorized. The new owner may invite Bryan through the normal
+separately authorized. The new owner may invite another eligible native account through the normal
 project/thread invitation routes; another native account has no visibility
 before accepting its specific invitation. All execution, conversation,
 infrastructure, lifecycle and publisher flags stay disabled during onboarding.
@@ -197,7 +197,7 @@ account's credentials later is a human-owned handoff, not an agent action.
 The identities use IANA's [reserved example domains](https://www.iana.org/help/example-domains)
 without relying on an example.com mail or HTTP service.
 
-## Approved setup sequence
+## Proposed setup sequence
 
 The user requested two ordinary personas with a local frontend. The combined
 publication, migration/deployment and client-refresh proposal must be approved
