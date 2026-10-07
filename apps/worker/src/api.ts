@@ -10,7 +10,7 @@ import { Hono } from "hono";
 import { ExecutionError } from "../../../packages/execution/src/contracts";
 import type { LandingApi } from "./landing-api";
 import { AdmissionError, Coordinator } from "./coordinator";
-import type { Collaboration } from "./collaboration";
+import type { Collaboration, CollaborationAuthority, Identity } from "./collaboration";
 import type { ThreadPresence } from "./thread-presence";
 import { stageUpload, type UploadStore, type UploadAuthority } from "./uploads";
 import { validUploadId, UPLOAD_LIMITS } from "@pitcrew/protocol";
@@ -44,8 +44,11 @@ export function api(
   presenceAuthority?: (operation: () => Response) => Promise<Response>,
   uploads?: UploadStore,
   uploadAuthority?: UploadAuthority,
+  collaborationAuthority?: CollaborationAuthority,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
+  const collaborate = <T>(operation: (identity?: Identity) => T | Promise<T>) =>
+    collaborationAuthority ? collaborationAuthority(operation) : operation();
   app.use("/api/threads/:threadId/presence", async (c, next) => {
     c.header("Cache-Control", "private, no-store");
     await next();
@@ -359,7 +362,9 @@ export function api(
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
     return c.json(
-      await access.invite("project", c.req.param("projectId"), body.email, body.role),
+      await collaborate(() =>
+        access.invite("project", c.req.param("projectId"), body.email, body.role),
+      ),
       201,
     );
   });
@@ -367,24 +372,34 @@ export function api(
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
     return c.json(
-      await access.invite("thread", c.req.param("threadId"), body.email, body.role),
+      await collaborate(() =>
+        access.invite("thread", c.req.param("threadId"), body.email, body.role),
+      ),
       201,
     );
   });
   app.get("/api/invitations/:token", async (c) =>
-    c.json(await access?.preview(c.req.param("token"))),
+    c.json(await collaborate(() => access?.preview(c.req.param("token")))),
   );
   app.post("/api/invitations/:token/accept", async (c) =>
-    c.json(await access?.accept(c.req.param("token"))),
+    c.json(await collaborate((identity) => access?.accept(c.req.param("token"), identity))),
   );
   app.post("/api/invitations/:token/revoke", async (c) =>
-    c.json(await access?.revoke(c.req.param("token"))),
+    c.json(await collaborate(() => access?.revoke(c.req.param("token")))),
   );
-  app.delete("/api/projects/:projectId/members/:actor", (c) =>
-    c.json(access?.remove("project", c.req.param("projectId"), c.req.param("actor"))),
+  app.delete("/api/projects/:projectId/members/:actor", async (c) =>
+    c.json(
+      await collaborate(() =>
+        access?.remove("project", c.req.param("projectId"), c.req.param("actor")),
+      ),
+    ),
   );
-  app.delete("/api/threads/:threadId/members/:actor", (c) =>
-    c.json(access?.remove("thread", c.req.param("threadId"), c.req.param("actor"))),
+  app.delete("/api/threads/:threadId/members/:actor", async (c) =>
+    c.json(
+      await collaborate(() =>
+        access?.remove("thread", c.req.param("threadId"), c.req.param("actor")),
+      ),
+    ),
   );
   app.get("/api/projects/:projectId/threads", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)

@@ -25,6 +25,9 @@ export type Identity = {
   username?: string;
   avatar?: string | null;
 };
+export type CollaborationAuthority = <T>(
+  operation: (identity: Identity) => T | Promise<T>,
+) => Promise<T>;
 const emailPattern = /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/;
 const missing = (): never => {
   throw new AdmissionError("not_found", 404);
@@ -233,9 +236,10 @@ export class Collaboration {
     if (invite.email !== this.identity.email && this.projectRole() !== "owner") missing();
     return this.publicInvitation(invite);
   }
-  async accept(token: string) {
+  async accept(token: string, identity = this.identity) {
+    if (identity.actor !== this.identity.actor || identity.email !== this.identity.email) missing();
     const invite = await this.find(token);
-    if (invite.email !== this.identity.email) missing();
+    if (invite.email !== identity.email) missing();
     return this.core.updateCollaboration((state) => {
       const current = state.collaboration?.invitations[invite.id];
       if (
@@ -257,7 +261,7 @@ export class Collaboration {
           : !threadInviter || (threadInviter.role !== "owner" && inviter.role !== "owner"))
       )
         throw new AdmissionError("invitation_unavailable", 410);
-      const member: Member = { ...this.identity, role: current.role };
+      const member: Member = { ...identity, role: current.role };
       if (current.scope === "thread") {
         if (
           !state.collaboration?.projectMembers[this.identity.actor] ||

@@ -1836,6 +1836,29 @@ export class RepositoryAgent extends Agent<Env> {
               throw new AdmissionError("uploads_unavailable", 503);
             throw error;
           }),
+      auth && user
+        ? (operation) =>
+            this.visualizationAuthority
+              .run(async () => {
+                // Invitation hashing and membership commits stay in the same
+                // queue as logout/revocation, after the bounded body is read.
+                const current = await authUser(auth, request, accessIdentity);
+                if (!current || current.id !== user.id)
+                  throw new AdmissionError("unauthorized", 401);
+                return operation({
+                  actor: `account:${current.id}`,
+                  email: current.email.toLowerCase(),
+                  username: current.username,
+                  displayName: current.name,
+                  avatar: current.image,
+                });
+              })
+              .catch((error) => {
+                if (error instanceof VisualizationError)
+                  throw new AdmissionError("collaboration_unavailable", 503);
+                throw error;
+              })
+        : undefined,
     );
     const response = await app.fetch(request);
     if (/\/uploads\//.test(path) && ["PUT", "DELETE"].includes(request.method) && response.ok)
