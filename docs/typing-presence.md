@@ -5,8 +5,10 @@ pending landing approval, recovery after a connection failure, then other people
 typing. Review opens the existing Review / PR controls and focuses the pending
 approval; it grants no permission. Approval eligibility uses the same exact
 candidate, test, review and capability checks as the existing landing control.
-Ordinary successful snapshot polling does not show Reconnecting. The strip keeps
-a fixed height, uses a polite live region, and abbreviates long names visually.
+Ordinary successful snapshot polling does not show Reconnecting. The strip appears
+only while a status is active, keeps a fixed 32px height when switching active
+statuses, and reserves no space when idle. An invisible live region stays outside
+the layout for polite announcements. Long names are abbreviated visually.
 
 `GET /api/threads/:threadId/presence` returns only other active accounts' trusted
 usernames and remaining lease durations. `POST` accepts exactly `clientId`,

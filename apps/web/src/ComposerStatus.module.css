@@ -16,8 +16,12 @@
   color: var(--muted);
   font-size: 12px;
 }
-.status[data-visible="false"] {
-  visibility: hidden;
+.liveRegion {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 .dot {
   width: 4px;
