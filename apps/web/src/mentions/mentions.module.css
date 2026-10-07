@@ -56,14 +56,12 @@
   display: inline;
 }
 .card {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
+  position: fixed;
   z-index: 14;
   display: grid;
   gap: 6px;
-  min-width: 150px;
-  max-width: min(240px, 70vw);
+  width: 200px;
+  max-width: calc(100vw - 16px);
   padding: 12px;
   border: 1px solid var(--border, #3c3c3c);
   border-radius: 6px;
@@ -71,6 +69,12 @@
   box-shadow: 0 6px 20px #0004;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.picker button > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .addressed {
   padding: 1px 5px;
