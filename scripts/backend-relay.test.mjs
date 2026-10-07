@@ -722,3 +722,85 @@ test("visualization relay allows only bounded scoped JSON reads and retains serv
   const loggedOut = fixture({ sharedApi: true, sessionHeaders: async () => ({}) });
   assert.equal((await request(loggedOut.handler, path)).status, 401);
 });
+
+test("thread presence uses authenticated exact routes, excludes draft fields, and never locks message writes", async () => {
+  let releaseMessage;
+  const cloud = [];
+  const f = fixture({
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-server-held-account" }),
+    fetchImpl: async (url, init) => {
+      if (url.endsWith("/api/local-session"))
+        return new Response(null, {
+          status: 302,
+          headers: { location: `${BACKEND_ACCESS.issuer}/cdn-cgi/access/login/backend` },
+        });
+      cloud.push({ url, init });
+      if (url.endsWith("/messages"))
+        await new Promise((resolve) => {
+          releaseMessage = resolve;
+        });
+      return Response.json(
+        url.endsWith("/presence") && init.method === "GET"
+          ? { typers: [{ username: "Alice", expiresInMs: 6000 }] }
+          : { ok: true },
+      );
+    },
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const headers = {
+    origin,
+    "content-type": "application/json",
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    "x-pitcrew-local-nonce": local.json.nonce,
+  };
+  const signal = { clientId: "00000000-0000-0000-0000-000000000001", sequence: 2, active: false };
+  const peers = await request(f.handler, "/api/threads/thread/presence");
+  assert.equal(peers.status, 200);
+  assert.equal(peers.headers["Cache-Control"], "private, no-store");
+  assert.equal((await request(f.handler, "/api/threads/thread/presence?actor=guess")).status, 400);
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/thread/presence", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...signal, text: "private draft", username: "spoof" }),
+      })
+    ).status,
+    400,
+  );
+  const pending = request(f.handler, "/api/threads/thread/messages", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ content: "synthetic message", idempotencyKey: "one" }),
+  });
+  await new Promise(setImmediate);
+  assert.equal(typeof releaseMessage, "function");
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/thread/presence", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(signal),
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/thread/messages", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ content: "second", idempotencyKey: "two" }),
+      })
+    ).status,
+    409,
+  );
+  releaseMessage();
+  await pending;
+  assert.equal(cloud.at(-1).init.headers.Cookie, "synthetic-server-held-account");
+  assert.equal(
+    cloud.filter((call) => call.url.endsWith("/presence") && call.init.method === "POST").length,
+    1,
+  );
+});

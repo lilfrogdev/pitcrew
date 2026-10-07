@@ -1,0 +1,41 @@
+.slot {
+  height: 32px;
+  margin: 0 calc(var(--conversation-gutter) + 12px);
+  flex-shrink: 0;
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+.status[data-visible="false"] {
+  visibility: hidden;
+}
+.dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.status button {
+  margin-left: auto;
+  padding: 1px 4px;
+  font-size: inherit;
+  color: var(--text);
+  flex-shrink: 0;
+}

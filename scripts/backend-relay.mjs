@@ -84,7 +84,7 @@ function sharedRoute(path, method) {
       `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
       `threads/${id}/source/(?:tree|file|diff)`,
       `projects/${id}/threads/${id}/visualizations(?:/${id})?`,
-      `threads/${id}/(?:members|messages|changes|runs|turns|attachments/${id})`,
+      `threads/${id}/(?:members|messages|changes|runs|turns|presence|attachments/${id})`,
       `changes/${id}(?:/runs)?`,
       `runs/${id}/(?:evidence|reviews)`,
       "invitations/[a-f0-9]{64}",
@@ -92,7 +92,7 @@ function sharedRoute(path, method) {
     POST: [
       "projects",
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/(?:move|dispatch)|threads/${id}/(?:archive|model-selection)|model-settings)`,
-      `threads/${id}/(?:messages|invitations|model-selection)`,
+      `threads/${id}/(?:messages|invitations|model-selection|presence)`,
       `changes/${id}/runs`,
       `runs/${id}/(?:merge-approval|landing(?:/reconcile)?)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
@@ -550,6 +550,7 @@ export function createBackendRelayMiddleware({
       (shared && ["POST", "DELETE"].includes(req.method)) ||
       (req.method === "POST" &&
         (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname)));
+    const presenceWrite = shared && write && url.pathname.endsWith("/presence");
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
       ((provider || models) && url.search) ||
@@ -606,7 +607,13 @@ export function createBackendRelayMiddleware({
             ? undefined
             : await body(
                 req,
-                shared && url.pathname.endsWith("/messages") ? 2097152 : shared ? 16384 : 8192,
+                shared && url.pathname.endsWith("/presence")
+                  ? 512
+                  : shared && url.pathname.endsWith("/messages")
+                    ? 2097152
+                    : shared
+                      ? 16384
+                      : 8192,
               );
         if (provider) {
           const fields = Object.keys(content).sort().join(",");
@@ -620,15 +627,27 @@ export function createBackendRelayMiddleware({
             )
           )
             throw Error();
+        } else if (shared && url.pathname.endsWith("/presence")) {
+          if (
+            Object.keys(content).sort().join(",") !== "active,clientId,sequence" ||
+            typeof content.active !== "boolean" ||
+            typeof content.clientId !== "string" ||
+            !/^[a-f0-9-]{36}$/.test(content.clientId) ||
+            !Number.isSafeInteger(content.sequence) ||
+            content.sequence < 1
+          )
+            throw Error();
         } else if (!shared && !normalizeMutation(url.pathname, content)) throw Error();
       } catch (error) {
         return reply(res, error.status ?? 400, { error: "invalid_repository_request" });
       }
-      if (busy) return reply(res, 409, { error: "backend_relay_busy" });
+      if (busy && !presenceWrite) return reply(res, 409, { error: "backend_relay_busy" });
     }
-    if (active >= 4) return reply(res, 429, { error: "backend_relay_capacity" });
+    // Ephemeral writes do not lock message/approval writes, and leave their last slot free.
+    if (active >= (presenceWrite ? 3 : 4))
+      return reply(res, 429, { error: "backend_relay_capacity" });
     active++;
-    if (write) busy = true;
+    if (write && !presenceWrite) busy = true;
     try {
       const access = await token();
       const authHeaders = sessionHeaders ? await sessionHeaders(req, access) : {};
@@ -711,7 +730,7 @@ export function createBackendRelayMiddleware({
       return reply(res, 503, { error: "repository_backend_unavailable" });
     } finally {
       active--;
-      if (write) busy = false;
+      if (write && !presenceWrite) busy = false;
     }
   };
 }

@@ -41,6 +41,8 @@ export function Composer({
   sessionKey = "composer",
   dictationEnabled = true,
   attachmentsEnabled = true,
+  onTyping,
+  onTypingStop,
 }: {
   draft: string;
   onDraft: (text: string) => void;
@@ -56,6 +58,8 @@ export function Composer({
   sessionKey?: string;
   dictationEnabled?: boolean;
   attachmentsEnabled?: boolean;
+  onTyping?: (hasInput: boolean) => void;
+  onTypingStop?: () => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -96,7 +100,10 @@ export function Composer({
       className={`composer${dragging ? " composer-dragging" : ""}`}
       onSubmit={(event) => {
         if (dictation.active) event.preventDefault();
-        else onSend(event);
+        else {
+          onTypingStop?.();
+          onSend(event);
+        }
       }}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes("Files")) {
@@ -159,7 +166,14 @@ export function Composer({
         rows={1}
         value={draft}
         disabled={disabled}
-        onChange={(event) => onDraft(event.target.value)}
+        onChange={(event) => {
+          onDraft(event.target.value);
+          onTyping?.(event.target.value.length > 0);
+        }}
+        onCompositionStart={() => onTyping?.(true)}
+        onCompositionUpdate={() => onTyping?.(true)}
+        onCompositionEnd={(event) => onTyping?.(event.currentTarget.value.length > 0)}
+        onBlur={onTypingStop}
         onPaste={(event) => {
           if (event.clipboardData.files.length) {
             event.preventDefault();

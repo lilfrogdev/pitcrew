@@ -66,6 +66,7 @@ import { fixtureLandingApi, assertConfigurationIdle, type LandingApi } from "./l
 import { cloudInitialState } from "./cloud-configuration";
 import { principal, protectedFetch, type AccessEnv } from "./access";
 import { Collaboration } from "./collaboration";
+import { ThreadPresence } from "./thread-presence";
 import { configuredAuth, authRequest, authUser, type AuthEnv } from "./auth";
 import { Agent, getAgentByName } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
@@ -187,6 +188,7 @@ export class RepositoryAgent extends Agent<Env> {
       revision: record.revision,
     };
   }
+  private readonly typingPresence = new ThreadPresence();
   private coordinator?: Coordinator;
   private readonly projectCoordinators = new Map<string, Coordinator>();
   private projectCoordinator(id: string): Coordinator | undefined {
@@ -1563,6 +1565,7 @@ export class RepositoryAgent extends Agent<Env> {
             (id) => this.publisherAuthority(`publish:${id}`)?.input,
           )
         : undefined,
+      this.typingPresence,
     );
     return app.fetch(request);
   }

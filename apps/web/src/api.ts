@@ -1,4 +1,5 @@
 import { createRepositoryApi, type RepositoryApi } from "./repository-api";
+import type { PresenceApi, TypingSnapshot } from "./thread-presence";
 import type {
   Project,
   Thread,
@@ -95,6 +96,7 @@ export interface CollaborationApi {
 export interface Api {
   source?: SourceApi;
   visualizations?(projectId: string, threadId: string, signal: AbortSignal): Promise<unknown>;
+  presence?: PresenceApi;
   openrouter?: OpenRouterConnectionApi;
   repositories?: RepositoryApi;
   collaboration?: CollaborationApi;
@@ -299,6 +301,12 @@ export const httpApi: Api = {
       request(
         `/threads/${encodeURIComponent(id)}/source/diff?${sourceQuery({ runId, path, version })}`,
       ),
+  },
+  presence: {
+    read: (threadId) =>
+      request<TypingSnapshot>(`/threads/${encodeURIComponent(threadId)}/presence`),
+    write: (threadId, signal) =>
+      request(`/threads/${encodeURIComponent(threadId)}/presence`, signal),
   },
   collaboration: {
     account: () => request("/account"),

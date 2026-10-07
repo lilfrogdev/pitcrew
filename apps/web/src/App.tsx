@@ -37,6 +37,9 @@ import { readDisplayPreference, saveDisplayPreference } from "./display-preferen
 import type { AuthApi } from "./auth-api";
 import type { AuthUser } from "./auth-api";
 import { Avatar } from "./Avatar";
+import { useThreadPresence } from "./useThreadPresence";
+import { ComposerStatus } from "./ComposerStatus";
+import { landingApprovalPending } from "./landing-approval";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
   queued: "Queued",
@@ -147,6 +150,9 @@ export function App({
     setMutationError("Access changed. Your workspace is refreshing.");
     setRevision((value) => value + 1);
   }, []);
+  const presence = useThreadPresence(api.presence, threadId, section === "work", accessLost);
+  const [connectionFailed, setConnectionFailed] = useState(false);
+  const connectionThread = useRef("");
 
   useEffect(() => {
     let cancelled = false;
@@ -305,6 +311,10 @@ export function App({
   }, [api, projectId, threadId]);
   useEffect(() => {
     const current = ++generation.current;
+    if (connectionThread.current !== threadId) {
+      connectionThread.current = threadId;
+      setConnectionFailed(false);
+    }
     if (!threadId) {
       setSnapshot(empty);
       setSnapshotLoading(false);
@@ -326,6 +336,7 @@ export function App({
           setSnapshot(next);
           setSnapshotLoading(false);
           setSnapshotError("");
+          setConnectionFailed(false);
         }
       } catch (cause) {
         if (!cancelled && current === generation.current && sequence === snapshotSequence.current) {
@@ -335,7 +346,10 @@ export function App({
             [401, 403, 404].includes(Number(cause.status))
           ) {
             accessLost();
-          } else setSnapshotError(errorText(cause));
+          } else {
+            setSnapshotError(errorText(cause));
+            setConnectionFailed(true);
+          }
           setSnapshotLoading(false);
         }
       } finally {
@@ -564,13 +578,16 @@ export function App({
         ) {
           setSnapshot(next);
           setSnapshotError("");
+          setConnectionFailed(false);
         }
       } catch (cause) {
         if (
           selectedGeneration === generation.current &&
           selectedSequence === snapshotSequence.current
-        )
+        ) {
           setSnapshotError(errorText(cause));
+          setConnectionFailed(true);
+        }
       }
     } catch (cause) {
       if (selectedGeneration === generation.current) setMutationError(errorText(cause));
@@ -632,6 +649,33 @@ export function App({
   const project = projects.find((item) => item.id === projectId);
   const thread = threads.find((item) => item.id === threadId);
   const latest = snapshot.runs.at(-1);
+  const approvalRun =
+    !loading &&
+    !snapshotError &&
+    [...snapshot.runs].reverse().find(
+      (run) =>
+        run.threadId === threadId &&
+        landingApprovalPending(
+          run,
+          snapshot.evidence.find((item) => item.run.id === run.id),
+          snapshot.reviews.filter((review) => review.runId === run.id),
+          landingEnabled,
+          landingBackend,
+          landingStates[landingStateKey(landingAccount, projectId, run.id)],
+        ),
+    );
+  const openApproval = () => {
+    if (!approvalRun) return;
+    setWorkspaceCollapsed(false);
+    requestAnimationFrame(() => {
+      document.getElementById("workspace-tab-review")?.click();
+      requestAnimationFrame(() => {
+        const control = document.getElementById(`landing-control-${approvalRun.id}`);
+        control?.scrollIntoView?.({ block: "nearest" });
+        control?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+      });
+    });
+  };
   const invitationAccepted = (invitation: InvitationPreview) => {
     requestedThread.current = invitation.threadId;
     setProjectId(invitation.projectId);
@@ -735,7 +779,7 @@ export function App({
               <Intake key={projectId} projectId={projectId} onDispatch={refresh} />
             </details>
           )}
-          {error && (
+          {error && !(error === snapshotError && connectionFailed) && (
             <div role="alert" className="error">
               <span>{error}</span>
               <button onClick={refresh} disabled={busy}>
@@ -859,7 +903,15 @@ export function App({
           {humanMessages && (
             <p className="composer-hint">Messages are shared. Agent runs are disabled.</p>
           )}
+          <ComposerStatus
+            onReconnect={error && error !== snapshotError ? undefined : refresh}
+            usernames={presence.usernames}
+            reconnecting={presence.reconnecting || connectionFailed}
+            approval={approvalRun ? { onOpen: openApproval } : undefined}
+          />
           <Composer
+            onTyping={presence.activity}
+            onTypingStop={presence.stop}
             sessionKey={threadId}
             dictationEnabled={section === "work"}
             draft={drafts[threadId] ?? ""}

@@ -11,6 +11,7 @@ import { ExecutionError } from "../../../packages/execution/src/contracts";
 import type { LandingApi } from "./landing-api";
 import { AdmissionError, Coordinator } from "./coordinator";
 import type { Collaboration } from "./collaboration";
+import type { ThreadPresence } from "./thread-presence";
 export function fixtureAccess(
   request: Request,
   env: { ENVIRONMENT: string; FIXTURE_IDENTITY?: string },
@@ -37,8 +38,13 @@ export function api(
       query: URLSearchParams,
     ): Promise<SourceTree | SourceFile | SourceDiff | SourcePatch>;
   },
+  presence?: ThreadPresence,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
+  app.use("/api/threads/:threadId/presence", async (c, next) => {
+    c.header("Cache-Control", "private, no-store");
+    await next();
+  });
   const authorizePath = (path: string) => {
     if (!access) return;
     const parts = path.split("/").slice(1);
@@ -78,20 +84,38 @@ export function api(
       const reader = c.req.raw.body?.getReader();
       let size = 0;
       const chunks: Uint8Array[] = [];
-      if (reader) {
-        while (true) {
-          const result = await reader.read();
-          if (result.done) break;
-          size += result.value.byteLength;
-          const limit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(c.req.url).pathname)
-            ? ATTACHMENT_LIMITS.requestBytes
-            : 16384;
-          if (size > limit) {
-            await reader.cancel();
-            throw new AdmissionError("body_too_large", 413);
+      const presenceBody = new URL(c.req.url).pathname.endsWith("/presence");
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = presenceBody
+        ? new Promise<never>((_, reject) => {
+            deadline = setTimeout(() => {
+              void reader?.cancel();
+              reject(new AdmissionError("invalid_presence"));
+            }, 5000);
+          })
+        : undefined;
+      try {
+        if (reader) {
+          while (true) {
+            const result = await (timedOut
+              ? Promise.race([reader.read(), timedOut])
+              : reader.read());
+            if (result.done) break;
+            size += result.value.byteLength;
+            const limit = new URL(c.req.url).pathname.endsWith("/presence")
+              ? 512
+              : /^\/api\/threads\/[^/]+\/messages$/.test(new URL(c.req.url).pathname)
+                ? ATTACHMENT_LIMITS.requestBytes
+                : 16384;
+            if (size > limit) {
+              await reader.cancel();
+              throw new AdmissionError("body_too_large", 413);
+            }
+            chunks.push(result.value);
           }
-          chunks.push(result.value);
         }
+      } finally {
+        if (deadline) clearTimeout(deadline);
       }
       const bytes = new Uint8Array(size);
       let offset = 0;
@@ -151,6 +175,23 @@ export function api(
         new URL(c.req.url).searchParams,
       ),
     );
+  });
+  app.use("/api/threads/:threadId/presence", async (c, next) => {
+    c.header("Cache-Control", "private, no-store");
+    if (!access || !presence) throw new AdmissionError("not_found", 404);
+    if (new URL(c.req.url).search) throw new AdmissionError("invalid_presence");
+    await next();
+  });
+  app.get("/api/threads/:threadId/presence", (c) =>
+    c.json(
+      presence!.read(coordinator.state.project.id, c.req.param("threadId"), access!, (actor) =>
+        coordinator.actorAuthorized(actor, c.req.param("threadId")),
+      ),
+    ),
+  );
+  app.post("/api/threads/:threadId/presence", (c) => {
+    presence!.write(coordinator.state.project.id, c.req.param("threadId"), access!, c.get("body"));
+    return c.json({ ok: true });
   });
   app.get("/api/projects/:projectId/context", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
