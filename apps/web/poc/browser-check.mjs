@@ -118,12 +118,15 @@ try {
   const pending = new Map();
   const contexts = new Map();
   const network = [];
+  let childSetupError;
+  const childSetupTasks = [];
   ws.onmessage = ({ data }) => {
     const message = JSON.parse(data);
     if (message.id) {
       const pair = pending.get(message.id);
       if (!pair) return;
       pending.delete(message.id);
+      clearTimeout(pair.timeout);
       if (message.error) pair.reject(Error(message.error.message));
       else pair.resolve(message.result);
     } else if (message.method === "Runtime.executionContextCreated") {
@@ -136,19 +139,45 @@ try {
     } else if (message.method === "Runtime.executionContextsCleared") {
       for (const [key, context] of contexts)
         if (context.sessionId === message.sessionId) contexts.delete(key);
+    } else if (message.method === "Target.detachedFromTarget") {
+      const detached = message.params.sessionId;
+      for (const [id, pair] of pending)
+        if (pair.sessionId === detached) {
+          pending.delete(id);
+          clearTimeout(pair.timeout);
+          pair.reject(Error("Session with given id not found."));
+        }
+      for (const [key, context] of contexts)
+        if (context.sessionId === detached) contexts.delete(key);
     } else if (
       message.method === "Target.attachedToTarget" &&
       message.params.targetInfo.type === "iframe"
     ) {
-      void call("Runtime.enable", {}, message.params.sessionId);
-      void call("Network.enable", {}, message.params.sessionId);
+      // Paging can dispose a frame before its asynchronous debugger attachment finishes.
+      childSetupTasks.push(
+        Promise.allSettled([
+          call("Runtime.enable", {}, message.params.sessionId),
+          call("Network.enable", {}, message.params.sessionId),
+        ]).then((results) => {
+          for (const result of results)
+            if (
+              result.status === "rejected" &&
+              result.reason?.message !== "Session with given id not found."
+            )
+              childSetupError ??= result.reason ?? Error("Unknown child debugger setup error");
+        }),
+      );
     } else if (message.method === "Network.requestWillBeSent")
       network.push(message.params.request.url);
   };
   function call(method, params = {}, sessionId) {
     const id = ++sequence;
     return new Promise((resolveCall, reject) => {
-      pending.set(id, { resolve: resolveCall, reject });
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(Error(`Debugger command timed out: ${method}`));
+      }, 10000);
+      pending.set(id, { resolve: resolveCall, reject, sessionId, timeout });
       ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   }
@@ -412,6 +441,13 @@ try {
     hits.some((hit) => hit.path.includes("own-frame-navigation")),
     "Opaque sandbox+CSP still permits own-frame navigation",
   );
+  await cdp("Target.setAutoAttach", {
+    autoAttach: false,
+    waitForDebuggerOnStart: false,
+    flatten: true,
+  });
+  await Promise.all(childSetupTasks);
+  assert.equal(childSetupError, undefined, "Child debugger setup had no unexpected error");
   const report = {
     browser: await call("Browser.getVersion"),
     checks: [
