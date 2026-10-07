@@ -12,7 +12,7 @@ After the repository's normal dependency installation, run from the repository r
 ```sh
 pnpm exec tsc -p apps/web/poc/tsconfig.json
 pnpm -C apps/web exec vp test run --config poc/vite.config.ts
-pnpm exec esbuild apps/web/poc/visualizations.tsx apps/web/poc/security.tsx --bundle --format=esm --jsx=automatic --outdir=apps/web/poc/dist
+pnpm exec esbuild apps/web/poc/visualizations.tsx apps/web/poc/security.tsx apps/web/poc/polling.tsx --bundle --format=esm --jsx=automatic --loader:.svg=dataurl --outdir=apps/web/poc/dist
 pnpm exec esbuild apps/web/poc/security-service.ts --bundle --platform=node --format=esm --outfile=apps/web/poc/dist/security-service.mjs
 cp apps/web/poc/index.html apps/web/poc/dist/index.html
 python3 -m http.server 5196 --bind 127.0.0.1 --directory apps/web/poc/dist
@@ -33,6 +33,11 @@ empty temporary profile, closes that browser, and saves evidence in the director
 provided by the security artifact manager. It uses the macOS Google Chrome application path.
 It tests only fixtures, including a separate intentionally unsafe local counterexample
 that demonstrates why arbitrary generated scripts must remain disabled.
+The actual App polling fixture retains page two and a changed chart control across three
+real 15-second membership polls, then revokes synthetic membership and checks disposal.
+It also checks a temporary read failure, keyboard Retry with a fresh authorization read,
+and failed recovery after membership revocation.
+This adds roughly 45 seconds to the browser check; the polling cadence is unchanged.
 
 The frontend `authorized` flag is a presentation guard. Server adapters require current
 verified session plus project and thread membership. Collaborators can read artifacts created

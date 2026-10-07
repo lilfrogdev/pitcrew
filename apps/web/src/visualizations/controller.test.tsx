@@ -1,6 +1,6 @@
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { VisualizationController, type VisualizationSource } from "./controller";
 import { VisualizationWorkspace } from "./VisualizationWorkspace";
 
@@ -123,7 +123,8 @@ describe("visualization access lifetime", () => {
   it.each(["pitcrew-auth-required", "pitcrew-access-lost", "offline"])(
     "removes running frames AND private fallback on %s",
     async (event) => {
-      const view = render(<VisualizationWorkspace source={source} authorized />);
+      const load = vi.fn(source.load);
+      const view = render(<VisualizationWorkspace source={{ ...source, load }} authorized />);
       await act(async () => {
         await Promise.resolve();
       });
@@ -133,6 +134,11 @@ describe("visualization access lifetime", () => {
       expect(view.container.querySelectorAll("iframe")).toHaveLength(0);
       expect(view.container.textContent).not.toContain("Private fallback");
       expect(view.container.textContent).not.toContain("Private chart");
+      const reads = load.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Retry visualizations" }));
+      await act(async () => {});
+      expect(load.mock.calls.length).toBe(reads);
+      expect(view.container.querySelector("iframe")).toBeNull();
     },
   );
   it("clears on hidden document, prop authorization loss, context replacement and unmount", async () => {
