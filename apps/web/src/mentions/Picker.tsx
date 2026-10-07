@@ -50,8 +50,10 @@ export function useMentionPicker(
     // Server applies the actual count bound; leave the current text intact on overflow.
     if (next.length > 8000) return;
     onMention(next, { actor: member.actor, start: token.start, end: token.start + label.length });
-    setCursor({ scope, caret: token.start + label.length + separator.length, focused: true });
-    setPendingCaret(token.start + label.length + separator.length);
+    const nextCaret =
+      token.start + label.length + (separator.length || (/\s/.test(text[token.end] ?? "") ? 1 : 0));
+    setCursor({ scope, caret: nextCaret, focused: true });
+    setPendingCaret(nextCaret);
     setDismissed(undefined);
   }
   const selection = (element: HTMLTextAreaElement) => {
