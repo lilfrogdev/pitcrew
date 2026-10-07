@@ -1463,6 +1463,10 @@ export class RepositoryAgent extends Agent<Env> {
             return Response.json({ error: "repository_identity_changed" }, { status: 409 });
           const [head] = await repo.log({ ref: info.defaultBranch, limit: 1 });
           if (head && !/^[a-f0-9]{40}$/.test(head.hash)) throw Error("invalid_head");
+          // Do not assume get(name) pins an immutable source across awaits.
+          // Revalidate after the head read before committing account ownership.
+          if ((await repo.info()).id !== target.repositoryId)
+            return Response.json({ error: "repository_identity_changed" }, { status: 409 });
           return await this.visualizationAuthority.run(async () => {
             try {
               await requireVisualizationSession(this.env.AUTH_DB!, grant);

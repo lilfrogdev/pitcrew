@@ -228,6 +228,32 @@ it("empty native accounts adopt only the exact approved source through productio
   }
 });
 
+it("repository ID replacement during the head read cannot commit while the original account session and approval remain valid", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.enroll(ownerEmail, "owner");
+    await f.repository.approve(owner);
+    const sessions = await f.db.prepare("SELECT id,user_id FROM session ORDER BY id").all();
+    expect(sessions.results).toHaveLength(1);
+    await f.repository.pause("log");
+    const adoption = f.request("/projects", ownerEmail, target);
+    await f.waitPaused();
+    await f.repository.replaceMetadataId("replacement-during-log");
+    await f.repository.releaseMetadata();
+    const response = await adoption;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "repository_identity_changed" });
+    expect(
+      (await f.db.prepare("SELECT id,user_id FROM session ORDER BY id").all()).results,
+    ).toEqual(sessions.results);
+    expect(await (await f.request("/project-adoptions")).json()).toEqual([target]);
+    expect(await (await f.request("/projects")).json()).toEqual([]);
+    expect(Object.keys((await f.repository.storedState()).ownedProjects ?? {})).toHaveLength(0);
+  } finally {
+    await f.mf.dispose();
+  }
+});
+
 it("logout, revoke-all, expiry and changed approval during metadata awaits cannot commit a stale adoption", async () => {
   const f = await fixture();
   try {
