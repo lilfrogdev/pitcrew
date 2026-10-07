@@ -26,6 +26,7 @@ export function api(
   landing?: LandingApi,
   identity: { actor: string } = { actor: "local-fixture" },
   conversation?: { catalog: ModelCatalog; dispatch: (id: string) => void | Promise<void> },
+  execution = false,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
@@ -363,6 +364,7 @@ export function api(
   });
   app.get("/api/capabilities", (c) =>
     c.json({
+      execution,
       landing: { enabled: !!landing, backend: landing?.backend ?? null },
       ...(conversation
         ? {

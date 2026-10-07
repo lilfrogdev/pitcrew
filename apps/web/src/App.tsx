@@ -43,6 +43,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [providersLoading, setProvidersLoading] = useState(true);
   const [composerCapabilities, setComposerCapabilities] =
     useState<LandingCapabilities["composer"]>();
+  const [agentExecution, setAgentExecution] = useState(false);
   const [selections, setSelections] = useState<Record<string, ModelSelection>>({});
   const [selectionSaving, setSelectionSaving] = useState<Record<string, boolean>>({});
   const [landingStates, setLandingStates] = useState<Record<string, LandingState>>({});
@@ -92,11 +93,13 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
     setLandingEnabled(false);
     setProvidersLoading(true);
     setComposerCapabilities(undefined);
+    setAgentExecution(false);
     api
       .capabilities()
       .then((capabilities) => {
         if (!cancelled) {
           setComposerCapabilities(capabilities.composer);
+          setAgentExecution(capabilities.execution === true);
           setProvidersLoading(false);
           setLandingEnabled(
             capabilities.landing.enabled && capabilities.landing.backend === "fixture",
@@ -107,6 +110,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         if (!cancelled) {
           setLandingEnabled(false);
           setComposerCapabilities(undefined);
+          setAgentExecution(false);
           setProvidersLoading(false);
         }
       });
@@ -229,8 +233,9 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
 
   const displayOnly = composerCapabilities?.displayOnly === true;
   const executionEnabled =
-    !displayOnly &&
-    (composerCapabilities?.executionEnabled ?? composerCapabilities?.conversation ?? false);
+    agentExecution ||
+    (!displayOnly &&
+      (composerCapabilities?.executionEnabled ?? composerCapabilities?.conversation ?? false));
   const usableModels =
     composerCapabilities?.conversation || displayOnly
       ? composerCapabilities.models.filter(
@@ -924,6 +929,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           api={api.openrouter}
           onChange={() => {
             setComposerCapabilities(undefined);
+            setAgentExecution(false);
             setProvidersLoading(true);
             setProviderRevision((value) => value + 1);
           }}

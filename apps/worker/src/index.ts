@@ -511,8 +511,7 @@ export class RepositoryAgent extends Agent<Env> {
         return;
       }
       if (receipt.stage === "blocked") {
-        if (!receipt.cleanupVerified) return { rescheduleAt: Date.now() + 5000 };
-        core.fail(runId, receipt.error === "reconciliation_required");
+        core.fail(runId, false);
         return;
       }
       return { rescheduleAt: Date.now() + 1000 };
@@ -607,6 +606,7 @@ export class RepositoryAgent extends Agent<Env> {
             dispatch: (id) => this.conversationJobs.enqueue(id, { turnId: id }),
           }
         : undefined,
+      this.env.EXECUTION_MODE === "local" && !!this.env.OPENROUTER_API_KEY,
     );
     return app.fetch(request);
   }

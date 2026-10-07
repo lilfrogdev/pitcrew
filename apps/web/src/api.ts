@@ -25,6 +25,7 @@ export type Snapshot = {
   turns?: { id: string; status: "queued" | "running" | "completed" | "failed"; error?: string }[];
 };
 export type LandingCapabilities = {
+  execution?: boolean;
   landing: { enabled: boolean; backend: "fixture" | null };
   composer?: {
     models: ModelChoice[];
