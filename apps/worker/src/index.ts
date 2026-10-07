@@ -18,6 +18,20 @@ export { RepoConversationAgent };
 import { resolveCatalog, validateFrozenModels, requiresUserOpenRouter } from "./model-selection";
 import { providerModelsRequest } from "./provider-models";
 import { attachmentStore, type AttachmentStore } from "./attachment-store";
+import { VisualizationStore } from "./visualization-store";
+import { VisualizationTurnGrants } from "./visualization-turn-grants";
+import { VisualizationAuthorityGate } from "./visualization-authority-gate";
+import {
+  visualizationGrant,
+  visualizationSession,
+  requireVisualizationSession,
+} from "./visualization-auth";
+import { publishVisualization, visualizationRequest } from "./visualization-api";
+import {
+  VisualizationError,
+  readVisualizationContent,
+  documentFragment,
+} from "../../../packages/protocol/src/visualizations";
 import {
   ATTACHMENT_LIMITS,
   type StoredImageAttachment,
@@ -84,6 +98,95 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   ADOPT_REPOSITORY_ID?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
+  protected readonly visualizationAuthority = new VisualizationAuthorityGate();
+  private visualizations?: VisualizationStore;
+  private visualizationGrants?: VisualizationTurnGrants;
+  private getVisualizations() {
+    return (this.visualizations ??= new VisualizationStore(this.ctx.storage.sql, (work) =>
+      this.ctx.storage.transactionSync(work),
+    ));
+  }
+  private getVisualizationGrants() {
+    return (this.visualizationGrants ??= new VisualizationTurnGrants(this.ctx.storage.sql));
+  }
+  protected enqueueConversation(id: string) {
+    return this.conversationJobs.enqueue(id, { turnId: id });
+  }
+  async publishConversationVisualization(turnId: string, invocationId: string, content: unknown) {
+    // Bound and copy pending payloads before retaining them in the FIFO.
+    const bounded = readVisualizationContent(content);
+    if (bounded.kind === "document") documentFragment(bounded);
+    return this.visualizationAuthority.run(() =>
+      this.publishVisualizationExclusive(turnId, invocationId, bounded),
+    );
+  }
+  private async publishVisualizationExclusive(
+    turnId: string,
+    invocationId: string,
+    content: unknown,
+  ) {
+    const core = this.turnCoordinator(turnId),
+      grant = this.getVisualizationGrants().get(turnId);
+    if (
+      !core ||
+      !grant ||
+      this.env.AUTH_MODE !== "better-auth" ||
+      !this.env.AUTH_DB ||
+      !this.conversationsEnabled()
+    )
+      throw new VisualizationError("visualization_authority_revoked", 403);
+    const fence = () => {
+      const turn = core.conversationTurn(turnId),
+        membershipActor = turn.membershipActor ?? turn.actor;
+      if (
+        turn.status !== "running" ||
+        !turn.input ||
+        turn.input.turnId !== turnId ||
+        turn.input.projectId !== grant.repositoryId ||
+        turn.input.threadId !== grant.threadId ||
+        core.state.project.id !== grant.repositoryId ||
+        turn.threadId !== grant.threadId ||
+        membershipActor !== grant.actor ||
+        turn.actor !== grant.accessActor ||
+        grant.expiresAt <= Date.now()
+      )
+        throw new VisualizationError("visualization_authority_revoked", 403);
+      const access = new Collaboration(
+        core,
+        { actor: grant.actor, email: grant.email },
+        this.env.ACCESS_EMAIL?.toLowerCase() ?? "",
+      );
+      access.requireProject(grant.repositoryId);
+      access.requireThread(grant.threadId);
+    };
+    const fresh = async () => {
+      await requireVisualizationSession(this.env.AUTH_DB!, grant);
+      fence();
+    };
+    const record = await publishVisualization(
+      this.getVisualizations(),
+      {
+        actor: grant.actor,
+        repositoryId: grant.repositoryId,
+        threadId: grant.threadId,
+        turnId,
+        invocationId,
+      },
+      content,
+      fresh,
+      fence,
+    );
+    await fresh();
+    fence();
+    return {
+      id: record.id,
+      repositoryId: record.repositoryId,
+      threadId: record.threadId,
+      turnId,
+      invocationId: record.invocationId,
+      revision: record.revision,
+    };
+  }
   private coordinator?: Coordinator;
   private readonly projectCoordinators = new Map<string, Coordinator>();
   private projectCoordinator(id: string): Coordinator | undefined {
@@ -1157,7 +1260,17 @@ export class RepositoryAgent extends Agent<Env> {
     const path = new URL(request.url).pathname;
     if (path.startsWith("/api/auth/"))
       return auth
-        ? authRequest(auth, request, accessIdentity)
+        ? authRequest(auth, request, accessIdentity, (operation) =>
+            this.visualizationAuthority.run(operation),
+          ).catch(() =>
+            Response.json(
+              { error: "auth_unavailable" },
+              {
+                status: 503,
+                headers: { "Cache-Control": "private, no-store" },
+              },
+            ),
+          )
         : Response.json({ error: "not_found" }, { status: 404 });
     const user = auth ? await authUser(auth, request, accessIdentity) : undefined;
     if (auth && !user) return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -1288,6 +1401,35 @@ export class RepositoryAgent extends Agent<Env> {
     if (!coordinator) return Response.json({ error: "not_found" }, { status: 404 });
     const access = new Collaboration(coordinator, identity, ownerEmail);
     if (user && coordinator !== root) access.rebindLegacy(accessIdentity.actor);
+    if (/^\/api\/projects\/[^/]+\/threads\/[^/]+\/visualizations(?:\/[^/]+)?$/.test(path)) {
+      if (!auth || !user)
+        return Response.json(
+          { error: "unauthorized" },
+          { status: 401, headers: { "Cache-Control": "private, no-store" } },
+        );
+      return this.visualizationAuthority
+        .run(
+          async () =>
+            (await visualizationRequest(request, this.getVisualizations(), {
+              session: (r) => visualizationSession(auth, r, accessIdentity),
+              requireThread: (context) => {
+                if (context.actor !== identity.actor)
+                  throw new VisualizationError("unauthorized", 401);
+                access.requireProject(context.repositoryId);
+                access.requireThread(context.threadId);
+              },
+            }))!,
+        )
+        .catch(() =>
+          Response.json(
+            { error: "visualization_unavailable" },
+            {
+              status: 503,
+              headers: { "Cache-Control": "private, no-store" },
+            },
+          ),
+        );
+    }
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter")
       return providerConnectionRequest(request, this.env, accessIdentity.actor);
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter/models")
@@ -1377,7 +1519,33 @@ export class RepositoryAgent extends Agent<Env> {
         (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
         ? {
             catalog: resolveCatalog(userModelEnv(this.env, accessIdentity.actor)),
-            dispatch: (id) => this.conversationJobs.enqueue(id, { turnId: id }),
+            dispatch: async (id) => {
+              if (auth && user) {
+                await this.visualizationAuthority.run(async () => {
+                  const grant = await visualizationGrant(auth, request, accessIdentity),
+                    turn = coordinator.conversationTurn(id);
+                  if (!grant || grant.actor !== identity.actor)
+                    throw new VisualizationError("unauthorized", 401);
+                  await requireVisualizationSession(this.env.AUTH_DB!, grant);
+                  access.requireProject(coordinator.state.project.id);
+                  access.requireThread(turn.threadId);
+                  if (
+                    (turn.membershipActor ?? turn.actor) !== grant.actor ||
+                    turn.actor !== grant.accessActor
+                  )
+                    throw new VisualizationError("visualization_authority_revoked", 403);
+                  this.ctx.storage.transactionSync(() =>
+                    this.getVisualizationGrants().bind({
+                      ...grant,
+                      repositoryId: coordinator.state.project.id,
+                      threadId: turn.threadId,
+                      turnId: id,
+                    }),
+                  );
+                });
+              }
+              return this.enqueueConversation(id);
+            },
           }
         : undefined,
       access,

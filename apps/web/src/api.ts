@@ -16,6 +16,7 @@ import type {
 } from "@pitcrew/protocol";
 import type { SourceApi } from "@pitcrew/protocol";
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
+import { loadVisualizationJson } from "./visualizations/controller";
 export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
 export type SharedMessage = Message & {
   author?: Account;
@@ -93,6 +94,7 @@ export interface CollaborationApi {
 }
 export interface Api {
   source?: SourceApi;
+  visualizations?(projectId: string, threadId: string, signal: AbortSignal): Promise<unknown>;
   openrouter?: OpenRouterConnectionApi;
   repositories?: RepositoryApi;
   collaboration?: CollaborationApi;
@@ -389,6 +391,13 @@ export const httpApi: Api = {
   reconcile: (id, authorizationId) =>
     request(`/runs/${encodeURIComponent(id)}/landing/reconcile`, { authorizationId }),
   projects: () => request("/projects"),
+  visualizations: (projectId, threadId, signal) =>
+    readWithBudget(() =>
+      loadVisualizationJson(
+        `/api/projects/${encodeURIComponent(projectId)}/threads/${encodeURIComponent(threadId)}/visualizations`,
+        signal,
+      ),
+    ),
   threads: (id) => request(`/projects/${encodeURIComponent(id)}/threads`),
   setThreadArchived: (projectId, id, archived) =>
     request(

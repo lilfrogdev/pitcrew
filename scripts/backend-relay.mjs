@@ -83,6 +83,7 @@ function sharedRoute(path, method) {
       "capabilities",
       `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
       `threads/${id}/source/(?:tree|file|diff)`,
+      `projects/${id}/threads/${id}/visualizations(?:/${id})?`,
       `threads/${id}/(?:members|messages|changes|runs|turns|attachments/${id})`,
       `changes/${id}(?:/runs)?`,
       `runs/${id}/(?:evidence|reviews)`,
@@ -681,7 +682,14 @@ export function createBackendRelayMiddleware({
         res.end(Buffer.concat(chunks));
         return;
       }
-      const value = await boundedJson(response, shared ? 2097152 : 262144);
+      const visualization =
+        /^\/api\/projects\/[A-Za-z0-9_-]{1,128}\/threads\/[A-Za-z0-9_-]{1,128}\/visualizations(?:\/[A-Za-z0-9_-]{1,128})?$/.test(
+          url.pathname,
+        );
+      const value = await boundedJson(
+        response,
+        visualization ? 524288 + 4096 : shared ? 2097152 : 262144,
+      );
       if (!response.ok)
         return reply(res, response.status, {
           error:

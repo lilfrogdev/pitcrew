@@ -13,8 +13,8 @@ import { Select } from "./Select";
 import { RepositoryFiles, RepositoryDiffs } from "./RepositoryViewers";
 import { runDisplayStatus } from "./landing-receipt";
 
-type Tab = "browser" | "files" | "diffs" | "review";
-const tabs = [
+type Tab = "browser" | "files" | "diffs" | "review" | "visualizations";
+const baseTabs = [
   { id: "browser", label: "Browser", Icon: IconWorld },
   { id: "files", label: "Files", Icon: IconFiles },
   { id: "diffs", label: "Diffs", Icon: IconGitCompare },
@@ -37,6 +37,7 @@ export function Workspace({
   children,
   collapsed,
   onCollapse,
+  visualizations,
 }: {
   scope: string;
   threadId?: string;
@@ -46,9 +47,17 @@ export function Workspace({
   children: ReactNode;
   collapsed: boolean;
   onCollapse: (value: boolean) => void;
+  visualizations?: ReactNode;
 }) {
+  const tabs = visualizations
+    ? [...baseTabs, { id: "visualizations" as const, label: "Visuals", Icon: IconWorld }]
+    : baseTabs;
   const [selections, setSelections] = useState<Record<string, Selection>>({});
-  const state = selections[scope] ?? { tab: "browser" };
+  const selected = selections[scope] ?? { tab: "browser" };
+  const state =
+    selected.tab === "visualizations" && !visualizations
+      ? { ...selected, tab: "browser" as const }
+      : selected;
   const update = (next: Partial<Selection>) =>
     setSelections((all) => ({
       ...all,
@@ -124,6 +133,17 @@ export function Workspace({
           ))}
         </div>
         <div className="workspace-context">{project?.repository ?? "No repository selected"}</div>
+        {!collapsed && state.tab === "visualizations" && visualizations && (
+          <section
+            className="workspace-panel"
+            role="tabpanel"
+            id="workspace-panel-visualizations"
+            aria-labelledby="workspace-tab-visualizations"
+            tabIndex={0}
+          >
+            {visualizations}
+          </section>
+        )}
         <section
           className="workspace-panel"
           role="tabpanel"

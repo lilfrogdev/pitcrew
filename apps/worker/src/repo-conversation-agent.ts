@@ -5,6 +5,7 @@ import type { PiHarness } from "agents/harness/pi";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { repositoryConversationTools } from "./repo-conversation-tools";
+import { visualizationRpcTools } from "./visualization-tools";
 import { configureSelectedModels, configureConversation } from "./model-selection";
 import { DurableJobs } from "./durable-jobs";
 import { AdmittedPiHarness, type PiEnv } from "./pi-agents";
@@ -59,6 +60,16 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
             repositoryConversationTools(() => {
               this.assertConversationAllowed();
               return this.repository().delegateRepoTurn(this.input().turnId);
+            }),
+          );
+          this.registry.install(
+            visualizationRpcTools((invocationId, content) => {
+              this.assertConversationAllowed();
+              return this.repository().publishConversationVisualization(
+                this.input().turnId,
+                invocationId,
+                content,
+              );
             }),
           );
           const harness = await this.openHarness(

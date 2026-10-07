@@ -4,7 +4,172 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 import { App } from "./App";
 import { createFixtureApi } from "./fixtures";
 import { Workspace, WorkspaceResize } from "./Workspace";
+import { VisualizationWorkspace } from "./visualizations/VisualizationWorkspace";
+import type { Snapshot } from "./api";
 afterEach(cleanup);
+it("mounts visual replies once and disposes frame/private text on tab switch, collapse, scope and access loss", async () => {
+  const user = userEvent.setup(),
+    api = createFixtureApi(),
+    snapshot: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
+  const version = "1".repeat(64),
+    baseSha = "a".repeat(40),
+    candidateSha = "b".repeat(40);
+  const project = {
+    id: "repo",
+    name: "Repository",
+    repository: "synthetic/example",
+    baseSha,
+    configurationRevision: "cfg",
+  };
+  const binding = { projectId: "repo", threadId: "thread", sourceId: "source", version };
+  const diffBinding = {
+    ...binding,
+    artifactId: "fork",
+    runId: "run",
+    baseSha,
+    candidateSha,
+    configurationRevision: "cfg",
+  };
+  snapshot.runs.push({
+    id: "run",
+    threadId: "thread",
+    baseSha,
+    candidateSha,
+    configurationRevision: "cfg",
+    status: "awaiting_review",
+  });
+  api.source = {
+    tree: async () => ({
+      ...binding,
+      sha: baseSha,
+      path: "",
+      entries: [{ name: "README.md", path: "README.md", kind: "file", mode: "100644" }],
+      cursor: null,
+    }),
+    file: async () => ({
+      ...binding,
+      sha: baseSha,
+      path: "README.md",
+      status: "text",
+      text: "Combined source file",
+      bytes: 20,
+    }),
+    diff: async () => ({
+      ...diffBinding,
+      entries: [{ path: "README.md", change: "modified" }],
+      total: 1,
+      cursor: null,
+      renameDetection: false,
+    }),
+    patch: async () => ({
+      ...diffBinding,
+      path: "README.md",
+      status: "text",
+      patch: "--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,1 @@\n-old\n+Combined patch\n",
+    }),
+  };
+  const record = {
+    id: "chart",
+    version: 1,
+    repositoryId: "repo",
+    threadId: "thread",
+    creatorActor: "account:viewer",
+    turnId: "turn",
+    invocationId: "call",
+    createdAt: 1,
+    revision: 1,
+    digest: "a".repeat(64),
+    content: {
+      kind: "bars",
+      title: "Private visual",
+      summary: "Private fallback",
+      height: 320,
+      points: [{ label: "A", value: 1 }],
+    },
+  };
+  let permitted = true;
+  const source = {
+    accountId: "account:viewer",
+    repositoryId: "repo",
+    threadId: "thread",
+    load: async () => {
+      if (!permitted) throw Error("revoked");
+      return {
+        accountId: "account:viewer",
+        repositoryId: "repo",
+        threadId: "thread",
+        accessEpoch: "epoch",
+        leaseMs: 5000,
+        artifacts: [
+          record,
+          {
+            ...record,
+            id: "second",
+            content: { ...record.content, title: "Second visual", summary: "Second fallback" },
+          },
+          {
+            ...record,
+            id: "third",
+            content: { ...record.content, title: "Third visual", summary: "Third fallback" },
+          },
+        ],
+      };
+    },
+  };
+  const visualizations = <VisualizationWorkspace source={source} authorized />;
+  const props = {
+    scope: "repo:thread",
+    project,
+    threadId: "thread",
+    snapshot,
+    api,
+    onCollapse: () => {},
+    visualizations,
+    children: "Review",
+  };
+  const view = render(<Workspace {...props} collapsed={false} />);
+  expect(view.container.querySelector("iframe")).toBeNull();
+  await user.click(screen.getByRole("tab", { name: "Visuals" }));
+  await screen.findByText("Private fallback");
+  expect(view.container.querySelectorAll("iframe")).toHaveLength(2);
+  await user.click(screen.getByRole("button", { name: "Next visualizations" }));
+  expect(screen.getByTitle("Third visual")).toBeTruthy();
+  expect(view.container.querySelectorAll("iframe")).toHaveLength(1);
+  expect(screen.queryByTitle("Private visual")).toBeNull();
+  expect(screen.queryByTitle("Second visual")).toBeNull();
+  expect(
+    (screen.getByRole("button", { name: "Next visualizations" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Previous visualizations" }));
+  expect(view.container.querySelectorAll("iframe")).toHaveLength(2);
+  await user.click(screen.getByRole("tab", { name: "Files" }));
+  expect(view.container.querySelector("iframe")).toBeNull();
+  expect(view.container.textContent).not.toContain("Private fallback");
+  await user.click(await screen.findByRole("button", { name: "README.md" }));
+  expect(await screen.findByText("Combined source file")).toBeTruthy();
+  await user.click(screen.getByRole("tab", { name: "Diffs" }));
+  expect(screen.queryByText("Combined source file")).toBeNull();
+  await user.click(await screen.findByRole("button", { name: "README.md modified" }));
+  expect(await screen.findByText("+Combined patch")).toBeTruthy();
+  await user.click(screen.getByRole("tab", { name: "Visuals" }));
+  await screen.findByText("Private fallback");
+  expect(screen.queryByText("+Combined patch")).toBeNull();
+  view.rerender(<Workspace {...props} collapsed />);
+  expect(view.container.querySelector("iframe")).toBeNull();
+  expect(view.container.textContent).not.toContain("Private fallback");
+  view.rerender(<Workspace {...props} collapsed={false} />);
+  await screen.findByText("Private fallback");
+  view.rerender(<Workspace {...props} scope="other" collapsed={false} />);
+  expect(view.container.querySelector("iframe")).toBeNull();
+  await user.click(screen.getByRole("tab", { name: "Visuals" }));
+  await screen.findByText("Private fallback");
+  permitted = false;
+  window.dispatchEvent(new Event("pitcrew-access-lost"));
+  await screen.findByText("Visualizations are unavailable or awaiting access verification.");
+  expect(view.container.querySelector("iframe")).toBeNull();
+  expect(view.container.textContent).not.toContain("Private fallback");
+  expect(screen.queryByRole("navigation", { name: "Visualization pages" })).toBeNull();
+});
 it("retains thread-specific workspace tabs and chat drafts across collapse and thread switches", async () => {
   const user = userEvent.setup();
   render(<App api={createFixtureApi()} demo />);

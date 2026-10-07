@@ -1,0 +1,65 @@
+.viz-demo {
+  max-width: 1120px;
+  margin: auto;
+  padding: 40px 24px;
+}
+.viz-demo header span {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.viz-demo h1 {
+  font-size: 30px;
+  margin: 10px 0;
+}
+.viz-demo header p,
+.viz-demo footer {
+  color: var(--muted);
+}
+.viz-demo nav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 24px 0;
+}
+.demo-layout {
+  display: grid;
+  gap: 24px;
+}
+.demo-layout.workspace {
+  grid-template-columns: 1fr 380px;
+}
+.demo-thread,
+.demo-layout aside {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 0;
+}
+.demo-user {
+  margin-bottom: 22px;
+  font-weight: 600;
+}
+.demo-reply {
+  margin-bottom: 16px;
+}
+.demo-layout aside h2 {
+  margin-bottom: 20px;
+}
+.viz-demo footer {
+  margin-top: 24px;
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  .viz-demo {
+    padding: 20px 12px;
+  }
+  .demo-layout.workspace {
+    grid-template-columns: 1fr;
+  }
+  .demo-thread,
+  .demo-layout aside {
+    padding: 16px;
+  }
+}
