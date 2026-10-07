@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { api } from "./api";
 import { Collaboration, type Identity } from "./collaboration";
-import { Coordinator, initialState } from "./coordinator";
+import { AdmissionError, Coordinator, initialState } from "./coordinator";
 import { ThreadPresence, TYPING_TTL_MS } from "./thread-presence";
 import {
   PresenceClient,
@@ -194,6 +194,55 @@ describe("ephemeral thread typing", () => {
     f.access(alice).remove("thread", f.thread.id, bob.actor);
     release();
     expect((await pending).status).toBe(404);
+  });
+  it("checks session authority after a delayed body before refreshing presence", async () => {
+    const f = fixture();
+    const presence = new ThreadPresence(f.now);
+    let bodyReady = false;
+    let sessionActive = true;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await gate;
+        controller.enqueue(
+          new TextEncoder().encode(JSON.stringify({ active: true, sequence: 1, clientId: tab(1) })),
+        );
+        bodyReady = true;
+        controller.close();
+      },
+    });
+    const app = api(
+      f.core,
+      () => {},
+      undefined,
+      bob,
+      undefined,
+      f.access(bob),
+      true,
+      undefined,
+      presence,
+      async (operation) => {
+        expect(bodyReady).toBe(true);
+        if (!sessionActive) throw new AdmissionError("unauthorized", 401);
+        return operation();
+      },
+    );
+    const pending = app.request(`/api/threads/${f.thread.id}/presence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      duplex: "half",
+    } as RequestInit);
+    await Promise.resolve();
+    sessionActive = false;
+    release();
+    expect((await pending).status).toBe(401);
+    expect(presence.read("pitcrew", f.thread.id, f.access(alice), () => true)).toEqual({
+      typers: [],
+    });
   });
   it("throttles refresh bursts and bounds tabs and request rates", async () => {
     const f = fixture();

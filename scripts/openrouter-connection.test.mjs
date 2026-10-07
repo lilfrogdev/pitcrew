@@ -214,3 +214,56 @@ test("display catalog is authenticated GET-only, strips private fields, and cann
     403,
   );
 });
+
+test("password provider writes bind held account cookie, never acquire Access, and keep execution off", async () => {
+  const f = fixture({
+    passwordMode: true,
+    userAccessSession: false,
+    tokenProvider: async () => {
+      throw Error("Access cache must not be read");
+    },
+    verifyToken: async () => {
+      throw Error("Access must not be verified");
+    },
+    sessionHeaders: async (_req, token) => {
+      assert.equal(token, "");
+      return { Cookie: "__Secure-pitcrew-auth.session_token=held-account-cookie" };
+    },
+    fetchImpl: async (url, init) => {
+      f.calls.push({ url, init });
+      return Response.json({ ...status, executionEnabled: true, key });
+    },
+  });
+  const headers = await session(f.handler);
+  const response = await request(f.handler, route, {
+    method: "POST",
+    headers: { ...headers, authorization: "injected", "cf-access-jwt-assertion": "injected" },
+    body: JSON.stringify({ action: "store", key }),
+  });
+  assert.equal(response.code, 200);
+  assert.deepEqual(response.json, status);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].url, BACKEND_ACCESS.origin + "/app" + route);
+  assert.deepEqual(f.calls[0].init.headers, {
+    Accept: "application/json",
+    Cookie: "__Secure-pitcrew-auth.session_token=held-account-cookie",
+    Origin: BACKEND_ACCESS.origin,
+    "Content-Type": "application/json",
+  });
+  const missing = fixture({ passwordMode: true, sessionHeaders: async () => ({}) });
+  assert.equal((await request(missing.handler)).code, 401);
+  assert.equal(missing.calls.length, 0);
+  const duplicate = await request(f.handler, route, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ action: "remove" }),
+    rawHeaders: [
+      "X-Pitcrew-Connection-Nonce",
+      headers["x-pitcrew-connection-nonce"],
+      "X-Pitcrew-Connection-Nonce",
+      "wrong",
+    ],
+  });
+  assert.equal(duplicate.code, 403);
+  assert.equal(f.calls.length, 1);
+});

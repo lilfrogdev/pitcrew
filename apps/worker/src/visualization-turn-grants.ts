@@ -28,6 +28,8 @@ export class VisualizationTurnGrants {
           "userId",
           "sessionId",
           "accessActor",
+          "mode",
+          "enrollmentId",
           "email",
           "repositoryId",
           "threadId",

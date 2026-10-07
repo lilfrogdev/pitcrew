@@ -20,6 +20,15 @@ const routes = new Map([
   ["/api/auth/reset-password", "POST"],
   ["/api/auth/revoke-sessions", "POST"],
 ]);
+const passwordRoutes = new Map([
+  ["/api/auth/enroll", "POST"],
+  ["/api/auth/sign-in/email", "POST"],
+  ["/api/auth/sign-out", "POST"],
+  ["/api/auth/get-session", "GET"],
+  ["/api/auth/update-user", "POST"],
+  ["/api/auth/change-password", "POST"],
+  ["/api/auth/revoke-sessions", "POST"],
+]);
 const equal = (a, b) => {
   if (typeof a !== "string" || typeof b !== "string") return false;
   const left = Buffer.from(a),
@@ -104,7 +113,7 @@ async function responseJson(response) {
     void reader.cancel();
   }
 }
-function safeUser(value) {
+function safeUser(value, passwordMode) {
   if (value === null) return null;
   const u = value?.user;
   if (
@@ -112,7 +121,7 @@ function safeUser(value) {
     typeof u.id !== "string" ||
     u.id.length > 128 ||
     !BACKEND_ACCESS.emails.includes(u.email) ||
-    u.emailVerified !== true ||
+    (passwordMode ? typeof u.emailVerified !== "boolean" : u.emailVerified !== true) ||
     typeof u.name !== "string" ||
     u.name.length > 80 ||
     typeof u.username !== "string" ||
@@ -125,7 +134,7 @@ function safeUser(value) {
     user: {
       id: u.id,
       email: u.email,
-      emailVerified: true,
+      emailVerified: u.emailVerified,
       name: u.name,
       username: u.username,
       image: u.image,
@@ -135,6 +144,7 @@ function safeUser(value) {
 export function createAuthRelayMiddleware({
   enabled = false,
   userAccessSession = false,
+  passwordMode = false,
   origin = origins[0],
   tokenProvider = readCachedAccessToken,
   verifyAccess = verifyUserAccessToken,
@@ -159,9 +169,10 @@ export function createAuthRelayMiddleware({
   // Backend/provider relays call this only after their own loopback admission.
   // It still checks Host/origin/loopback and verifies the current Access token.
   const sessionHeaders = async (req, token) => {
-    if (!enabled || !userAccessSession || !admitted(req, origin)) return {};
+    if (!enabled || (!passwordMode && !userAccessSession) || !admitted(req, origin)) return {};
     const s = lookup(req);
     if (!s?.cloudCookie) return {};
+    if (passwordMode) return { Cookie: s.cloudCookie };
     try {
       const who = await identity(token);
       if (who.subject !== s.subject || who.email !== s.email) {
@@ -185,7 +196,8 @@ export function createAuthRelayMiddleware({
       return reply(res, 400, { error: "invalid_request" });
     }
     if (!url.pathname.startsWith("/api/auth/")) return next();
-    if (!enabled || !userAccessSession) return reply(res, 503, { error: "auth_relay_disabled" });
+    if (!enabled || (!passwordMode && !userAccessSession))
+      return reply(res, 503, { error: "auth_relay_disabled" });
     if (!admitted(req, origin)) return reply(res, 403, { error: "auth_relay_denied" });
     if (url.pathname === "/api/auth/local-session" && req.method === "GET" && !url.search) {
       prune();
@@ -194,7 +206,7 @@ export function createAuthRelayMiddleware({
       if (!s) {
         if (sessions.size >= 128) return reply(res, 429, { error: "rate_limited" });
         id = randomBytes(32).toString("hex");
-        s = { nonce: randomBytes(32).toString("hex"), expiresAt: now() + lifetime };
+        s = { nonce: randomBytes(32).toString("hex"), expiresAt: now() + lifetime, generation: 0 };
         sessions.set(id, s);
       }
       return reply(
@@ -205,8 +217,8 @@ export function createAuthRelayMiddleware({
       );
     }
     if (
-      routes.get(url.pathname) !== req.method ||
-      (url.pathname !== "/api/auth/verify-email" && url.search) ||
+      (passwordMode ? passwordRoutes : routes).get(url.pathname) !== req.method ||
+      ((passwordMode || url.pathname !== "/api/auth/verify-email") && url.search) ||
       [...url.searchParams.keys()].some((k) => k !== "token") ||
       url.searchParams.getAll("token").length > 1
     )
@@ -221,38 +233,60 @@ export function createAuthRelayMiddleware({
       return reply(res, 400, { error: "invalid_request" });
     }
     let token, who;
-    try {
-      token = await tokenProvider();
-      who = await identity(token);
-    } catch {
+    if (!passwordMode)
+      try {
+        token = await tokenProvider();
+        who = await identity(token);
+      } catch {
+        sessions.delete(localCookie(req));
+        return reply(res, 401, { error: "backend_sign_in_required" });
+      }
+    if (!passwordMode && s.subject && (who.subject !== s.subject || who.email !== s.email)) {
       sessions.delete(localCookie(req));
       return reply(res, 401, { error: "backend_sign_in_required" });
     }
-    if (s.subject && (who.subject !== s.subject || who.email !== s.email)) {
-      sessions.delete(localCookie(req));
-      return reply(res, 401, { error: "backend_sign_in_required" });
+    if (!passwordMode) {
+      s.subject = who.subject;
+      s.email = who.email;
+      s.expiresAt = Math.min(s.expiresAt, who.expiresAt);
     }
-    s.subject = who.subject;
-    s.email = who.email;
-    s.expiresAt = Math.min(s.expiresAt, who.expiresAt);
+    // Drop the local credential before logout/revocation even if transport
+    // fails. Keep a private copy only to authorize that one remote request.
+    const sentCookie = s.cloudCookie;
+    if (
+      ["/api/auth/sign-in/email", "/api/auth/sign-out", "/api/auth/revoke-sessions"].includes(
+        url.pathname,
+      )
+    ) {
+      s.generation++;
+      s.cloudCookie = undefined;
+    }
+    const generation = s.generation;
     try {
-      const response = await requestBackend(BACKEND_ACCESS.origin + url.pathname + url.search, {
-        method: req.method,
-        redirect: "manual",
-        signal: AbortSignal.timeout(10000),
-        headers: {
-          Origin: BACKEND_ACCESS.origin,
-          "Cf-Access-Token": token,
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-          ...(s.cloudCookie ? { Cookie: s.cloudCookie } : {}),
+      const response = await requestBackend(
+        BACKEND_ACCESS.origin + (passwordMode ? "/app" : "") + url.pathname + url.search,
+        {
+          method: req.method,
+          redirect: "manual",
+          signal: AbortSignal.timeout(10000),
+          headers: {
+            Origin: BACKEND_ACCESS.origin,
+            ...(!passwordMode ? { "Cf-Access-Token": token } : {}),
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+            ...(sentCookie && url.pathname !== "/api/auth/sign-in/email"
+              ? { Cookie: sentCookie }
+              : {}),
+          },
+          ...(body === undefined ? {} : { body }),
         },
-        ...(body === undefined ? {} : { body }),
-      });
+      );
       if (response.status >= 300 && response.status < 400) {
         sessions.delete(localCookie(req));
         return reply(res, 401, { error: "backend_sign_in_required" });
       }
       const value = await responseJson(response);
+      if (generation !== s.generation || sessions.get(localCookie(req)) !== s)
+        return reply(res, 401, { error: "auth_relay_denied" });
       if (response.ok) {
         const cookies = response.headers.getSetCookie();
         for (const cookie of cookies) {
@@ -271,11 +305,12 @@ export function createAuthRelayMiddleware({
           s.cloudCookie = undefined;
         const output =
           url.pathname === "/api/auth/get-session"
-            ? safeUser(value)
+            ? safeUser(value, passwordMode)
             : { status: value?.status === true };
         if (url.pathname === "/api/auth/get-session" && output === null) s.cloudCookie = undefined;
         return reply(res, 200, output);
       }
+      if (response.status === 401) s.cloudCookie = undefined;
       return reply(
         res,
         [400, 401, 403, 404, 409, 422, 429, 503].includes(response.status) ? response.status : 502,
@@ -292,6 +327,7 @@ export function createAuthRelayMiddleware({
           : {},
       );
     } catch {
+      s.cloudCookie = undefined;
       return reply(res, 502, { error: "auth_backend_unavailable" });
     }
   };

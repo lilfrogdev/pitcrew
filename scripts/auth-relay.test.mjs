@@ -320,3 +320,129 @@ test("malformed and absolute request targets fail safely without token reads", a
     assert.equal(tokens, 0);
   }
 });
+
+test("password mode never reads Access, accepts unverified controlled sessions and hides cloud credentials", async () => {
+  const calls = [];
+  let logoutFails = false;
+  const relay = createAuthRelayMiddleware({
+    enabled: true,
+    passwordMode: true,
+    tokenProvider: async () => {
+      throw Error("Access must not be read");
+    },
+    verifyAccess: async () => {
+      throw Error("Access must not be verified");
+    },
+    requestBackend: async (url, init) => {
+      calls.push({ url, init });
+      if (logoutFails) throw Error("synthetic transport failure");
+      return Response.json(
+        url.endsWith("get-session")
+          ? {
+              user: {
+                id: "controlled-account",
+                email: "dev@lilfrogdev.com",
+                emailVerified: false,
+                name: "Owner",
+                username: "owner",
+                image: null,
+                accessActor: "must-not-leak",
+              },
+            }
+          : { status: true, token: "must-not-leak" },
+        {
+          headers: url.endsWith("sign-in/email")
+            ? { "Set-Cookie": cloudCookie + "; HttpOnly; Secure" }
+            : {},
+        },
+      );
+    },
+  });
+  const local = await call(relay, request("/api/auth/local-session"));
+  const options = {
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    nonce: local.value.nonce,
+  };
+  for (const path of [
+    "sign-up/email",
+    "request-password-reset",
+    "reset-password",
+    "send-verification-email",
+    "sign-in/social",
+  ])
+    assert.equal(
+      (await call(relay, request(`/api/auth/${path}`, { ...options, method: "POST", body: {} })))
+        .status,
+      404,
+    );
+  const login = await call(
+    relay,
+    request("/api/auth/sign-in/email", {
+      ...options,
+      method: "POST",
+      body: { email: "dev@lilfrogdev.com", password: "synthetic" },
+      headers: { "cf-access-jwt-assertion": "injected", authorization: "injected" },
+    }),
+  );
+  assert.deepEqual(login.value, { status: true });
+  assert.equal(login.headers["Set-Cookie"], undefined);
+  assert.equal(calls[0].url, BACKEND_ACCESS.origin + "/app/api/auth/sign-in/email");
+  assert.deepEqual(calls[0].init.headers, {
+    Origin: BACKEND_ACCESS.origin,
+    "Content-Type": "application/json",
+  });
+  const session = await call(relay, request("/api/auth/get-session", options));
+  assert.equal(session.value.user.emailVerified, false);
+  assert.equal(JSON.stringify(session.value).includes("must-not-leak"), false);
+  assert.deepEqual(await relay.sessionHeaders(request("/api/projects", options)), {
+    Cookie: cloudCookie,
+  });
+  logoutFails = true;
+  assert.equal(
+    (await call(relay, request("/api/auth/sign-out", { ...options, method: "POST", body: {} })))
+      .status,
+    502,
+  );
+  assert.deepEqual(await relay.sessionHeaders(request("/api/projects", options)), {});
+});
+
+test("late sign-in and session responses cannot restore a locally revoked password session", async () => {
+  let release;
+  const paused = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started;
+  const seen = new Promise((resolve) => {
+    started = resolve;
+  });
+  const relay = createAuthRelayMiddleware({
+    enabled: true,
+    passwordMode: true,
+    requestBackend: async (url) => {
+      if (url.endsWith("sign-in/email")) {
+        started();
+        await paused;
+        return Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } });
+      }
+      return Response.json({ status: true });
+    },
+  });
+  const local = await call(relay, request("/api/auth/local-session"));
+  const options = {
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    nonce: local.value.nonce,
+  };
+  const login = call(
+    relay,
+    request("/api/auth/sign-in/email", { ...options, method: "POST", body: {} }),
+  );
+  await seen;
+  assert.equal(
+    (await call(relay, request("/api/auth/sign-out", { ...options, method: "POST", body: {} })))
+      .status,
+    200,
+  );
+  release();
+  assert.equal((await login).status, 401);
+  assert.deepEqual(await relay.sessionHeaders(request("/api/projects", options)), {});
+});

@@ -39,6 +39,7 @@ export function api(
     ): Promise<SourceTree | SourceFile | SourceDiff | SourcePatch>;
   },
   presence?: ThreadPresence,
+  presenceAuthority?: (operation: () => Response) => Promise<Response>,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("/api/threads/:threadId/presence", async (c, next) => {
@@ -182,16 +183,26 @@ export function api(
     if (new URL(c.req.url).search) throw new AdmissionError("invalid_presence");
     await next();
   });
-  app.get("/api/threads/:threadId/presence", (c) =>
-    c.json(
-      presence!.read(coordinator.state.project.id, c.req.param("threadId"), access!, (actor) =>
-        coordinator.actorAuthorized(actor, c.req.param("threadId")),
-      ),
-    ),
-  );
-  app.post("/api/threads/:threadId/presence", (c) => {
-    presence!.write(coordinator.state.project.id, c.req.param("threadId"), access!, c.get("body"));
-    return c.json({ ok: true });
+  app.get("/api/threads/:threadId/presence", async (c) => {
+    const read = () =>
+      c.json(
+        presence!.read(coordinator.state.project.id, c.req.param("threadId"), access!, (actor) =>
+          coordinator.actorAuthorized(actor, c.req.param("threadId")),
+        ),
+      );
+    return presenceAuthority ? presenceAuthority(read) : read();
+  });
+  app.post("/api/threads/:threadId/presence", async (c) => {
+    const write = () => {
+      presence!.write(
+        coordinator.state.project.id,
+        c.req.param("threadId"),
+        access!,
+        c.get("body"),
+      );
+      return c.json({ ok: true });
+    };
+    return presenceAuthority ? presenceAuthority(write) : write();
   });
   app.get("/api/projects/:projectId/context", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)

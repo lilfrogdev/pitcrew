@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { jwtVerify } from "jose";
 import * as schema from "./auth-schema";
 import { authOptions } from "./auth-options";
+import { configuredPasswordAuth, passwordAuthRequest, passwordAuthUser } from "./password-auth";
 
 export interface AuthEnv {
   AUTH_MODE?: string;
@@ -51,8 +52,9 @@ export function configuredAuth(
   env: AuthEnv,
   request: Request,
   waitUntil: (task: Promise<unknown>) => void,
-  access: AccessIdentity,
+  access?: AccessIdentity,
 ) {
+  if (env.AUTH_MODE === "password-only") return configuredPasswordAuth(env, request, waitUntil);
   let base: URL;
   try {
     base = new URL(env.BETTER_AUTH_URL ?? "");
@@ -63,6 +65,7 @@ export function configuredAuth(
   if (
     env.AUTH_MODE !== "better-auth" ||
     !env.AUTH_DB ||
+    !access ||
     !admitted(access) ||
     !env.BETTER_AUTH_SECRET ||
     env.BETTER_AUTH_SECRET.length < 32 ||
@@ -142,6 +145,7 @@ export function configuredAuth(
     },
   });
   return Object.assign(auth, {
+    passwordMode: false as const,
     // This atomic subject bucket counts malformed tokens and bodies before the
     // library's IP bucket. It is separate from Better Auth's cleanup-managed table.
     async consumeAdmission(action: string) {
@@ -169,7 +173,9 @@ export function configuredAuth(
   });
 }
 export type Auth = NonNullable<ReturnType<typeof configuredAuth>>;
-export async function authUser(auth: Auth, request: Request, access: AccessIdentity) {
+export async function authUser(auth: Auth, request: Request, access?: AccessIdentity) {
+  if (auth.passwordMode) return passwordAuthUser(auth, request);
+  if (!access) return;
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session || !session.user.emailVerified || !bound(session.user, access)) return;
   return session.user;
@@ -228,9 +234,11 @@ const bodyKeys: Record<string, string[]> = {
 export async function authRequest(
   auth: Auth,
   request: Request,
-  access: AccessIdentity,
+  access: AccessIdentity | undefined,
   exclusive: (operation: () => Promise<Response>) => Promise<Response>,
 ) {
+  if (auth.passwordMode) return passwordAuthRequest(auth, request, exclusive);
+  if (!access) return failure("identity_mismatch", 403);
   const url = new URL(request.url),
     path = url.pathname;
   if (!admitted(access)) return failure("identity_mismatch", 403);

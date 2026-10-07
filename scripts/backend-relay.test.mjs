@@ -680,6 +680,146 @@ test("source viewers use explicit authenticated read routes and preserve bounded
   ])
     assert.ok([400, 404].includes((await request(f.handler, path)).status));
 });
+
+test("password mode uses only the held account cookie and scoped ingress without Access transport", async () => {
+  const sessions = [];
+  const f = fixture({
+    passwordMode: true,
+    userAccessSession: false,
+    sharedApi: true,
+    verifyToken: async () => {
+      throw Error("Access must not be verified");
+    },
+    sessionHeaders: async (req, token) => {
+      sessions.push({ req, token });
+      return { Cookie: "__Secure-pitcrew-auth.session_token=held-account-cookie" };
+    },
+    fetchImpl: async (url, init) => {
+      f.calls.push({ url, init });
+      return Response.json([]);
+    },
+  });
+  const local = await request(f.handler, "/api/local-session");
+  assert.equal(local.status, 200);
+  const cookie = local.headers["Set-Cookie"].split(";", 1)[0];
+  const scopedPaths = [
+    "/api/projects",
+    "/api/account",
+    "/api/threads/thread/source/diff?path=a.ts",
+    "/api/projects/project/threads/thread/visualizations",
+    "/api/projects/project/threads/thread/visualizations/visual",
+    "/api/threads/thread/presence",
+  ];
+  for (const path of scopedPaths)
+    assert.equal(
+      (
+        await request(f.handler, path, {
+          headers: {
+            cookie: `${cookie}; browser-secret=untrusted`,
+            authorization: "injected",
+            "cf-access-jwt-assertion": "injected",
+          },
+        })
+      ).status,
+      200,
+    );
+  assert.equal(f.tokens.length, 0);
+  assert.equal(f.calls.length, scopedPaths.length);
+  assert.ok(sessions.every(({ token }) => token === ""));
+  for (const call of f.calls) {
+    assert.ok(call.url.startsWith(BACKEND_ACCESS.origin + "/app/api/"));
+    assert.deepEqual(call.init.headers, {
+      Accept: "application/json",
+      Cookie: "__Secure-pitcrew-auth.session_token=held-account-cookie",
+    });
+  }
+  const posted = await request(f.handler, "/api/threads/thread/messages", {
+    method: "POST",
+    headers: {
+      origin,
+      cookie,
+      "content-type": "application/json",
+      "x-pitcrew-local-nonce": local.json.nonce,
+    },
+    body: JSON.stringify({ content: "account note", idempotencyKey: "note" }),
+  });
+  assert.equal(posted.status, 200);
+  assert.equal(f.calls.at(-1).init.headers.Origin, BACKEND_ACCESS.origin);
+  assert.equal(f.calls.at(-1).init.headers["Cf-Access-Token"], undefined);
+  const typing = { clientId: "00000000-0000-0000-0000-000000000001", sequence: 1, active: true };
+  const presenceHeaders = {
+    origin,
+    cookie,
+    "content-type": "application/json",
+    "x-pitcrew-local-nonce": local.json.nonce,
+  };
+  const count = f.calls.length;
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/thread/presence", {
+        method: "POST",
+        headers: { ...presenceHeaders, "x-pitcrew-local-nonce": "forged" },
+        body: JSON.stringify(typing),
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/thread/presence", {
+        method: "POST",
+        headers: presenceHeaders,
+        body: JSON.stringify({ ...typing, username: "forged", text: "private draft" }),
+      })
+    ).status,
+    400,
+  );
+  assert.equal(f.calls.length, count);
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/thread/presence", {
+        method: "POST",
+        headers: presenceHeaders,
+        body: JSON.stringify(typing),
+      })
+    ).status,
+    200,
+  );
+  assert.equal(f.calls.at(-1).url, BACKEND_ACCESS.origin + "/app/api/threads/thread/presence");
+  assert.equal(f.calls.at(-1).init.body, JSON.stringify(typing));
+  assert.equal(
+    f.calls.at(-1).init.headers.Cookie,
+    "__Secure-pitcrew-auth.session_token=held-account-cookie",
+  );
+  assert.equal(f.tokens.length, 0);
+});
+
+test("password relay blocks cloud mutation surfaces and missing accounts before network", async () => {
+  const f = fixture({ passwordMode: true, sharedApi: true, sessionHeaders: async () => ({}) });
+  assert.equal((await request(f.handler, "/api/projects")).status, 401);
+  for (const path of [
+    "/api/projects",
+    "/api/repositories/create",
+    "/api/repositories/import",
+    "/api/repositories/reconcile",
+    "/api/repositories/delete",
+    "/api/projects/project/intake/dispatch",
+    "/api/changes/change/runs",
+    "/api/runs/run/merge-approval",
+    "/api/runs/run/landing",
+    "/api/runs/run/landing/reconcile",
+  ])
+    assert.equal((await request(f.handler, path, { method: "POST" })).status, 404);
+  for (const headers of [
+    { origin: "https://other.test" },
+    { host: "evil.test" },
+    { "sec-fetch-site": "same-site" },
+  ])
+    assert.equal((await request(f.handler, "/api/projects", { headers })).status, 403);
+  assert.equal(f.calls.length + f.tokens.length, 0);
+  assert.throws(() => createBackendRelayMiddleware({ passwordMode: "true" }), /invalid_relay_mode/);
+});
+
 test("visualization relay allows only bounded scoped JSON reads and retains server-held session authority", async () => {
   const calls = [];
   let large = false;

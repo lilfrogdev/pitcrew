@@ -7,11 +7,9 @@
       "migrations_dir": "migrations/auth"
     }
   ],
-  "send_email": [{ "name": "EMAIL", "remote": true }],
   "vars": {
-    "AUTH_MODE": "better-auth",
+    "AUTH_MODE": "password-only",
     "BETTER_AUTH_URL": "https://pitcrew-backend.pitcrew-004.workers.dev",
-    "AUTH_CLIENT_ORIGIN": "http://localhost:5173",
-    "AUTH_EMAIL_FROM": "APPROVED_SENDER_REQUIRED"
+    "TRUSTED_PUBLISHER_ENABLED": "false"
   }
 }
