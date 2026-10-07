@@ -355,8 +355,10 @@ export function createAuthRelayMiddleware({
       );
     } catch {
       if (!current()) return superseded();
-      s.cloudCookie = undefined;
-      s.generation++;
+      if (s.cloudCookie) {
+        s.cloudCookie = undefined;
+        s.generation++;
+      }
       return reply(res, 502, { error: "auth_backend_unavailable" });
     }
   };

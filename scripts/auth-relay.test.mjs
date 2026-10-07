@@ -491,6 +491,29 @@ test("a null refresh started during sign-in cannot clear the subsequently instal
   assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
 });
 
+test("a failing refresh of an empty session cannot cancel a pending successful sign-in", async (t) => {
+  for (const failure of ["transport", "invalid-json"]) {
+    await t.test(failure, async () => {
+      const started = Promise.withResolvers();
+      const response = Promise.withResolvers();
+      const f = await passwordFixture(async (url) => {
+        if (url.endsWith("sign-in/email")) {
+          started.resolve();
+          return response.promise;
+        }
+        if (failure === "transport") throw Error("synthetic refresh failure");
+        return new Response("invalid", { headers: { "Content-Type": "application/json" } });
+      });
+      const login = f.login();
+      await started.promise;
+      assert.equal((await f.session()).status, 502);
+      response.resolve(Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } }));
+      assert.equal((await login).status, 200);
+      assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
+    });
+  }
+});
+
 test("delayed failures and logout from another tab cannot wipe a newer sign-in", async (t) => {
   for (const path of ["get-session", "sign-out"]) {
     for (const failure of ["transport", "redirect", "invalid-json", "unauthorized", "success"]) {
