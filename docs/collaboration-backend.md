@@ -7,9 +7,14 @@ email service or execution gate was changed.
 
 ## Identity and ownership
 
-Cloudflare Access verifies subject/email at the outer edge. Better Auth verifies
-an email/password account and binds it immutably to that Access subject and email.
+The native `/app/api/*` surface uses controlled Better Auth username/password
+accounts, independently of the protected legacy Access-bound email surface.
+Native email metadata comes from a consumed recipient-bound enrollment grant.
 Application identity is `account:<Better Auth user id>`; membership is explicit.
+Usernames are canonical lowercase and case-insensitively unique in D1. They are
+display/login data and never select an authorization principal. A verified
+session refreshes only its existing actor's member profile metadata, preserving
+membership and historical author snapshots. Full name is optional metadata.
 Cloudflare administration and the email allowlist do not grant repository access.
 New accounts have no repositories. The old single-project state remains isolated
 and can migrate only to the configured verified owner's identity. It is not listed
@@ -55,7 +60,9 @@ websocket transport is introduced by this slice.
   retry/intake dispatch returns 503 after authorization. Notes do not create runs.
   Notes with attachments are rejected, not silently truncated.
 - New user message `author` is a verified account snapshot. Client-supplied author,
-  principal, membership or credential owner fields cannot change it.
+  principal, membership or credential owner fields cannot change it. Messages,
+  member lists and presence carry the verified username; labels prefer it over
+  full name or email. A renamed username retains the same account actor.
 
 Lifecycle create/import records freeze `ownerActor`; cross-account guessed names
 and unowned legacy records cannot be reconciled or deleted. A ready cleaned-up

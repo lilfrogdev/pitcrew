@@ -1,8 +1,8 @@
-# Local email/password accounts
+# Local username/password accounts
 
 Each person runs the frontend on localhost:5173. Cloudflare hosts only the shared
 Worker, D1 account database and existing repository Durable Objects. The active
-account design is email/password only: no email delivery, domain, SSO, OAuth,
+account design is username/password: no email delivery, domain, SSO, OAuth,
 public signup or implicit provider/account linking. Earlier Access-bound email
 verification code remains available only on the protected legacy surface.
 
@@ -11,7 +11,11 @@ verification code remains available only on the protected legacy surface.
 Only `dev@lilfrogdev.com` and `bryan.aldair.zamora@gmail.com` may be privately
 invited. An operator-issued 32-byte random capability is bound to one recipient
 in `auth_enrollment`; only its SHA256 hash persists. The user opens their private
-`/auth/enroll#code=...` link and personally chooses a password, name and username.
+`/auth/enroll#code=...` link and personally chooses a password and username, with
+an optional full name. Usernames contain 3–32 ASCII letters, digits or underscores
+and are stored in lowercase. Case variants identify the same username. The full
+name remains profile metadata and may be empty; messages and collaborator labels
+prefer the actual verified username.
 The fragment is immediately removed from browser history. Neither typed email
 nor the allowlist alone establishes eligibility. The account's email remains
 `emailVerified=false`; no mailbox verification is claimed.
@@ -72,10 +76,13 @@ unavailable on that surface. Explicitly approved adoption of an existing source
 is available as described below. Membership checks still gate shared product routes.
 Caller identity/Access headers never select a principal.
 
-Password auth endpoints are POST `auth/enroll`, `auth/sign-in/email`,
+Password auth endpoints are POST `auth/enroll`, `auth/sign-in/username`,
 `auth/sign-out`, `auth/revoke-sessions`, `auth/update-user`, `auth/change-password`,
-and GET `auth/get-session`. Enrollment body is `{code,password,name,username,image?}`;
-email comes from the grant. Profile images are existing local avatar paths.
+and GET `auth/get-session`. Sign-in body is `{username,password}`. Enrollment body
+is `{code,password,username,name?,image?}`; email comes from the grant and remains
+immutable account metadata. Native email sign-in and username-availability routes
+are closed. Unknown, ineligible and wrong-password sign-ins share the same public
+error. Profile images are existing local avatar paths.
 Password changes require the current password and revoke other sessions.
 Verification, reset and email recovery routes are unavailable; there is no
 password-reset promise in the UI. Recovery requires a separately reviewed
@@ -91,8 +98,9 @@ clears the local credential even when transport fails; generation fences reject
 late sign-in/session responses after a newer revocation. Restart loses local
 sessions. Sessions last at most 30 minutes; cookies do not cache authority.
 
-Durable global/IP admission runs before body/token lookup, with additional fixed
-recipient-purpose limits. Atomic D1 counters survive a restart. Indexed bounded
+Durable global/IP admission runs before body/token lookup, with additional
+recipient-purpose enrollment limits and normalized username sign-in limits. Case
+variants share one sign-in bucket. Atomic D1 counters survive a restart. Indexed bounded
 cleanup removes admission rows older than 24 hours. JSON bodies are bounded to
 8192 bytes before they enter the shared visualization authority queue. Session
 creation, checks and revocation finish inside that queue; successful signout and
@@ -102,6 +110,41 @@ queue after bounded body admission. A revoked session cannot refresh or read
 presence; current thread membership and the authenticated username govern the
 ephemeral lease. Presence disappears on backend restart and never becomes a
 stored message or draft.
+
+## Username upgrade
+
+Better Auth's supported username plugin supplies native password verification
+while controlled enrollment remains the only account-creation path. The optional
+display-username column is disabled. No dependency, secret, binding, Access policy
+or client-origin change is required.
+
+Apply the append-only `0004_username_identity.sql` migration before deploying this
+version. It first builds a unique index on `lower(user.username)`, then lowercases
+existing usernames. The index enforces case-insensitive uniqueness atomically for
+concurrent enrollment and profile updates. Preflight existing rows with:
+
+```sql
+SELECT lower(username), count(*) FROM user
+GROUP BY lower(username) HAVING count(*) > 1;
+```
+
+If collisions exist, stop and deliberately rename an affected account with its
+owner. The migration fails before rewriting rows and never merges identities.
+Existing IDs, email metadata, credential/password hashes, session and grant
+bindings remain intact. Existing email-backed records sign in using their stored
+username and current password after migration. Legacy Access-bound email auth is
+unchanged and retains its exact two-person admission restriction.
+
+Username changes never rename `account:<user.id>`, rekey credentials or change
+memberships. A fresh authenticated identity refreshes only that actor's member
+profile metadata. Historical message author snapshots retain the username
+verified when the message was admitted; client-supplied author fields are ignored.
+
+This upgrade needs its own reviewed migration, backend deployment and sequential
+local client activation. It is separate from the approved PR49/PR50 upload/session
+rollout. Personal and demo enrollment remains on hold until username login is
+ready. The John Cena/Lara Croft identifier additions still need a separate native
+eligibility patch and subsequent append-only migration; this change adds neither.
 
 ## Approved setup sequence
 
@@ -163,3 +206,7 @@ explains the more-specific app boundary. Better Auth's
 signup and email/password configuration. The normal library instance disables
 signup; a separate private instance enables its real signup endpoint only after
 atomic capability consumption and adds a grant-bound creation hook.
+The [username plugin documentation](https://better-auth.com/docs/plugins/username)
+describes username password sign-in, normalization and the disabled optional
+display-username field. The implementation is checked against installed Better
+Auth 1.7.7 in real workerd/D1 tests.
