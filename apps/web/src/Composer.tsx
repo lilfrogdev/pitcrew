@@ -84,7 +84,14 @@ export function Composer({
 }) {
   const input = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const mentions = useMentionPicker(draft, disabled ? [] : mentionMembers, sessionKey, textarea, onDraft, onMention);
+  const mentions = useMentionPicker(
+    draft,
+    disabled ? [] : mentionMembers,
+    sessionKey,
+    textarea,
+    onDraft,
+    onMention,
+  );
   const [dragging, setDragging] = useState(false);
   const dictation = useDictation(draft, onDraft, dictationEnabled && !disabled, sessionKey);
   const imagesSupported = capabilities?.images === true;
@@ -207,10 +214,20 @@ export function Composer({
           mentions.change(event.target);
           onTyping?.(event.target.value.length > 0);
         }}
-        onCompositionStart={() => { mentions.setComposing(true); onTyping?.(true); }}
+        onCompositionStart={() => {
+          mentions.setComposing(true);
+          onTyping?.(true);
+        }}
         onCompositionUpdate={() => onTyping?.(true)}
-        onCompositionEnd={(event) => { mentions.setComposing(false); mentions.selection(event.currentTarget); onTyping?.(event.currentTarget.value.length > 0); }}
-        onBlur={() => { mentions.blur(); onTypingStop?.(); }}
+        onCompositionEnd={(event) => {
+          mentions.setComposing(false);
+          mentions.selection(event.currentTarget);
+          onTyping?.(event.currentTarget.value.length > 0);
+        }}
+        onBlur={() => {
+          mentions.blur();
+          onTypingStop?.();
+        }}
         onPaste={(event) => {
           if (event.clipboardData.files.length) {
             event.preventDefault();
@@ -222,6 +239,7 @@ export function Composer({
           if (
             event.key === "Enter" &&
             !event.shiftKey &&
+            !mentions.composing &&
             !event.nativeEvent.isComposing &&
             event.keyCode !== 229
           ) {

@@ -1069,11 +1069,27 @@ export class Coordinator {
     );
     return this.transaction(
       storageKey,
-      { threadId, content, actor, selection: chosen, attachments: descriptor, ...(Array.isArray(mentions) && !mentions.length ? {} : mentions === undefined ? {} : { mentions }) },
+      {
+        threadId,
+        content,
+        actor,
+        selection: chosen,
+        attachments: descriptor,
+        ...(Array.isArray(mentions) && !mentions.length
+          ? {}
+          : mentions === undefined
+            ? {}
+            : { mentions }),
+      },
       () => {
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
           throw new AdmissionError("invalid_content");
-        const acceptedMentions = validateMentions(content, mentions, threadId, this.state.collaboration);
+        const acceptedMentions = validateMentions(
+          content,
+          mentions,
+          threadId,
+          this.state.collaboration,
+        );
         const turns = (this.state.conversationTurns ??= []);
         if (
           this.state.messages.length >= 500 ||
@@ -1311,7 +1327,11 @@ export class Coordinator {
       {
         threadId,
         content,
-        ...(Array.isArray(mentions) && !mentions.length ? {} : mentions === undefined ? {} : { mentions }),
+        ...(Array.isArray(mentions) && !mentions.length
+          ? {}
+          : mentions === undefined
+            ? {}
+            : { mentions }),
         ...(resolved?.attachments.length ? { attachments: resolved.attachments } : {}),
       },
       () => {
@@ -1319,7 +1339,12 @@ export class Coordinator {
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
           throw new AdmissionError("invalid_content");
         if (this.state.messages.length >= 500) throw new AdmissionError("capacity", 429);
-        const acceptedMentions = validateMentions(content, mentions, threadId, this.state.collaboration);
+        const acceptedMentions = validateMentions(
+          content,
+          mentions,
+          threadId,
+          this.state.collaboration,
+        );
         const message: Message = {
           id: this.id(),
           threadId,
@@ -1413,7 +1438,11 @@ export class Coordinator {
       {
         threadId,
         content,
-        ...(Array.isArray(mentions) && !mentions.length ? {} : mentions === undefined ? {} : { mentions }),
+        ...(Array.isArray(mentions) && !mentions.length
+          ? {}
+          : mentions === undefined
+            ? {}
+            : { mentions }),
         ...(acceptedAttachments.length ? { attachments: acceptedAttachments } : {}),
       },
       () => {
@@ -1426,7 +1455,12 @@ export class Coordinator {
           this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4
         )
           throw new AdmissionError("capacity", 429);
-        const acceptedMentions = validateMentions(content, mentions, threadId, this.state.collaboration);
+        const acceptedMentions = validateMentions(
+          content,
+          mentions,
+          threadId,
+          this.state.collaboration,
+        );
         const message: Message = {
           id: this.id(),
           threadId,

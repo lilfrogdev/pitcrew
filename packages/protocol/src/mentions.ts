@@ -22,8 +22,12 @@ export function mentionTokens(text: string) {
     if (fence || marker || /^( {4}|\t)/.test(line)) {
       blocked.fill(1, offset, offset + line.length);
       if (fence) {
-        if (marker?.[0] === fence.char && marker.length >= fence.length &&
-            /^ {0,3}(`+|~+)\s*$/.test(line)) fence = undefined;
+        if (
+          marker?.[0] === fence.char &&
+          marker.length >= fence.length &&
+          /^ {0,3}(`+|~+)\s*$/.test(line)
+        )
+          fence = undefined;
       } else if (marker) fence = { char: marker[0], length: marker.length };
     }
     offset += line.length;
@@ -44,9 +48,12 @@ export function mentionTokens(text: string) {
   for (const match of text.matchAll(/@[a-zA-Z0-9_]*/g)) {
     const start = match.index;
     const end = start + match[0].length;
-    if (blocked.subarray(start, end).some(Boolean) ||
-        (start > 0 && !/[\s([{]/.test(text[start - 1])) ||
-        match[0].length > 33) continue;
+    if (
+      blocked.subarray(start, end).some(Boolean) ||
+      (start > 0 && !/[\s([{]/.test(text[start - 1])) ||
+      match[0].length > 33
+    )
+      continue;
     tokens.push({ start, end, username: match[0].slice(1) });
   }
   return tokens;
@@ -61,16 +68,29 @@ export function rebaseMentions(before: string, after: string, mentions: Submitte
   if (before === after) return mentions;
   let start = 0;
   while (start < before.length && start < after.length && before[start] === after[start]) start++;
-  let oldEnd = before.length, newEnd = after.length;
+  let oldEnd = before.length,
+    newEnd = after.length;
   while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) {
-    oldEnd--; newEnd--;
+    oldEnd--;
+    newEnd--;
   }
   const delta = newEnd - oldEnd;
   const tokens = mentionTokens(after);
   return mentions.flatMap((mention) => {
-    const next = mention.end <= start ? mention : mention.start >= oldEnd
-      ? { ...mention, start: mention.start + delta, end: mention.end + delta } : undefined;
-    return next && tokens.some((token) => token.start === next.start && token.end === next.end &&
-      after.slice(next.start, next.end) === before.slice(mention.start, mention.end)) ? [next] : [];
+    const next =
+      mention.end <= start
+        ? mention
+        : mention.start >= oldEnd
+          ? { ...mention, start: mention.start + delta, end: mention.end + delta }
+          : undefined;
+    return next &&
+      tokens.some(
+        (token) =>
+          token.start === next.start &&
+          token.end === next.end &&
+          after.slice(next.start, next.end) === before.slice(mention.start, mention.end),
+      )
+      ? [next]
+      : [];
   });
 }

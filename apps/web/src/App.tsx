@@ -114,7 +114,12 @@ export function App({
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const loading = projectsLoading || threadsLoading || snapshotLoading;
-  const mentionMembers = useMentionMembers(api.collaboration, threadId, section === "work" && !loading);
+  const mentionMembers = useMentionMembers(
+    api.collaboration,
+    threadId,
+    section === "work" && !loading,
+    viewer?.id,
+  );
   const visualizationThreadAvailable = threads.some(
     (thread) => thread.id === threadId && thread.projectId === projectId,
   );
@@ -944,7 +949,10 @@ export function App({
                             minute: "2-digit",
                           })}
                         </time>
-                        <Mentioned message={message} recipient={viewer ? `account:${viewer.id}` : undefined} />
+                        <Mentioned
+                          message={message}
+                          recipient={viewer ? `account:${viewer.id}` : undefined}
+                        />
                       </div>
                       <MessageContent message={message} members={mentionMembers} />
                       {message.attachments?.map((attachment) =>
@@ -1025,8 +1033,14 @@ export function App({
             dictationEnabled={section === "work"}
             draft={drafts[threadId] ?? ""}
             mentionMembers={mentionMembers}
-            onMention={(text, mention) => { mentionDraft.change(text, mention); setDrafts((all) => ({ ...all, [threadId]: text })); }}
-            onDraft={(text) => { mentionDraft.change(text); setDrafts((all) => ({ ...all, [threadId]: text })); }}
+            onMention={(text, mention) => {
+              mentionDraft.change(text, mention);
+              setDrafts((all) => ({ ...all, [threadId]: text }));
+            }}
+            onDraft={(text) => {
+              mentionDraft.change(text);
+              setDrafts((all) => ({ ...all, [threadId]: text }));
+            }}
             attachments={preparedAttachments}
             onFiles={addFiles}
             uploadsEnabled={uploadsEnabled}
