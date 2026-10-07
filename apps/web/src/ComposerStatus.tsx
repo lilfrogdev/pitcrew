@@ -21,9 +21,9 @@ export function ComposerStatus({
       ? "Reconnecting…"
       : typingText(usernames);
   return (
-    <div className={styles.slot}>
-      <div className={styles.status} data-visible={!!text}>
-        <span className={styles.dot} aria-hidden="true" />
+    <div className={text ? styles.slot : styles.liveRegion}>
+      <div className={text ? styles.status : undefined} data-visible={!!text}>
+        {text && <span className={styles.dot} aria-hidden="true" />}
         <span role="status" aria-live="polite" aria-atomic="true" className={styles.text}>
           {text}
         </span>
