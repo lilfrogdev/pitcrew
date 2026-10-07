@@ -1,3 +1,10 @@
+.visualization-pages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 .pitcrew-visualization {
   margin: 0;
   min-width: 0;

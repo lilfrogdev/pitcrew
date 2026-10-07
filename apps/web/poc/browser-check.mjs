@@ -324,6 +324,24 @@ try {
     "Array.from(document.querySelectorAll('[role=tab]')).find(b=>b.textContent.includes('Visuals')).click()",
   );
   await until("document.querySelectorAll('iframe').length===2");
+  const firstPageTitles = await evaluate(
+    "Array.from(document.querySelectorAll('iframe')).map(f=>f.title)",
+  );
+  await evaluate("document.querySelector('[aria-label=\"Next visualizations\"]').click()");
+  await until("document.querySelectorAll('iframe').length===1");
+  const secondPageTitles = await evaluate(
+    "Array.from(document.querySelectorAll('iframe')).map(f=>f.title)",
+  );
+  assert.deepEqual(
+    new Set([...firstPageTitles, ...secondPageTitles]),
+    new Set(["Server admitted chart", "Server admitted note", "Server admitted third chart"]),
+  );
+  assert.equal(
+    await evaluate("document.querySelector('[aria-label=\"Next visualizations\"]').disabled"),
+    true,
+  );
+  await evaluate("document.querySelector('[aria-label=\"Previous visualizations\"]').click()");
+  await until("document.querySelectorAll('iframe').length===2");
   const beforeRenew = await evaluate("document.querySelector('iframe').getAttribute('srcdoc')");
   await delay(3000);
   assert.equal(
@@ -362,6 +380,14 @@ try {
     ),
     true,
   );
+  if (
+    !(await evaluate(
+      "!!Array.from(document.querySelectorAll('iframe')).find(f=>f.title==='Server admitted note')",
+    ))
+  ) {
+    await evaluate("document.querySelector('[aria-label=\"Next visualizations\"]').click()");
+    await until("document.querySelectorAll('iframe').length===1");
+  }
   assert.equal(
     await evaluate(
       "Array.from(document.querySelectorAll('iframe')).find(f=>f.title==='Server admitted note').getAttribute('srcdoc').includes('&lt;script')",
@@ -373,7 +399,7 @@ try {
   await until("document.querySelectorAll('iframe').length===0");
   assert.equal(
     await evaluate(
-      "document.body.textContent.includes('Private server description') || document.body.textContent.includes('Private document description')",
+      "document.body.textContent.includes('Private server description') || document.body.textContent.includes('Private document description') || document.body.textContent.includes('Private third description')",
     ),
     false,
   );
@@ -401,6 +427,7 @@ try {
       "legitimate HTML has no script permission and uses native details control",
       "public HTTP writes denied; trusted structured publication escapes hostile text",
       "scoped JSON service mounts at most two previews",
+      "all admitted artifacts are reachable through bounded preview pages",
       "actual workspace tab switch/collapse dispose private text and frames",
       "authorization renewal preserves immutable preview controls",
       "remote membership revocation removes running frames and private text on revalidation",

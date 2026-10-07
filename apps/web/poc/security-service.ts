@@ -67,6 +67,19 @@ export async function fixtureVisualizationService() {
     async () => {},
     () => {},
   );
+  await publishVisualization(
+    store,
+    { ...context, invocationId: "fixture-third" },
+    {
+      kind: "bars",
+      title: "Server admitted third chart",
+      summary: "Private third description",
+      height: 240,
+      points: [{ label: "Three", value: 30 }],
+    },
+    async () => {},
+    () => {},
+  );
   let permitted = true;
   return {
     revoke() {

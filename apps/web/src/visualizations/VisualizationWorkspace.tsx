@@ -51,6 +51,7 @@ export function VisualizationWorkspace({
   authorized: boolean;
 }) {
   const [controller] = useState(() => new VisualizationController());
+  const [selection, setSelection] = useState<{ source: VisualizationSource; page: number }>();
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, () => null);
   useEffect(() => {
     const resume = () => {
@@ -83,6 +84,9 @@ export function VisualizationWorkspace({
   )
     return <p role="status">Visualizations are unavailable or awaiting access verification.</p>;
   const { envelope } = snapshot;
+  const pages = Math.max(1, Math.ceil(envelope.artifacts.length / VISUALIZATION_LIMITS.frames));
+  const page = Math.min(selection?.source === source ? selection.page : 0, pages - 1);
+  const start = page * VISUALIZATION_LIMITS.frames;
   const scope = {
     accountId: envelope.accountId,
     repositoryId: envelope.repositoryId,
@@ -91,7 +95,30 @@ export function VisualizationWorkspace({
   };
   return (
     <section aria-label="Conversation visualizations">
-      {envelope.artifacts.slice(0, VISUALIZATION_LIMITS.frames).map((record) => (
+      {pages > 1 && (
+        <nav aria-label="Visualization pages" className="visualization-pages">
+          <button
+            type="button"
+            aria-label="Previous visualizations"
+            disabled={page === 0}
+            onClick={() => setSelection({ source, page: page - 1 })}
+          >
+            Previous
+          </button>
+          <span aria-live="polite">
+            Page {page + 1} of {pages}
+          </span>
+          <button
+            type="button"
+            aria-label="Next visualizations"
+            disabled={page === pages - 1}
+            onClick={() => setSelection({ source, page: page + 1 })}
+          >
+            Next
+          </button>
+        </nav>
+      )}
+      {envelope.artifacts.slice(start, start + VISUALIZATION_LIMITS.frames).map((record) => (
         <RecordFrame
           key={`${scope.accessEpoch}:${record.id}`}
           record={record}
@@ -99,12 +126,6 @@ export function VisualizationWorkspace({
           accessEpoch={scope.accessEpoch}
         />
       ))}
-      {envelope.artifacts.length > VISUALIZATION_LIMITS.frames && (
-        <p>
-          {envelope.artifacts.length - VISUALIZATION_LIMITS.frames} additional visualizations are
-          available. Only two previews are mounted at once.
-        </p>
-      )}
     </section>
   );
 }

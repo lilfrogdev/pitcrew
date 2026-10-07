@@ -188,6 +188,6 @@ describe("visualization access lifetime", () => {
     expect(frames[1].getAttribute("sandbox")).toBe("");
     expect(frames[1].getAttribute("srcdoc")).toContain("<details>");
     expect(frames[1].getAttribute("srcdoc")).not.toContain("<script");
-    expect(view.container.textContent).toContain("1 additional");
+    expect(view.container.textContent).toContain("Page 1 of 2");
   });
 });
