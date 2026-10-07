@@ -7,9 +7,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { NATIVE_AUTH_RECIPIENTS as emails } from "../packages/protocol/src/native-auth-recipients.mjs";
 const execute = promisify(execFile);
 const accountId = "004227d2029c56b084ce15356768def3";
-const emails = ["dev@lilfrogdev.com", "bryan.aldair.zamora@gmail.com"];
 export function enrollmentSQL({ id, email, hash, now }) {
   if (
     !/^[a-f0-9-]{36}$/.test(id) ||

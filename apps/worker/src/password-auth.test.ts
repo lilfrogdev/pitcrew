@@ -3,6 +3,7 @@ import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { readFile, readdir } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
+import { NATIVE_AUTH_RECIPIENTS } from "../../../packages/protocol/src/native-auth-recipients.mjs";
 const base = "https://fixture.pitcrew.test";
 const password = "synthetic-fixture-password-only";
 const syntheticCode = () =>
@@ -42,11 +43,13 @@ async function fixture(through = "9999") {
     .filter((f) => f.endsWith(".sql") && f.slice(0, 4) <= through)
     .sort()) {
     const sql = await readFile(new URL(`../migrations/auth/${file}`, import.meta.url), "utf8");
-    for (const statement of sql
-      .split(";")
-      .map((s) => s.replace(/--> statement-breakpoint/g, "").trim())
-      .filter(Boolean))
-      await db.prepare(statement).run();
+    await db.batch(
+      sql
+        .split(";")
+        .map((s) => s.replace(/--> statement-breakpoint/g, "").trim())
+        .filter(Boolean)
+        .map((s) => db.prepare(s)),
+    );
   }
   let seq = 1;
   const req = (path: string, body?: unknown, cookie?: string, headers = {}) =>
@@ -619,8 +622,274 @@ it("append-only username migration preserves existing email-backed IDs, hashes a
       .run();
     const rows = await conflict.db.prepare("SELECT * FROM user ORDER BY id").all();
     await expect(conflict.db.prepare(statements[0]).run()).rejects.toThrow();
-    expect(await conflict.db.prepare("SELECT * FROM user ORDER BY id").all()).toEqual(rows);
+    expect((await conflict.db.prepare("SELECT * FROM user ORDER BY id").all()).results).toEqual(
+      rows.results,
+    );
   } finally {
     await conflict.mf.dispose();
+  }
+});
+
+it("real native auth enrolls the two fixed personas as ordinary unverified accounts while retaining both personal recipients", async () => {
+  const f = await fixture();
+  try {
+    const profiles = [
+      { email: "dev@lilfrogdev.com", username: "owner", name: "Owner" },
+      { email: "bryan.aldair.zamora@gmail.com", username: "bryan", name: "Bryan" },
+      { email: "john.cena@example.com", username: "johncena", name: "John Cena" },
+      { email: "lara.croft@example.com", username: "laracroft", name: "Lara Croft" },
+    ];
+    expect(profiles.map((p) => p.email)).toEqual(NATIVE_AUTH_RECIPIENTS);
+    const principals = new Set<string>();
+    for (const profile of profiles) {
+      const grant = await f.grant(profile.email);
+      expect(
+        (
+          await f.req("/api/auth/enroll", {
+            code: grant.code,
+            password,
+            username: profile.username.toUpperCase(),
+            name: profile.name,
+          })
+        ).status,
+      ).toBe(200);
+      const cookie = await f.login(profile.username.toUpperCase());
+      const session = JSON.parse(
+        await (await f.req("/api/auth/get-session", undefined, cookie)).text(),
+      );
+      expect(session.user).toMatchObject({
+        email: profile.email,
+        emailVerified: false,
+        username: profile.username,
+        name: profile.name,
+      });
+      expect(Object.keys(session.user).sort()).toEqual([
+        "email",
+        "emailVerified",
+        "id",
+        "image",
+        "name",
+        "username",
+      ]);
+      principals.add(session.user.id);
+      expect(await (await f.req("/api/test/principal", undefined, cookie)).json()).toEqual({
+        actor: `account:${session.user.id}`,
+        credentialActor: `account:${session.user.id}`,
+      });
+      expect((await f.enroll(grant.code, profile.username)).status).toBe(400);
+      const wrong = await f.req("/api/auth/sign-in/username", {
+        username: profile.username,
+        password: "wrong",
+      });
+      expect(wrong.status).toBe(401);
+      expect(await wrong.json()).toEqual({ error: "invalid_credentials" });
+      const credential = await f.db
+        .prepare("SELECT provider_id,password FROM account WHERE user_id=?")
+        .bind(session.user.id)
+        .first();
+      expect(credential?.provider_id).toBe("credential");
+      expect(credential?.password).not.toBe(password);
+      expect(String(credential?.password).length).toBeGreaterThan(64);
+      expect((await f.req("/api/auth/revoke-sessions", {}, cookie)).status).toBe(200);
+      expect(await (await f.req("/api/auth/get-session", undefined, cookie)).json()).toBeNull();
+      const replacement = await f.login(profile.username);
+      expect(
+        JSON.parse(await (await f.req("/api/auth/get-session", undefined, replacement)).text()).user
+          .id,
+      ).toBe(session.user.id);
+      await f.db.prepare("DELETE FROM auth_admission").run();
+      await f.db.prepare("DELETE FROM rate_limit").run();
+    }
+    expect(principals.size).toBe(4);
+    expect((await f.db.prepare("SELECT count(*) count FROM verification").first())?.count).toBe(0);
+    await f.restart();
+    const cookie = await f.login("JOHNCENA");
+    expect(
+      principals.has(
+        JSON.parse(await (await f.req("/api/auth/get-session", undefined, cookie)).text()).user.id,
+      ),
+    ).toBe(true);
+  } finally {
+    await f.mf.dispose();
+  }
+});
+it("fixed persona enrollment rejects outsiders, recipient injection, expired/replayed capabilities and concurrent case claims", async () => {
+  const f = await fixture();
+  try {
+    for (const email of [
+      "outsider@example.com",
+      "John.Cena@example.com",
+      "john.cena@example.com ",
+      "lara.croft+other@example.com",
+    ])
+      await expect(f.grant(email)).rejects.toThrow();
+    const john = await f.grant("john.cena@example.com", Date.now() - 1);
+    expect((await f.enroll(john.code, "johncena")).status).toBe(400);
+    expect(
+      (
+        await f.db
+          .prepare("SELECT consumed_at FROM auth_enrollment WHERE id=?")
+          .bind(john.id)
+          .first()
+      )?.consumed_at,
+    ).toBeNull();
+    await f.db
+      .prepare("UPDATE auth_enrollment SET expires_at=? WHERE id=?")
+      .bind(Date.now() + 1800000, john.id)
+      .run();
+    expect(
+      (
+        await f.req("/api/auth/enroll", {
+          code: john.code,
+          email: "lara.croft@example.com",
+          username: "johncena",
+          password,
+        })
+      ).status,
+    ).toBe(400);
+    const race = await Promise.all([
+      f.enroll(john.code, "JohnCena"),
+      f.enroll(john.code, "JOHNCENA"),
+    ]);
+    expect(race.map((r) => r.status).sort()).toEqual([200, 400]);
+    const lara = await f.grant("lara.croft@example.com");
+    expect([400, 503]).toContain((await f.enroll(lara.code, "JOHNCENA")).status);
+    expect((await f.enroll(lara.code, "laracroft")).status).toBe(400);
+    const denied = await f.req("/api/auth/sign-in/username", { username: "laracroft", password });
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toEqual({ error: "invalid_credentials" });
+    expect(
+      (
+        await f.db
+          .prepare("SELECT consumed_at,consumed_user_id FROM auth_enrollment WHERE id=?")
+          .bind(lara.id)
+          .first()
+      )?.consumed_user_id,
+    ).toBeNull();
+    await expect(
+      f.db
+        .prepare("UPDATE auth_enrollment SET recipient_email='outsider@example.com' WHERE id=?")
+        .bind(john.id)
+        .run(),
+    ).rejects.toThrow();
+    expect((await f.db.prepare("SELECT count(*) count FROM user").first())?.count).toBe(1);
+  } finally {
+    await f.mf.dispose();
+  }
+});
+it("recipient table rebuild preserves unused, expired, partially burned and bound grants and all database constraints", async () => {
+  const sql = await readFile(
+    new URL("../migrations/auth/0005_native_enrollment_recipients.sql", import.meta.url),
+    "utf8",
+  );
+  const migrate = async (db: Awaited<ReturnType<Miniflare["getD1Database"]>>) =>
+    db.batch(
+      sql
+        .split(";")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => db.prepare(s)),
+    );
+  for (const { consumedAt, expiresAt } of [
+    { consumedAt: null, expiresAt: Date.now() + 1800000 },
+    { consumedAt: null, expiresAt: 1 },
+    { consumedAt: 1234, expiresAt: 1 },
+  ]) {
+    const f = await fixture("0004");
+    try {
+      const owner = await f.grant(),
+        bryan = await f.grant("bryan.aldair.zamora@gmail.com", expiresAt);
+      expect((await f.enroll(owner.code)).status).toBe(200);
+      if (consumedAt !== null)
+        await f.db
+          .prepare("UPDATE auth_enrollment SET consumed_at=? WHERE id=?")
+          .bind(consumedAt, bryan.id)
+          .run();
+      const grants = await f.db.prepare("SELECT * FROM auth_enrollment ORDER BY id").all();
+      const users = await f.db.prepare("SELECT * FROM user ORDER BY id").all();
+      const accounts = await f.db.prepare("SELECT * FROM account ORDER BY id").all();
+      await migrate(f.db);
+      expect(
+        (await f.db.prepare("SELECT * FROM auth_enrollment ORDER BY id").all()).results,
+      ).toEqual(grants.results);
+      expect((await f.db.prepare("SELECT * FROM user ORDER BY id").all()).results).toEqual(
+        users.results,
+      );
+      expect((await f.db.prepare("SELECT * FROM account ORDER BY id").all()).results).toEqual(
+        accounts.results,
+      );
+      expect((await f.db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
+      expect(
+        (await f.db.prepare("PRAGMA foreign_key_list(auth_enrollment)").all()).results,
+      ).toMatchObject([{ table: "user", from: "consumed_user_id", to: "id" }]);
+      await f.login();
+      await f.grant("john.cena@example.com");
+      await f.grant("lara.croft@example.com");
+      for (const statement of [
+        "UPDATE auth_enrollment SET id=NULL",
+        "UPDATE auth_enrollment SET recipient_email=NULL",
+        "UPDATE auth_enrollment SET token_sha256=NULL",
+        "UPDATE auth_enrollment SET expires_at=NULL",
+        "UPDATE auth_enrollment SET id=(SELECT id FROM auth_enrollment WHERE recipient_email='dev@lilfrogdev.com') WHERE recipient_email='john.cena@example.com'",
+        "DELETE FROM user WHERE email='dev@lilfrogdev.com'",
+        "UPDATE auth_enrollment SET recipient_email='outsider@example.com'",
+        "UPDATE auth_enrollment SET token_sha256='short'",
+        "UPDATE auth_enrollment SET consumed_user_id='missing-user',consumed_at=1 WHERE recipient_email='john.cena@example.com'",
+        "UPDATE auth_enrollment SET consumed_user_id=(SELECT id FROM user LIMIT 1),consumed_at=NULL WHERE recipient_email='john.cena@example.com'",
+        "UPDATE auth_enrollment SET consumed_user_id=(SELECT id FROM user LIMIT 1),consumed_at=1 WHERE recipient_email='john.cena@example.com'",
+        "UPDATE auth_enrollment SET token_sha256=(SELECT token_sha256 FROM auth_enrollment WHERE recipient_email='dev@lilfrogdev.com') WHERE recipient_email='john.cena@example.com'",
+        "UPDATE auth_enrollment SET recipient_email='dev@lilfrogdev.com' WHERE recipient_email='john.cena@example.com'",
+      ])
+        await expect(f.db.prepare(statement).run()).rejects.toThrow();
+    } finally {
+      await f.mf.dispose();
+    }
+  }
+  const f = await fixture("0004");
+  try {
+    const grant = await f.grant();
+    const before = await f.db.prepare("SELECT * FROM auth_enrollment").all();
+    const beforeSchema = await f.db
+      .prepare("SELECT name,sql FROM sqlite_master WHERE tbl_name='auth_enrollment' ORDER BY name")
+      .all();
+    await f.db.prepare("CREATE TABLE d1_migrations(name TEXT UNIQUE)").run();
+    // D1 batch transaction must roll back the entire create/copy/drop/rename
+    // even when a later statement fails after the original table was dropped.
+    const statements = sql
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => f.db.prepare(s));
+    await expect(
+      f.db.batch([
+        ...statements,
+        f.db.prepare("INSERT INTO missing_table VALUES(1)"),
+        f.db.prepare(
+          "INSERT INTO d1_migrations(name) VALUES('0005_native_enrollment_recipients.sql')",
+        ),
+      ]),
+    ).rejects.toThrow();
+    expect((await f.db.prepare("SELECT * FROM auth_enrollment").all()).results).toEqual(
+      before.results,
+    );
+    expect(
+      (
+        await f.db
+          .prepare(
+            "SELECT name,sql FROM sqlite_master WHERE tbl_name='auth_enrollment' ORDER BY name",
+          )
+          .all()
+      ).results,
+    ).toEqual(beforeSchema.results);
+    expect((await f.db.prepare("SELECT name FROM d1_migrations").all()).results).toEqual([]);
+    expect(
+      await f.db
+        .prepare("SELECT name FROM sqlite_master WHERE name='auth_enrollment_next'")
+        .first(),
+    ).toBeNull();
+    await expect(f.grant("john.cena@example.com")).rejects.toThrow();
+    expect((await f.enroll(grant.code)).status).toBe(200);
+  } finally {
+    await f.mf.dispose();
   }
 });

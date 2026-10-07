@@ -6,8 +6,8 @@ import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./auth-schema";
 import { authOptions } from "./auth-options";
 import type { AuthEnv } from "./auth";
+import { NATIVE_AUTH_RECIPIENTS as recipients } from "../../../packages/protocol/src/native-auth-recipients.mjs";
 
-const recipients = ["dev@lilfrogdev.com", "bryan.aldair.zamora@gmail.com"];
 type Grant = { id: string; recipient_email: string };
 export const passwordAuthPaths = new Map([
   ["/api/auth/enroll", "POST"],

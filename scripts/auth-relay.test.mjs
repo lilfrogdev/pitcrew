@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { createAuthRelayMiddleware, authRelayPlugin } from "./auth-relay.mjs";
 import { BACKEND_ACCESS } from "./backend-relay.mjs";
+import { NATIVE_AUTH_RECIPIENTS } from "../packages/protocol/src/native-auth-recipients.mjs";
 const origin = "http://localhost:5173";
 const jwt = (sub = "owner", email = "dev@lilfrogdev.com") =>
   ["e30", Buffer.from(JSON.stringify({ sub, email })).toString("base64url"), "synthetic"].join(".");
@@ -630,5 +631,110 @@ test("repeated overlapping tab refreshes cannot restore or clear later session s
     pending.response.resolve(Response.json(null));
     await old;
     assert.deepEqual(await f.headers(), { Cookie: cloudCookie + counter });
+  }
+});
+
+test("native relay accepts exactly the four ordinary account identifiers without reading Access or exposing credentials", async () => {
+  for (const email of [
+    ...NATIVE_AUTH_RECIPIENTS,
+    "outsider@example.com",
+    "John.Cena@example.com",
+  ]) {
+    let accessReads = 0;
+    const relay = createAuthRelayMiddleware({
+      enabled: true,
+      passwordMode: true,
+      tokenProvider: async () => {
+        accessReads++;
+        throw Error("No Access fallback");
+      },
+      verifyAccess: async () => {
+        accessReads++;
+        throw Error("No Access fallback");
+      },
+      requestBackend: async (url) =>
+        Response.json(
+          url.endsWith("get-session")
+            ? {
+                user: {
+                  id: "ordinary-stable-account",
+                  email,
+                  emailVerified: false,
+                  name: "",
+                  username: "johncena",
+                  image: null,
+                  accessActor: "must-not-leak",
+                  token: "must-not-leak",
+                },
+              }
+            : { status: true, token: "must-not-leak" },
+          { headers: { "Set-Cookie": cloudCookie } },
+        ),
+    });
+    const local = await call(relay, request("/api/auth/local-session"));
+    const options = {
+      cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+      nonce: local.value.nonce,
+    };
+    const login = await call(
+      relay,
+      request("/api/auth/sign-in/username", {
+        ...options,
+        method: "POST",
+        body: { username: "johncena", password: "synthetic" },
+      }),
+    );
+    assert.deepEqual(login.value, { status: true });
+    assert.equal(login.headers["Set-Cookie"], undefined);
+    const session = await call(relay, request("/api/auth/get-session", options));
+    assert.equal(session.status, NATIVE_AUTH_RECIPIENTS.includes(email) ? 200 : 502);
+    assert.equal(JSON.stringify(session.value).includes("must-not-leak"), false);
+    assert.equal(accessReads, 0);
+  }
+});
+test("demo identifiers never expand legacy Access admission or legacy session projection", async () => {
+  assert.deepEqual(BACKEND_ACCESS.emails, ["dev@lilfrogdev.com", "bryan.aldair.zamora@gmail.com"]);
+  for (const email of ["john.cena@example.com", "lara.croft@example.com"]) {
+    let backendCalls = 0;
+    const relay = createAuthRelayMiddleware({
+      enabled: true,
+      userAccessSession: true,
+      tokenProvider: async () => jwt("synthetic-demo-subject", email),
+      verifyAccess: async () => Math.floor(Date.now() / 1000) + 1800,
+      requestBackend: async () => {
+        backendCalls++;
+        return Response.json({ status: true });
+      },
+    });
+    const local = await call(relay, request("/api/auth/local-session"));
+    const options = {
+      cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+      nonce: local.value.nonce,
+    };
+    const denied = await call(
+      relay,
+      request("/api/auth/sign-in/email", {
+        ...options,
+        method: "POST",
+        body: { email, password: "synthetic" },
+      }),
+    );
+    assert.equal(denied.status, 401);
+    assert.equal(backendCalls, 0);
+    assert.deepEqual(await relay.sessionHeaders(request("/api/projects", options)), {});
+    const legacy = await fixture(async () =>
+      Response.json({
+        user: {
+          id: "demo",
+          email,
+          emailVerified: true,
+          name: "Demo",
+          username: "johncena",
+          image: null,
+        },
+      }),
+    );
+    const session = await call(legacy.relay, request("/api/auth/get-session", legacy));
+    assert.equal(session.status, 502);
   }
 });

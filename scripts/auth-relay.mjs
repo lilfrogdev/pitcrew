@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { NATIVE_AUTH_RECIPIENTS } from "../packages/protocol/src/native-auth-recipients.mjs";
 import { createRequire } from "node:module";
 import { BACKEND_ACCESS, readCachedAccessToken, verifyUserAccessToken } from "./backend-relay.mjs";
 const requireWorker = createRequire(new URL("../apps/worker/package.json", import.meta.url));
@@ -120,7 +121,7 @@ function safeUser(value, passwordMode) {
     !u ||
     typeof u.id !== "string" ||
     u.id.length > 128 ||
-    !BACKEND_ACCESS.emails.includes(u.email) ||
+    !(passwordMode ? NATIVE_AUTH_RECIPIENTS : BACKEND_ACCESS.emails).includes(u.email) ||
     (passwordMode ? typeof u.emailVerified !== "boolean" : u.emailVerified !== true) ||
     typeof u.name !== "string" ||
     u.name.length > 80 ||
