@@ -74,7 +74,8 @@ it("renders peer authors from server identity and clears their transcript after 
         author: {
           actor: "account:bryan",
           email: "bryan@example.com",
-          displayName: "Bryan",
+          displayName: "Bryan Full Name",
+          username: "peer_handle",
           avatar: "/avatars/bryan.svg",
         },
       },
@@ -87,13 +88,14 @@ it("renders peer authors from server identity and clears their transcript after 
   render(<App api={api} viewer={viewer} />);
   await screen.findByText("Private shared note");
   const article = screen.getByText("Private shared note").closest("article")!;
-  expect(article.textContent).toContain("Bryan");
+  expect(article.querySelector("strong")?.textContent).toBe("peer_handle");
+  expect(article.textContent).not.toContain("Bryan Full Name");
   expect(article.querySelector("img")?.getAttribute("src")).toBe("/avatars/bryan.svg");
   vi.mocked(api.snapshot).mockRejectedValue(new ApiError(404));
   api.projects = vi.fn(async () => []);
   fireEvent(window, new Event("online"));
   await waitFor(() => expect(screen.queryByText("Private shared note")).toBeNull());
-  expect(screen.queryByText("Bryan")).toBeNull();
+  expect(screen.queryByText("peer_handle")).toBeNull();
   await screen.findByText("No repositories yet");
   expect(screen.queryByRole("button", { name: "Set up a provider" })).toBeNull();
 });
@@ -176,5 +178,46 @@ it.each([false, true])(
     expect(screen.getByRole("heading", { name: "Your repository conversations" })).toBeTruthy();
     expect(api.threads).toHaveBeenCalledWith(project.id);
     expect(screen.queryByText("No repositories yet")).toBeNull();
+  },
+);
+
+it.each([
+  {
+    actor: "account:owner",
+    username: "verified_self",
+    displayName: "Owner Full Name",
+    label: "verified_self",
+  },
+  {
+    actor: "account:peer",
+    username: "verified_peer",
+    displayName: "Peer Full Name",
+    label: "verified_peer",
+  },
+  { actor: "account:owner", displayName: "Legacy Owner", label: viewer.username },
+  { actor: "account:peer", displayName: "Legacy Peer", label: "Legacy Peer" },
+  { actor: "account:peer", label: "legacy@example.com" },
+])(
+  "uses verified username with legacy fallback for $label",
+  async ({ actor, username, displayName, label }) => {
+    const api = createFixtureApi();
+    api.snapshot = vi.fn(async () => ({
+      messages: [
+        {
+          id: "identity-note",
+          threadId: "welcome",
+          role: "user" as const,
+          content: "Message author label",
+          createdAt: "2026-10-06T12:00:00Z",
+          author: { actor, username, displayName, email: "legacy@example.com" },
+        },
+      ],
+      runs: [],
+      reviews: [],
+      evidence: [],
+    }));
+    render(<App api={api} viewer={viewer} />);
+    const article = (await screen.findByText("Message author label")).closest("article")!;
+    expect(article.querySelector("strong")?.textContent).toBe(label);
   },
 );

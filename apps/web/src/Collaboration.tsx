@@ -53,7 +53,13 @@ export function AccountSummary({
       <h2>Account</h2>
       {account ? (
         <p>
-          <strong>{viewer?.username || viewer?.name || account.email}</strong>
+          <strong>
+            {viewer?.username ||
+              account.username ||
+              viewer?.name ||
+              account.displayName ||
+              account.email}
+          </strong>
           <br />
           {account.email}
         </p>
@@ -74,7 +80,7 @@ export function AccountSummary({
               setError("");
               setNotice("");
               void auth
-                .updateUser({ name: name.trim(), username: username.trim() })
+                .updateUser({ name: name.trim(), username: username.trim().toLowerCase() })
                 .then(() => {
                   setEditing(false);
                   setNotice("Profile saved.");
@@ -83,12 +89,11 @@ export function AccountSummary({
                 .finally(() => setBusy(false));
             }}
           >
-            <label htmlFor="profile-name">Name</label>
+            <label htmlFor="profile-name">Full name (optional)</label>
             <input
               id="profile-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              required
               maxLength={80}
               autoComplete="name"
               disabled={busy}
@@ -103,6 +108,8 @@ export function AccountSummary({
               maxLength={32}
               pattern="[a-zA-Z0-9_]{3,32}"
               autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               disabled={busy}
             />
             <div className={styles.actions}>
@@ -417,7 +424,9 @@ export function Collaborators({
       if (kind === "project") await api.removeProjectMember(projectId, member.actor);
       else await api.removeThreadMember(threadId, member.actor);
       if (current === mutationGeneration.current) {
-        setNotice(`${member.email} removed from ${kind === "project" ? "repository" : "thread"}.`);
+        setNotice(
+          `${member.username || member.displayName || member.email} removed from ${kind === "project" ? "repository" : "thread"}.`,
+        );
         await load();
       }
     } catch (cause) {
@@ -614,20 +623,20 @@ function MemberList({
             <li key={member.actor}>
               <div className={styles.member}>
                 <Avatar
-                  name={member.displayName || member.email}
+                  name={member.username || member.displayName || member.email}
                   image={member.avatar}
                   className={styles.avatar}
                 />
                 <span>
-                  {member.displayName || member.email} · {member.role}
-                  {member.displayName && <small>{member.email}</small>}
+                  {member.username || member.displayName || member.email} · {member.role}
+                  {(member.username || member.displayName) && <small>{member.email}</small>}
                 </span>
               </div>
               {owner && member.actor !== account?.actor && (
                 <button
                   type="button"
                   disabled={busy}
-                  aria-label={`Remove ${member.email} from ${title.toLowerCase()}`}
+                  aria-label={`Remove ${member.username || member.displayName || member.email} from ${title.toLowerCase()}`}
                   onClick={() => onRemove(member)}
                 >
                   Remove

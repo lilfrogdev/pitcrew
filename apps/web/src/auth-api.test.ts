@@ -40,7 +40,7 @@ it("does not repeat mutations or retry unrelated/conflicting session failures in
       return Response.json({ error }, { status: 409 });
     }),
   );
-  await expect(httpAuthApi.signIn("owner@example.com", "synthetic-password")).rejects.toThrow();
+  await expect(httpAuthApi.signIn("Owner_Handle", "synthetic-password")).rejects.toThrow();
   expect(attempts).toBe(1);
   attempts = 0;
   await expect(httpAuthApi.session()).rejects.toThrow();
@@ -109,11 +109,11 @@ it("sends personally entered credentials only in the password sign-in request bo
     Response.json(path.endsWith("local-session") ? { nonce: "b".repeat(64) } : {}),
   );
   vi.stubGlobal("fetch", fetch);
-  await httpAuthApi.signIn("owner@example.com", "synthetic-password");
+  await httpAuthApi.signIn(" Owner_Handle ", "synthetic-password");
   const calls = fetch.mock.calls as unknown as [string, RequestInit][];
-  expect(calls[1][0]).toBe("/api/auth/sign-in/email");
+  expect(calls[1][0]).toBe("/api/auth/sign-in/username");
   expect(JSON.parse(calls[1][1].body as string)).toEqual({
-    email: "owner@example.com",
+    username: "owner_handle",
     password: "synthetic-password",
   });
   expect(calls.every(([path]) => !path.includes("synthetic-password"))).toBe(true);
@@ -122,7 +122,7 @@ it("sends personally entered credentials only in the password sign-in request bo
 it("stops before authentication if local relay admission fails", async () => {
   const fetch = vi.fn(async () => new Response(null, { status: 503 }));
   vi.stubGlobal("fetch", fetch);
-  await expect(httpAuthApi.signIn("owner@example.com", "synthetic-password")).rejects.toThrow(
+  await expect(httpAuthApi.signIn("Owner_Handle", "synthetic-password")).rejects.toThrow(
     "Account services are unavailable",
   );
   expect(fetch).toHaveBeenCalledOnce();
@@ -155,12 +155,12 @@ it("reports failed sign-in without reflecting backend diagnostics and signs out 
   const fetch = vi.fn(async (path: string) =>
     path.endsWith("local-session")
       ? Response.json({ nonce: "a".repeat(64) })
-      : path.endsWith("sign-in/email")
+      : path.endsWith("sign-in/username")
         ? Response.json({ message: "synthetic-sensitive-diagnostic" }, { status: 401 })
         : Response.json({ status: true }),
   );
   vi.stubGlobal("fetch", fetch);
-  await expect(httpAuthApi.signIn("owner@example.com", "wrong-password")).rejects.toThrow(
+  await expect(httpAuthApi.signIn("Owner_Handle", "wrong-password")).rejects.toThrow(
     "Authentication could not be completed. Try again.",
   );
   await httpAuthApi.signOut();
@@ -174,4 +174,23 @@ it("reports failed sign-in without reflecting backend diagnostics and signs out 
       "Content-Type": "application/json",
     },
   });
+});
+
+it("canonicalizes usernames for enrollment and profile updates without requiring a full name", async () => {
+  const fetch = vi.fn(async (path: string) =>
+    Response.json(path.endsWith("local-session") ? { nonce: "b".repeat(64) } : {}),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const code = "a".repeat(42) + "A";
+  await httpAuthApi.enroll("", " Crew_Mate ", code, "synthetic-password");
+  await httpAuthApi.updateUser({ name: "", username: " Crew_Mate " });
+  const calls = fetch.mock.calls as unknown as [string, RequestInit][];
+  expect(JSON.parse(calls[1][1].body as string)).toEqual({
+    name: "",
+    username: "crew_mate",
+    code,
+    password: "synthetic-password",
+  });
+  expect(calls[3][0]).toBe("/api/auth/update-user");
+  expect(JSON.parse(calls[3][1].body as string)).toEqual({ name: "", username: "crew_mate" });
 });

@@ -25,7 +25,6 @@ export function AuthGate({
   const [entry, setEntry] = useState(authLink);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [checking, setChecking] = useState(true);
-  const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [busy, setBusy] = useState(false);
@@ -75,7 +74,6 @@ export function AuthGate({
       setSession(null);
       setBusy(false);
       setEntry({ mode: "sign-in", code: "" });
-      setEmail("");
       setName("");
       setUsername("");
       setNotice("");
@@ -130,21 +128,21 @@ export function AuthGate({
     setNotice("");
     try {
       if (entry.mode === "enroll") {
-        await api.enroll(name.trim(), username.trim(), entry.code, secret);
+        await api.enroll(name.trim(), username.trim().toLowerCase(), entry.code, secret);
         if (current !== operation.current) return;
         generation.current++;
         setSession(null);
         backToSignIn();
-        setNotice("Account ready. Sign in with your email and password.");
+        setNotice("Account ready. Sign in with your username and password.");
       } else {
-        await api.signIn(email.trim(), secret);
+        await api.signIn(username.trim().toLowerCase(), secret);
         if (current === operation.current) await check();
       }
     } catch {
       if (current === operation.current)
         setError(
           entry.mode === "sign-in"
-            ? "Could not sign in. Check your email and password."
+            ? "Could not sign in. Check your username and password."
             : "Could not set up this account. Check your details and private setup link.",
         );
     } finally {
@@ -180,11 +178,10 @@ export function AuthGate({
             {enrolling ? (
               <>
                 <label>
-                  Name
+                  Full name (optional)
                   <input
                     value={name}
                     onChange={(event) => setName(event.target.value)}
-                    required
                     maxLength={80}
                     autoComplete="name"
                     disabled={busy}
@@ -200,20 +197,25 @@ export function AuthGate({
                     maxLength={32}
                     pattern="[a-zA-Z0-9_]{3,32}"
                     autoComplete="username"
+                    autoCapitalize="none"
+                    spellCheck={false}
                     disabled={busy}
                   />
                 </label>
               </>
             ) : (
               <label>
-                Email
+                Username
                 <input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
                   required
-                  autoComplete="email"
-                  maxLength={254}
+                  autoComplete="username"
+                  minLength={3}
+                  maxLength={32}
+                  pattern="[a-zA-Z0-9_]{3,32}"
+                  autoCapitalize="none"
+                  spellCheck={false}
                   disabled={busy}
                 />
               </label>

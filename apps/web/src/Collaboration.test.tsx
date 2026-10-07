@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
+import type { AuthApi } from "./auth-api";
 import { ApiError, type CollaborationApi } from "./api";
-import { Collaborators, InvitationGate } from "./Collaboration";
+import { AccountSummary, Collaborators, InvitationGate } from "./Collaboration";
 
 const owner = { actor: "owner", email: "owner@example.com", role: "owner" as const };
 const bryan = { actor: "bryan", email: "bryan@example.com", role: "editor" as const };
@@ -229,4 +230,55 @@ it("shows an expired invitation once and prevents an acceptance attempt", async 
     true,
   );
   expect(api.acceptInvitation).not.toHaveBeenCalled();
+});
+
+it("shows member usernames and removes by the stable actor", async () => {
+  const api = collaboration();
+  vi.mocked(api.projectMembers).mockResolvedValue([
+    owner,
+    { ...bryan, username: "peer_handle", displayName: "Peer Full Name" },
+  ]);
+  const user = userEvent.setup();
+  render(<Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Share" }));
+  const members = await screen.findByRole("region", { name: "Repository members" });
+  await within(members).findByText(/peer_handle · editor/);
+  expect(within(members).queryByText(/Peer Full Name/)).toBeNull();
+  expect(within(members).getByText(bryan.email)).toBeTruthy();
+  await user.click(
+    within(members).getByRole("button", { name: "Remove peer_handle from repository" }),
+  );
+  expect(api.removeProjectMember).toHaveBeenCalledExactlyOnceWith("repo-1", bryan.actor);
+  expect(await screen.findByText("peer_handle removed from repository.")).toBeTruthy();
+});
+
+it("uses account username and saves a profile with an optional full name", async () => {
+  const api = collaboration();
+  vi.mocked(api.account).mockResolvedValue({
+    ...owner,
+    username: "verified_owner",
+    displayName: "Owner Full Name",
+  });
+  const viewer = {
+    id: "owner",
+    name: "Owner Full Name",
+    username: "owner_handle",
+    email: owner.email,
+    emailVerified: false,
+  };
+  const auth = { updateUser: vi.fn(async () => {}) } as unknown as AuthApi;
+  const user = userEvent.setup();
+  const view = render(<AccountSummary api={api} />);
+  expect(await screen.findByText("verified_owner")).toBeTruthy();
+  view.rerender(<AccountSummary api={api} viewer={viewer} auth={auth} />);
+  expect(screen.getByText("owner_handle")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Edit profile" }));
+  const name = screen.getByLabelText("Full name (optional)");
+  expect(name).toHaveProperty("required", false);
+  await user.clear(name);
+  await user.clear(screen.getByLabelText("Username"));
+  await user.type(screen.getByLabelText("Username"), "Next_Handle");
+  await user.click(screen.getByRole("button", { name: "Save profile" }));
+  expect(auth.updateUser).toHaveBeenCalledExactlyOnceWith({ name: "", username: "next_handle" });
+  expect(await screen.findByText("Profile saved.")).toBeTruthy();
 });
