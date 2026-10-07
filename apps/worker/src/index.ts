@@ -10,6 +10,7 @@ import {
   lifecycleRequest,
   type LifecycleRecord,
 } from "./repository-lifecycle";
+import { SourceReader } from "./source-reader";
 import { readRepositoryState, writeRepositoryState } from "./repository-state";
 import { sameKnowledgeContext } from "./knowledge";
 import { RepoConversationAgent } from "./repo-conversation-agent";
@@ -1381,6 +1382,19 @@ export class RepositoryAgent extends Agent<Env> {
         : undefined,
       access,
       this.env.EXECUTION_MODE === "disabled",
+      this.env.ARTIFACTS
+        ? new SourceReader(
+            this.env.ARTIFACTS,
+            coordinator,
+            access,
+            () =>
+              coordinator === this.getCoordinator() ||
+              this.getCoordinator().state.ownedProjects?.[coordinator.state.project.id]
+                ? this.artifactSource(coordinator)
+                : undefined,
+            (id) => this.publisherAuthority(`publish:${id}`)?.input,
+          )
+        : undefined,
     );
     return app.fetch(request);
   }

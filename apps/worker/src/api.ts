@@ -5,6 +5,7 @@ import {
 } from "@pitcrew/protocol";
 import type { ModelCatalog } from "./model-selection";
 import { resolveRunModels } from "./model-selection";
+import type { SourceTree, SourceFile, SourceDiff, SourcePatch } from "@pitcrew/protocol";
 import { Hono } from "hono";
 import { ExecutionError } from "../../../packages/execution/src/contracts";
 import type { LandingApi } from "./landing-api";
@@ -29,6 +30,13 @@ export function api(
   conversation?: { catalog: ModelCatalog; dispatch: (id: string) => void | Promise<void> },
   access?: Collaboration,
   executionDisabled = false,
+  sourceReader?: {
+    request(
+      threadId: string,
+      action: "tree" | "file" | "diff",
+      query: URLSearchParams,
+    ): Promise<SourceTree | SourceFile | SourceDiff | SourcePatch>;
+  },
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   const authorizePath = (path: string) => {
@@ -129,6 +137,21 @@ export function api(
             : 500,
     ),
   );
+  app.get("/api/threads/:threadId/source/:action", async (c) => {
+    const action = c.req.param("action");
+    if (!["tree", "file", "diff"].includes(action)) throw new AdmissionError("not_found", 404);
+    access?.requireThread(c.req.param("threadId"));
+    if (!sourceReader || !access) throw new AdmissionError("source_unavailable", 503);
+    c.header("Cache-Control", "private, no-store");
+    c.header("X-Content-Type-Options", "nosniff");
+    return c.json(
+      await sourceReader.request(
+        c.req.param("threadId"),
+        action as "tree" | "file" | "diff",
+        new URL(c.req.url).searchParams,
+      ),
+    );
+  });
   app.get("/api/projects/:projectId/context", (c) => {
     if (c.req.param("projectId") !== coordinator.state.project.id)
       throw new AdmissionError("not_found", 404);

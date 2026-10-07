@@ -1,0 +1,110 @@
+.repository-viewer {
+  min-width: 0;
+}
+.source-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.source-toolbar h2,
+.source-toolbar h3 {
+  margin: 0;
+}
+.source-toolbar strong,
+.source-content h3 {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.source-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.source-version {
+  font-size: 11px;
+  color: var(--muted);
+}
+.source-entries {
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+.source-entries button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  padding: 8px;
+  font-size: 12px;
+}
+.source-entries button[aria-pressed="true"] {
+  background: var(--surface);
+  box-shadow: inset 2px 0 var(--text);
+}
+.source-entries button svg {
+  flex-shrink: 0;
+}
+.source-entries button span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+.source-entries small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.source-content {
+  margin-top: 18px;
+}
+.source-code {
+  max-height: 480px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.workspace .source-code pre {
+  white-space: pre;
+  overflow-wrap: normal;
+  margin: 0;
+  padding: 8px 0;
+  font-size: 11px;
+  line-height: 1.65;
+  min-width: max-content;
+  max-height: none;
+  overflow: visible;
+}
+.source-line {
+  display: block;
+  min-width: 100%;
+}
+.source-line-number {
+  display: inline-block;
+  width: 4em;
+  padding-right: 12px;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+.source-line code {
+  padding-right: 16px;
+}
+.patch-add {
+  background: color-mix(in srgb, #218345 15%, transparent);
+}
+.patch-remove {
+  background: color-mix(in srgb, #cf3434 15%, transparent);
+}
+.patch-hunk {
+  color: var(--muted);
+}

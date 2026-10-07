@@ -65,6 +65,12 @@ const safeErrors = new Set([
   "repository_verification_failed",
   "repository_uninitialized",
   "invalid_event_cursor",
+  "source_unavailable",
+  "source_stale",
+  "source_limit_exceeded",
+  "source_timeout",
+  "source_capacity",
+  "invalid_source_request",
 ]);
 // Explicit product API routes. Authentication and credentials have separate
 // relays; unknown paths never become a cloud proxy.
@@ -76,6 +82,7 @@ function sharedRoute(path, method) {
       "projects",
       "capabilities",
       `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
+      `threads/${id}/source/(?:tree|file|diff)`,
       `threads/${id}/(?:members|messages|changes|runs|turns|attachments/${id})`,
       `changes/${id}(?:/runs)?`,
       `runs/${id}/(?:evidence|reviews)`,
@@ -550,13 +557,20 @@ export function createBackendRelayMiddleware({
         (key) =>
           !(
             shared
-              ? url.pathname === "/api/capabilities"
-                ? ["projectId"]
-                : /\/events$/.test(url.pathname)
-                  ? ["after"]
-                  : []
+              ? /\/source\/(tree|file|diff)$/.test(url.pathname)
+                ? ["path", "version", "cursor", "runId"]
+                : url.pathname === "/api/capabilities"
+                  ? ["projectId"]
+                  : url.pathname.endsWith("/events")
+                    ? ["after"]
+                    : []
               : ["cursor"]
           ).includes(key),
+      ) ||
+      ["path", "version", "runId"].some(
+        (key) =>
+          url.searchParams.getAll(key).length > 1 ||
+          (url.searchParams.get(key)?.length ?? 0) > 1024,
       ) ||
       url.searchParams.getAll("cursor").length > 1 ||
       url.searchParams.getAll("after").length > 1 ||
@@ -591,7 +605,7 @@ export function createBackendRelayMiddleware({
             ? undefined
             : await body(
                 req,
-                shared && /\/messages$/.test(url.pathname) ? 2097152 : shared ? 16384 : 8192,
+                shared && url.pathname.endsWith("/messages") ? 2097152 : shared ? 16384 : 8192,
               );
         if (provider) {
           const fields = Object.keys(content).sort().join(",");

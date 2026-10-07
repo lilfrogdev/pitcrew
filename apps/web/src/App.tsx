@@ -905,6 +905,7 @@ export function App({
         )}
         <Workspace
           scope={`${projectId}:${threadId}`}
+          threadId={threadId}
           project={project}
           snapshot={snapshot}
           api={api}

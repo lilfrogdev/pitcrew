@@ -653,3 +653,30 @@ test("shared routes bind server-held account cookies, nonce writes, deny arbitra
   assert.equal((await request(loggedOut.handler, "/api/projects")).status, 401);
   assert.equal(loggedOut.calls.length, 1); // Access protection check only, no product read.
 });
+test("source viewers use explicit authenticated read routes and preserve bounded selectors", async () => {
+  const f = fixture({
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "trusted-session" }),
+    fetchImpl: async (url) =>
+      url.endsWith("/api/local-session")
+        ? new Response(null, {
+            status: 302,
+            headers: { location: `${BACKEND_ACCESS.issuer}/cdn-cgi/access/login/backend` },
+          })
+        : Response.json({ sourceId: "synthetic-source", entries: [] }),
+  });
+  for (const endpoint of ["tree", "file", "diff"]) {
+    const response = await request(
+      f.handler,
+      `/api/threads/thread/source/${endpoint}?path=src%2Fapp.ts&version=${"1".repeat(64)}&runId=run`,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers["Cache-Control"], "private, no-store");
+  }
+  for (const path of [
+    "/api/threads/thread/source/blob?hash=arbitrary",
+    "/api/threads/thread/source/tree?ref=main",
+    "/api/threads/thread/source/tree?path=a&path=b",
+  ])
+    assert.ok([400, 404].includes((await request(f.handler, path)).status));
+});

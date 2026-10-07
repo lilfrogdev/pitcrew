@@ -10,6 +10,7 @@ import {
 import type { Api, Project, Snapshot } from "./api";
 import "./Workspace.css";
 import { Select } from "./Select";
+import { RepositoryFiles, RepositoryDiffs } from "./RepositoryViewers";
 import { runDisplayStatus } from "./landing-receipt";
 
 type Tab = "browser" | "files" | "diffs" | "review";
@@ -29,6 +30,7 @@ type Selection = {
 };
 export function Workspace({
   scope,
+  threadId,
   project,
   snapshot,
   api,
@@ -37,6 +39,7 @@ export function Workspace({
   onCollapse,
 }: {
   scope: string;
+  threadId?: string;
   project?: Project;
   snapshot: Snapshot;
   api: Api;
@@ -201,8 +204,11 @@ export function Workspace({
           hidden={state.tab !== "files"}
           tabIndex={0}
         >
-          <h2>Repository files</h2>
-          <p className="hint">Repository source is not connected.</p>
+          {state.tab === "files" && !collapsed && project && threadId ? (
+            <RepositoryFiles key={scope} api={api} projectId={project.id} threadId={threadId} />
+          ) : (
+            <p className="hint">Select a repository thread to read source files.</p>
+          )}
           <h2>Conversation attachments</h2>
           <p className="hint">Submitted files from this thread.</p>
           {files.length ? (
@@ -249,7 +255,7 @@ export function Workspace({
           hidden={state.tab !== "diffs"}
           tabIndex={0}
         >
-          <h2>Change identity</h2>
+          <h2>Base vs. candidate</h2>
           {selectedRun ? (
             <>
               <label className="workspace-select">
@@ -280,23 +286,26 @@ export function Workspace({
           ) : (
             <p>No change runs in this conversation.</p>
           )}
-          <div className="workspace-empty">
-            <IconGitCompare size={30} />
-            <h3>Patch content unavailable</h3>
-            <p>
-              The current connection supplies change identities and review evidence, but no file
-              list or patch text.
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                update({ tab: "review" });
-                tabRefs.current[3]?.focus();
-              }}
-            >
-              Inspect review evidence
-            </button>
-          </div>
+          {state.tab === "diffs" && !collapsed && project && threadId ? (
+            <RepositoryDiffs
+              key={`${scope}:${selectedRun?.id}:${selectedRun?.baseSha}:${selectedRun?.candidateSha}:${selectedRun?.configurationRevision}`}
+              api={api}
+              projectId={project.id}
+              threadId={threadId}
+              run={selectedRun}
+            />
+          ) : (
+            <p className="hint">Patch content unavailable. Select a repository thread.</p>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              update({ tab: "review" });
+              tabRefs.current[3]?.focus();
+            }}
+          >
+            Inspect review evidence
+          </button>
         </section>
         <section
           role="tabpanel"
