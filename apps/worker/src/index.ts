@@ -1347,6 +1347,13 @@ export class RepositoryAgent extends Agent<Env> {
       if (user) rootAccess.rebindLegacy(accessIdentity!.actor);
       rootAccess.bootstrap();
     }
+    if (user) {
+      rootAccess.refreshProfile();
+      for (const id of Object.keys(root.state.ownedProjects ?? {})) {
+        const core = this.projectCoordinator(id);
+        if (core) new Collaboration(core, identity, ownerEmail).refreshProfile();
+      }
+    }
     if (request.method === "GET" && ["/api/projects", "/api/repositories"].includes(path)) {
       const fixture =
         this.env.ENVIRONMENT === "development" &&
@@ -1493,6 +1500,7 @@ export class RepositoryAgent extends Agent<Env> {
                     configurationRevision: this.env.CONFIGURATION_REVISION ?? "unconfigured-v1",
                   }
                 : undefined,
+              identity,
             );
             return Response.json(project, { status: 201 });
           });
@@ -1569,6 +1577,7 @@ export class RepositoryAgent extends Agent<Env> {
                 configurationRevision: this.env.CONFIGURATION_REVISION ?? "unconfigured-v1",
               }
             : undefined,
+          identity,
         );
         return Response.json(project, { status: 201 });
       } catch {
@@ -1659,6 +1668,7 @@ export class RepositoryAgent extends Agent<Env> {
                   configurationRevision: this.env.CONFIGURATION_REVISION ?? "unconfigured-v1",
                 }
               : undefined,
+            identity,
           );
         },
       );

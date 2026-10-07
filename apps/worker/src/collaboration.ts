@@ -88,6 +88,37 @@ export class Collaboration {
   account() {
     return { ...this.identity };
   }
+  /** Refresh labels from a verified session, without changing membership or authorship. */
+  refreshProfile() {
+    const access = this.state();
+    if (!access?.projectMembers[this.identity.actor]) return;
+    const profile = {
+      displayName: this.identity.displayName,
+      username: this.identity.username,
+      avatar: this.identity.avatar,
+    };
+    const differs = (member: Member) =>
+      member.displayName !== profile.displayName ||
+      member.username !== profile.username ||
+      member.avatar !== profile.avatar;
+    const members = [
+      access.projectMembers[this.identity.actor],
+      ...Object.values(access.threadMembers).flatMap((thread) =>
+        thread[this.identity.actor] ? [thread[this.identity.actor]] : [],
+      ),
+    ];
+    if (!members.some(differs)) return;
+    this.core.updateCollaboration((state) => {
+      const current = state.collaboration!;
+      const member = current.projectMembers[this.identity.actor];
+      if (!member) return;
+      current.projectMembers[this.identity.actor] = { ...member, ...profile };
+      for (const thread of Object.values(current.threadMembers)) {
+        const prior = thread[this.identity.actor];
+        if (prior) thread[this.identity.actor] = { ...prior, ...profile };
+      }
+    });
+  }
   rebindLegacy(accessActor: string) {
     if (accessActor === this.identity.actor || !this.core.state.collaboration) return;
     const project = this.core.state.collaboration.projectMembers[accessActor];

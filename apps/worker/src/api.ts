@@ -78,6 +78,7 @@ export function api(
   if (access)
     app.use("*", async (c, next) => {
       authorizePath(new URL(c.req.url).pathname);
+      access.refreshProfile();
       await next();
     });
   app.use("*", async (c, next) => {
