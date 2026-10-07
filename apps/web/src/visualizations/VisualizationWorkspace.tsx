@@ -82,7 +82,16 @@ export function VisualizationWorkspace({
     snapshot?.source !== source ||
     snapshot.deadline <= performance.now()
   )
-    return <p role="status">Visualizations are unavailable or awaiting access verification.</p>;
+    return (
+      <div>
+        <p role="status">Visualizations are unavailable or awaiting access verification.</p>
+        {authorized && source && (
+          <button type="button" onClick={() => void controller.revalidate()}>
+            Retry visualizations
+          </button>
+        )}
+      </div>
+    );
   const { envelope } = snapshot;
   const pages = Math.max(1, Math.ceil(envelope.artifacts.length / VISUALIZATION_LIMITS.frames));
   const page = Math.min(selection?.source === source ? selection.page : 0, pages - 1);

@@ -6,9 +6,15 @@
     "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client"]
   },
-  "include": ["../src/visualizations/*.ts", "../src/visualizations/*.tsx", "visualizations.tsx"]
+  "include": [
+    "../src/visualizations/*.ts",
+    "../src/visualizations/*.tsx",
+    "visualizations.tsx",
+    "polling.tsx"
+  ]
 }

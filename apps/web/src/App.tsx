@@ -100,13 +100,12 @@ export function App({
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const loading = projectsLoading || threadsLoading || snapshotLoading;
+  const visualizationThreadAvailable = threads.some(
+    (thread) => thread.id === threadId && thread.projectId === projectId,
+  );
   const visualizationSource = useMemo(
     () =>
-      viewer?.id &&
-      api.visualizations &&
-      !loading &&
-      projectId &&
-      threads.some((thread) => thread.id === threadId)
+      viewer?.id && api.visualizations && !loading && projectId && visualizationThreadAvailable
         ? {
             accountId: `account:${viewer.id}`,
             repositoryId: projectId,
@@ -114,7 +113,7 @@ export function App({
             load: (signal: AbortSignal) => api.visualizations!(projectId, threadId, signal),
           }
         : undefined,
-    [viewer?.id, api, loading, projectId, threadId, threads],
+    [viewer?.id, api, loading, projectId, threadId, visualizationThreadAvailable],
   );
   const [mutationError, setMutationError] = useState("");
   const [projectsError, setProjectsError] = useState("");
