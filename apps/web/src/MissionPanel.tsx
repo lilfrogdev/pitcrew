@@ -209,7 +209,11 @@ export function MissionPanel({
       )}
       {linked && (
         <div className="mission-evidence">
-          <p>Candidate {linked.run.candidateSha ?? "pending"}</p>
+          <p>
+            {linked.run.candidateSha
+              ? `Candidate ${linked.run.candidateSha}`
+              : `Run ${linked.run.status}`}
+          </p>
           {linked.tests && (
             <p>
               Tests {linked.tests.status}

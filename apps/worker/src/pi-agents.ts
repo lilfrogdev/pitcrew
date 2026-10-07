@@ -26,6 +26,7 @@ import {
   CloudflareSandbox,
   LocalBaselineFork,
   LocalGitWorkspace,
+  resolveLocalPaths,
   ExecutionCoordinator,
   type Workspace,
   type OperationRecord,
@@ -296,9 +297,9 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
       .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
     const [prior] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
     const admitted = prior ? (JSON.parse(prior.value) as TaskAdmission | null) : undefined;
-    // start() rebinds only models; it must preserve the parent's immutable deadline.
-    deadline ??= admitted?.deadline;
-    credentialActor ??= admitted?.credentialActor;
+    // A restarted local run must keep the deadline and actor already admitted.
+    if (typeof admitted?.deadline === "number") deadline = admitted.deadline;
+    if (admitted?.credentialActor) credentialActor = admitted.credentialActor;
     const serialized = JSON.stringify(
       runModels || deadline !== undefined ? { runModels, role, deadline, credentialActor } : null,
     );
@@ -359,10 +360,7 @@ export class ChangeAgent extends TaskAgent {
   private localPaths() {
     if (!this.env.LOCAL_FIXTURE_DIR || !this.env.LOCAL_WORKSPACE_ROOT)
       throw Error("execution_not_configured");
-    return {
-      fixture: this.env.LOCAL_FIXTURE_DIR,
-      root: this.env.LOCAL_WORKSPACE_ROOT,
-    };
+    return resolveLocalPaths(this.env.LOCAL_FIXTURE_DIR, this.env.LOCAL_WORKSPACE_ROOT);
   }
   protected transport() {
     if (this.env.EXECUTION_MODE === "local") return new LocalGitWorkspace(this.localPaths().root);
@@ -892,7 +890,9 @@ export class ReviewAgent extends TaskAgent {
       revision: Type.Union([Type.Literal("base"), Type.Literal("candidate")]),
     });
     const git = (workspace: Workspace, commandId: string, argv: string[]) =>
-      new LocalGitWorkspace(this.env.LOCAL_WORKSPACE_ROOT!).run(workspace, {
+      new LocalGitWorkspace(
+        resolveLocalPaths(this.env.LOCAL_FIXTURE_DIR!, this.env.LOCAL_WORKSPACE_ROOT!).root,
+      ).run(workspace, {
         commandId,
         argv,
         timeoutMs: 5000,

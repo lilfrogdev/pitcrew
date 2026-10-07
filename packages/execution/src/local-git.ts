@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { cp, mkdir, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,6 +20,19 @@ const identity = {
   GIT_COMMITTER_EMAIL: "pitcrew@localhost",
   GIT_COMMITTER_DATE: "2026-10-06T00:00:00Z",
 };
+
+export function resolveLocalPaths(fixtureDir: string, workspaceRoot: string) {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i += 1) {
+    const fixture = resolve(dir, fixtureDir);
+    if (existsSync(resolve(fixture, "package.json")))
+      return { fixture, root: resolve(dir, workspaceRoot) };
+    const parent = resolve(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error("execution_not_configured");
+}
 
 function commandEnv(): NodeJS.ProcessEnv {
   return {
