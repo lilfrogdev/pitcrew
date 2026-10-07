@@ -464,3 +464,52 @@ test("safe errors preserve fixed stage and allowlisted numeric codes without CLI
   ])
     assert.throws(() => assertEnrollmentPreflight(stdout));
 });
+
+test("Wrangler stdout APIError diagnostics retain only allowlisted provider numbers", () => {
+  // Wrangler d1 --json serializes APIError inside this envelope on stdout.
+  const apiError = {
+    error: {
+      name: "APIError",
+      text: "must-not-leak request account SQL hash",
+      notes: [{ text: "must-not-leak authorization failure [code: 7403]" }],
+      kind: "error",
+      code: 7403,
+      accountTag: "must-not-leak",
+      meta: { token: "must-not-leak" },
+    },
+  };
+  const expected = {
+    code: "ENROLLMENT_PREFLIGHT_FILE_FAILED",
+    phase: "preflight_file",
+    exit: 1,
+    provider: 7403,
+  };
+  for (const prefix of ["", "Uploading synthetic.sql\nUpload complete.\n"]) {
+    assert.deepEqual(
+      safeEnrollmentFailure("preflight_file", {
+        code: 1,
+        stdout: prefix + JSON.stringify(apiError, null, 2),
+        stderr: "",
+        message: "must-not-leak",
+        args: ["must-not-leak"],
+      }),
+      expected,
+    );
+  }
+  for (const stdout of [
+    JSON.stringify({ error: { code: 7403 } }),
+    JSON.stringify({ error: { notes: [{ text: "must-not-leak [code: 7403]" }] } }),
+    "must-not-leak [code: 7403]",
+  ])
+    assert.equal(safeEnrollmentFailure("issue", { stdout }).provider, 7403);
+  for (const stdout of [
+    JSON.stringify({ error: { code: 7777, notes: [{ text: "must-not-leak [code: 7777]" }] } }),
+    JSON.stringify({ error: { code: "7403", text: "must-not-leak" } }),
+    JSON.stringify({ data: { code: 7403 }, message: "must-not-leak" }),
+    '{"error":{"code":7403} invalid must-not-leak',
+  ])
+    assert.deepEqual(safeEnrollmentFailure("preflight_query", { stdout }), {
+      code: "ENROLLMENT_PREFLIGHT_QUERY_FAILED",
+      phase: "preflight_query",
+    });
+});

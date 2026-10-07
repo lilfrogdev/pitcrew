@@ -223,11 +223,20 @@ export function safeEnrollmentFailure(phase, error) {
   };
   if (Number.isInteger(error?.code) && error.code >= 0 && error.code <= 255)
     result.exit = error.code;
-  // Only documented authentication/invalid-binding numbers may be reported.
-  const codes = [...String(error?.stderr ?? "").matchAll(/\[code:\s*(\d+)\]/g)].map((match) =>
-    Number(match[1]),
-  );
-  const provider = codes.find((code) => [9106, 10000, 10021].includes(code));
+  // D1 --json sends APIError envelopes to stdout, sometimes after progress.
+  // Retain only known numeric provider codes, never any CLI output or fields.
+  const codes = [];
+  for (const output of [error?.stderr, error?.stdout]) {
+    if (typeof output !== "string") continue;
+    codes.push(...[...output.matchAll(/\[code:\s*(\d+)\]/g)].map((match) => Number(match[1])));
+    try {
+      const code = JSON.parse(output.slice(output.indexOf("{")))?.error?.code;
+      if (Number.isInteger(code)) codes.push(code);
+    } catch {
+      // Ordinary CLI text and malformed JSON provide no structured code.
+    }
+  }
+  const provider = codes.find((code) => [7403, 9106, 10000, 10021].includes(code));
   if (provider !== undefined) result.provider = provider;
   return result;
 }
