@@ -40,7 +40,7 @@ const server = createServer(async (req, res) => {
     res.end("local navigation sentinel");
     return;
   }
-  const file = req.url === "/" || req.url === "/secure" ? "index.html" : req.url.slice(1);
+  const file = ["/", "/secure", "/polling"].includes(req.url) ? "index.html" : req.url.slice(1);
   if (
     ![
       "index.html",
@@ -48,6 +48,8 @@ const server = createServer(async (req, res) => {
       "visualizations.css",
       "security.js",
       "security.css",
+      "polling.js",
+      "polling.css",
       "counterexample",
     ].includes(file)
   ) {
@@ -69,11 +71,11 @@ const server = createServer(async (req, res) => {
   res.setHeader("cache-control", "no-store");
   const body = await readFile(resolve("apps/web/poc/dist", file));
   res.end(
-    req.url === "/secure"
+    req.url === "/secure" || req.url === "/polling"
       ? body
           .toString()
-          .replaceAll("visualizations.js", "security.js")
-          .replaceAll("visualizations.css", "security.css")
+          .replaceAll("visualizations.js", req.url === "/secure" ? "security.js" : "polling.js")
+          .replaceAll("visualizations.css", req.url === "/secure" ? "security.css" : "polling.css")
       : body,
   );
 });
@@ -222,8 +224,8 @@ try {
       );
     return result.result.value;
   }
-  async function until(expression) {
-    for (let i = 0; i < 100; i++) {
+  async function until(expression, attempts = 100) {
+    for (let i = 0; i < attempts; i++) {
       if (await evaluate(expression)) return;
       await delay(50);
     }
@@ -434,6 +436,53 @@ try {
   );
   assert.deepEqual(hits, []);
   const productionHits = [...hits];
+  await cdp("Emulation.setDeviceMetricsOverride", {
+    width: 1180,
+    height: 850,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await cdp("Page.navigate", { url: origin + "/polling" });
+  await until(
+    "Array.from(document.querySelectorAll('[role=tab]')).some(b=>b.textContent.includes('Visuals'))",
+  );
+  await evaluate(
+    "Array.from(document.querySelectorAll('[role=tab]')).find(b=>b.textContent.includes('Visuals')).click()",
+  );
+  await until("document.querySelectorAll('iframe').length===2");
+  await evaluate("document.querySelector('[aria-label=\"Next visualizations\"]').click()");
+  await until("document.querySelectorAll('iframe').length===1");
+  child = await childContext();
+  await evaluate(
+    "document.getElementById('minimum').value='12';document.getElementById('minimum').dispatchEvent(new Event('input'))",
+    child,
+  );
+  await evaluate(
+    "window.visualizationPollingFrame=document.querySelector('iframe');window.visualizationPollingStart=visualizationPollingObservation.polls",
+  );
+  await screenshot("polling-page-before.png");
+  for (let poll = 1; poll <= 3; poll++) {
+    await until(
+      `visualizationPollingObservation.polls >= visualizationPollingStart + ${poll}`,
+      600,
+    );
+    await delay(100);
+    await screenshot("polling-page-after.png");
+    assert.equal(
+      await evaluate("document.querySelector('iframe')===visualizationPollingFrame"),
+      true,
+      "unchanged membership poll preserves the iframe",
+    );
+    assert.equal(await evaluate("document.body.textContent.includes('Page 2 of 2')"), true);
+    assert.equal(await evaluate("document.getElementById('minimum').value", child), "12");
+  }
+  await evaluate("visualizationPollingFixture.revoke()");
+  await until("document.querySelectorAll('iframe').length===0");
+  assert.equal(
+    await evaluate("document.body.textContent.includes('Private polling description')"),
+    false,
+  );
+  assert.deepEqual(hits, []);
   // Evidence for why arbitrary generated scripts are deliberately excluded.
   await cdp("Page.navigate", { url: origin + "/counterexample" });
   for (let i = 0; i < 100 && !hits.length; i++) await delay(50);
@@ -467,6 +516,8 @@ try {
       "actual workspace tab switch/collapse dispose private text and frames",
       "authorization renewal preserves immutable preview controls",
       "remote membership revocation removes running frames and private text on revalidation",
+      "actual App preserves page and chart controls across three real 15-second membership polls",
+      "actual App membership revocation removes frames and private fallback",
     ],
     productionFixtureSentinelHits: productionHits,
     counterexample: hits,
@@ -476,6 +527,8 @@ try {
       "workspace-mobile.png",
       "html-mobile.png",
       "private-admission-mobile.png",
+      "polling-page-before.png",
+      "polling-page-after.png",
     ],
     limitations:
       "Chromium only; local service account/session authorization is simulated. Private SQL/API and disposal are exercised with fixtures, not a deployed account system. No arbitrary generated JS or production deployment. The own-frame navigation counterexample remains unsafe and outside the supported content contract.",
