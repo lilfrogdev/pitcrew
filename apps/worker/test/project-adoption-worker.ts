@@ -68,5 +68,13 @@ export class ProjectAdoptionFixture extends PasswordRepositoryFixture {
   storedState() {
     return structuredClone(this.getCoordinator().state);
   }
+  expireAccountSessions(actor: string) {
+    return this.visualizationAuthority.run(async () => {
+      await this.env
+        .AUTH_DB!.prepare("UPDATE session SET expires_at=? WHERE user_id=?")
+        .bind(Date.now() - 1, actor.slice("account:".length))
+        .run();
+    });
+  }
 }
 export default backend;

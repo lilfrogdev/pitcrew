@@ -19,6 +19,7 @@ type RepositoryFixture = {
   holdAuthority(): Promise<void>;
   releaseAuthority(): Promise<void>;
   authorityPending(): Promise<number>;
+  expireAccountSessions(actor: string): Promise<void>;
 };
 async function fixture() {
   const bundle = await build({
@@ -193,7 +194,7 @@ it("grant-backed JohnCena and LaraCroft share only explicitly invited native wor
         displayName: persona.name,
       });
     }
-    const legacy = await f.repository.seedProject(
+    const { id: legacyProjectId } = await f.repository.seedProject(
       "unrelated-legacy-repository",
       "access:legacy-fixture",
       john.email,
@@ -210,9 +211,12 @@ it("grant-backed JohnCena and LaraCroft share only explicitly invited native wor
       "sk-or-v1-synthetic-demo-legacy-never-live",
     );
     const ciphertext = await legacyCredentials.ciphertext();
-    const before = await f.repository.storedState();
+    // Materialize RPC values before cold restarts invalidate runtime proxies.
+    const before = JSON.parse(JSON.stringify(await f.repository.storedState())) as State;
     for (const persona of [john, lara])
-      expect((await f.request(`/projects/${legacy.id}/context`, persona.email)).status).toBe(404);
+      expect((await f.request(`/projects/${legacyProjectId}/context`, persona.email)).status).toBe(
+        404,
+      );
     expect((await f.request("/projects", john.email, target)).status).toBe(404);
     await f.repository.approve(johnActor, target.name, target.repositoryId);
     expect((await f.request("/projects", lara.email, target)).status).toBe(404);
@@ -335,10 +339,10 @@ it("grant-backed JohnCena and LaraCroft share only explicitly invited native wor
     await f.restart();
     expect(await (await f.request("/projects", lara.email)).json()).toEqual([]);
     expect((await f.request(`/threads/${shared.id}/messages`, lara.email)).status).toBe(404);
-    const after = await f.repository.storedState();
+    const after = JSON.parse(JSON.stringify(await f.repository.storedState())) as State;
     expect(after.collaboration).toEqual(before.collaboration);
     expect(after.identityBindings).toEqual(before.identityBindings);
-    expect(after.ownedProjects![legacy.id]).toEqual(before.ownedProjects![legacy.id]);
+    expect(after.ownedProjects![legacyProjectId]).toEqual(before.ownedProjects![legacyProjectId]);
     expect(after.ownedProjects![project.id].ownerActor).toBe(johnActor);
     const reloadedCredentialsNS = await f.mf.getDurableObjectNamespace("USER_CREDENTIALS");
     const reloadedLegacy = reloadedCredentialsNS.get(
@@ -355,43 +359,64 @@ it("grant-backed JohnCena and LaraCroft share only explicitly invited native wor
   }
 }, 15000);
 
-it("demo invitation acceptance cannot acquire membership after original-session revocation wins the authority queue", async () => {
-  const f = await fixture();
-  try {
-    const johnActor = await f.enroll(john),
-      laraActor = await f.enroll(lara);
-    await f.repository.approve(johnActor, target.name, target.repositoryId);
-    const adopted = await f.request("/projects", john.email, target);
-    expect(adopted.status).toBe(201);
-    const project = (await adopted.json()) as { id: string };
-    const invited = await f.request(`/projects/${project.id}/invitations`, john.email, {
-      email: lara.email,
-      role: "editor",
-    });
-    expect(invited.status).toBe(201);
-    const { token } = (await invited.json()) as { token: string };
-    await f.repository.holdAuthority();
-    let acceptance: ReturnType<typeof f.request> | undefined,
-      revocation: ReturnType<typeof f.request> | undefined;
+for (const mutation of ["sign-out", "revoke-sessions", "expiry", "update-user"] as const)
+  it(`demo invitation acceptance observes ${mutation} after identity admission and before its membership commit`, async () => {
+    const f = await fixture();
     try {
-      // Identity admission is ahead of revocation; the later membership commit
-      // must independently check that same original session, after body reads.
-      acceptance = f.request(`/invitations/${token}/accept`, lara.email, {});
-      await f.waitPending(2);
-      revocation = f.request("/auth/revoke-sessions", lara.email, {});
-      await f.waitPending(3);
+      const johnActor = await f.enroll(john),
+        laraActor = await f.enroll(lara);
+      await f.repository.approve(johnActor, target.name, target.repositoryId);
+      const adopted = await f.request("/projects", john.email, target);
+      expect(adopted.status).toBe(201);
+      const project = (await adopted.json()) as { id: string };
+      const invited = await f.request(`/projects/${project.id}/invitations`, john.email, {
+        email: lara.email,
+        role: "editor",
+      });
+      expect(invited.status).toBe(201);
+      const { token } = (await invited.json()) as { token: string };
+      await f.repository.holdAuthority();
+      let acceptance: ReturnType<typeof f.request> | undefined,
+        authMutation: ReturnType<typeof f.request> | undefined,
+        expiry: Promise<void> | undefined;
+      try {
+        // Identity admission is ahead of revocation; the later membership commit
+        // must independently check that same original session, after body reads.
+        acceptance = f.request(`/invitations/${token}/accept`, lara.email, {});
+        await f.waitPending(2);
+        if (mutation === "expiry") expiry = f.repository.expireAccountSessions(laraActor);
+        else
+          authMutation = f.request(
+            `/auth/${mutation}`,
+            lara.email,
+            mutation === "update-user" ? { image: "/avatars/frog.svg" } : {},
+          );
+        await f.waitPending(3);
+      } finally {
+        await f.repository.releaseAuthority();
+      }
+      if (expiry) await expiry;
+      if (authMutation) expect((await authMutation).status).toBe(200);
+      expect((await acceptance!).status).toBe(mutation === "update-user" ? 200 : 401);
+      const access = (await f.repository.storedState()).ownedProjects![project.id].state
+        .collaboration!;
+      if (mutation === "update-user") {
+        expect(access.projectMembers[laraActor]).toMatchObject({
+          actor: laraActor,
+          email: lara.email,
+          username: lara.username,
+          displayName: lara.name,
+          avatar: "/avatars/frog.svg",
+          role: "editor",
+        });
+        expect(Object.values(access.invitations)[0].acceptedBy).toBe(laraActor);
+      } else {
+        expect(access.projectMembers[laraActor]).toBeUndefined();
+        expect(Object.values(access.invitations)[0].acceptedBy).toBeUndefined();
+        expect(await f.login(lara)).toBe(laraActor);
+        expect((await f.request(`/invitations/${token}/accept`, lara.email, {})).status).toBe(200);
+      }
     } finally {
-      await f.repository.releaseAuthority();
+      await f.mf.dispose();
     }
-    expect((await revocation!).status).toBe(200);
-    expect((await acceptance!).status).toBe(401);
-    const access = (await f.repository.storedState()).ownedProjects![project.id].state
-      .collaboration!;
-    expect(access.projectMembers[laraActor]).toBeUndefined();
-    expect(Object.values(access.invitations)[0].acceptedBy).toBeUndefined();
-    expect(await f.login(lara)).toBe(laraActor);
-    expect((await f.request(`/invitations/${token}/accept`, lara.email, {})).status).toBe(200);
-  } finally {
-    await f.mf.dispose();
-  }
-}, 15000);
+  }, 15000);
