@@ -77,6 +77,40 @@
         ],
       },
     },
+    "local-agent": {
+      "vars": {
+        "ENVIRONMENT": "development",
+        "FIXTURE_IDENTITY": "lilfrogdev",
+        "EXECUTION_MODE": "local",
+        "LANDING_MODE": "fixture",
+        "LOCAL_FIXTURE_DIR": "fixtures/baseline",
+        "LOCAL_WORKSPACE_ROOT": ".wrangler/local-workspaces",
+        "ARTIFACT_REPOSITORY": "pitcrew-baseline",
+        "CONFIGURATION_REVISION": "local-agent-v1",
+        "PROJECT_BASE_SHA": "aeb3fcc59a29905910e225d6379ab12ed32f8e09",
+        "MODEL_CONFIGURATION": "{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"qwen/qwen3.8-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}",
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "REPOSITORY",
+            "class_name": "RepositoryAgent",
+          },
+          {
+            "name": "CHANGE",
+            "class_name": "ChangeAgent",
+          },
+          {
+            "name": "CONVERSATION",
+            "class_name": "RepoConversationAgent",
+          },
+          {
+            "name": "REVIEW",
+            "class_name": "ReviewAgent",
+          },
+        ],
+      },
+    },
   },
   "containers": [
     {

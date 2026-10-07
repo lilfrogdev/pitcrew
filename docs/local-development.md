@@ -35,6 +35,30 @@ and fixture landing updates local state only.
 Wrangler may warn that `containers` is not inherited by `development`; this local fake mode
 does not configure or start cloud containers.
 
+## Local agent with OpenRouter
+
+To run the approved mission through Pi, a temporary Git checkout, tests, and review without
+deploying or starting a Cloudflare container:
+
+```sh
+printf 'OPENROUTER_API_KEY=sk-or-v1-...\n' > apps/worker/.dev.vars
+pnpm build:web
+WRANGLER_SEND_METRICS=false pnpm exec wrangler dev --local --env local-agent --config apps/worker/wrangler.jsonc --ip 127.0.0.1 --port 8787
+```
+
+Run that command from the repository root. `.dev.vars` is ignored by Git. Do not put the key in
+a `VITE_` variable. In another terminal:
+
+```sh
+VITE_PITCREW_DEMO=false pnpm -C apps/web dev --port 5173 --strictPort
+```
+
+Open <http://127.0.0.1:5173>, describe a feature, answer the question, approve that revision,
+and start implementation. The checkout is created under `.wrangler/local-workspaces`. The model
+is OpenRouter `qwen/qwen3.8-flash`. This mode does not fork Artifacts or reserve cloud budget.
+Restarting the Worker resumes the same run; it does not create a second checkout or a second
+model call for a stage that already finished. The `development` environment remains fake.
+
 Wrangler persists emulator state under `.wrangler` (ignored by Git). Stop the local Worker
 before clearing that directory to reset this checkout's emulator. Stop servers with Ctrl-C.
 

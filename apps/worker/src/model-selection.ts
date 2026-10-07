@@ -14,6 +14,7 @@ export interface ModelEnv {
   MODEL_CONFIGURATION?: string;
   MODELS_CONFIGURATION?: string;
   EXECUTION_MODE?: string;
+  OPENROUTER_API_KEY?: string;
   AI?: unknown;
 }
 interface ServerModelEntry {
@@ -50,7 +51,11 @@ function bindings(env: ModelEnv, config: ModelConfiguration) {
   const values = env as unknown as Record<string, unknown>;
   return {
     AI: env.AI,
-    openRouterKey: env.openRouterKey,
+    openRouterKey:
+      env.openRouterKey ??
+      (env.EXECUTION_MODE === "local" && env.OPENROUTER_API_KEY
+        ? async () => env.OPENROUTER_API_KEY!
+        : undefined),
     secrets:
       config.provider === "byok" && config.providerId !== "openrouter"
         ? {
@@ -93,7 +98,12 @@ function catalog(env: ModelEnv, displayOnly: boolean): ModelCatalog {
       throw Error("model_not_configured");
     ids.add(value.id);
     const config = configuration(value.configuration);
-    if (!displayOnly && config.provider !== "fake" && env.EXECUTION_MODE !== "cloud")
+    if (
+      !displayOnly &&
+      config.provider !== "fake" &&
+      env.EXECUTION_MODE !== "cloud" &&
+      env.EXECUTION_MODE !== "local"
+    )
       throw Error("model_not_enabled");
     const { model } = configureModels(config, bindings(env, config));
     const limits = model.inputLimits;
