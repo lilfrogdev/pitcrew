@@ -151,4 +151,41 @@ describe("verified username projections", () => {
       { ...owner, role: "owner" },
     ]);
   });
+
+  it("never rewrites member labels from an API instance's captured profile", async () => {
+    const f = fixture();
+    const captured = api(f.core, () => {}, undefined, owner, undefined, f.access(owner), true);
+    const latest = { ...owner, username: "latest_owner", displayName: "Latest Name" };
+    f.access(latest).refreshProfile();
+    const before = structuredClone(f.core.state.collaboration);
+    const saves = f.saves();
+    const response = await captured.request(`/api/projects/${f.core.state.project.id}/members`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toContainEqual({ ...latest, role: "owner" });
+    expect(f.core.state.collaboration).toEqual(before);
+    expect(f.saves()).toBe(saves);
+  });
+
+  it("preserves stored legacy profiles when Access-only identity lacks profile fields", async () => {
+    const f = fixture();
+    const accessOnly = { actor: "access:legacy-sub", email: "legacy@example.com" };
+    const stored = { ...owner, ...accessOnly, role: "editor" as const };
+    f.core.updateCollaboration((state) => {
+      state.collaboration!.projectMembers[accessOnly.actor] = stored;
+    });
+    const before = structuredClone(f.core.state.collaboration);
+    const saves = f.saves();
+    const response = await api(
+      f.core,
+      () => {},
+      undefined,
+      accessOnly,
+      undefined,
+      f.access(accessOnly),
+    ).request(`/api/projects/${f.core.state.project.id}/members`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toContainEqual(stored);
+    expect(f.core.state.collaboration).toEqual(before);
+    expect(f.saves()).toBe(saves);
+  });
 });

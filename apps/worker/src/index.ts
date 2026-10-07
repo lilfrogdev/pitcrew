@@ -1322,38 +1322,70 @@ export class RepositoryAgent extends Agent<Env> {
             ),
           )
         : Response.json({ error: "not_found" }, { status: 404 });
-    const user = auth ? await authUser(auth, request, accessIdentity) : undefined;
-    if (auth && !user) return Response.json({ error: "unauthorized" }, { status: 401 });
-    const identity = user
-      ? {
-          actor: `account:${user.id}`,
-          email: user.email.toLowerCase(),
-          displayName: user.name,
-          username: user.username,
-          avatar: user.image,
-        }
-      : accessIdentity!;
-    const credentialActor = passwordMode ? identity.actor : accessIdentity!.actor;
+    const originalUser = auth ? await authUser(auth, request, accessIdentity) : undefined;
+    if (auth && !originalUser) return Response.json({ error: "unauthorized" }, { status: 401 });
     const ownerEmail =
       this.env.ACCESS_EMAIL?.toLowerCase() ??
       (this.env.ENVIRONMENT === "development" && this.env.FIXTURE_IDENTITY === "lilfrogdev"
         ? "dev@lilfrogdev.com"
         : "");
     const root = this.getCoordinator();
-    if (user && !passwordMode)
-      root.bindVerifiedAccount(accessIdentity!.actor, user.id, identity.email);
-    const rootAccess = new Collaboration(root, identity, ownerEmail);
-    if (!passwordMode) {
-      if (user) rootAccess.rebindLegacy(accessIdentity!.actor);
-      rootAccess.bootstrap();
-    }
-    if (user) {
-      rootAccess.refreshProfile();
-      for (const id of Object.keys(root.state.ownedProjects ?? {})) {
-        const core = this.projectCoordinator(id);
-        if (core) new Collaboration(core, identity, ownerEmail).refreshProfile();
+    const admitIdentity = (user: typeof originalUser, legacyCoordinator?: Coordinator) => {
+      const identity = user
+        ? {
+            actor: `account:${user.id}`,
+            email: user.email.toLowerCase(),
+            displayName: user.name,
+            username: user.username,
+            avatar: user.image,
+          }
+        : accessIdentity!;
+      if (user && !passwordMode)
+        root.bindVerifiedAccount(accessIdentity!.actor, user.id, identity.email);
+      const rootAccess = new Collaboration(root, identity, ownerEmail);
+      if (!passwordMode) {
+        if (user) rootAccess.rebindLegacy(accessIdentity!.actor);
+        rootAccess.bootstrap();
       }
+      if (user && !passwordMode && legacyCoordinator && legacyCoordinator !== root)
+        new Collaboration(legacyCoordinator, identity, ownerEmail).rebindLegacy(
+          accessIdentity!.actor,
+        );
+      if (user) {
+        rootAccess.refreshProfile();
+        for (const id of Object.keys(root.state.ownedProjects ?? {})) {
+          const core = this.projectCoordinator(id);
+          if (core) new Collaboration(core, identity, ownerEmail).refreshProfile();
+        }
+      }
+      return { user, identity, rootAccess };
+    };
+    let admitted: ReturnType<typeof admitIdentity> | undefined;
+    if (auth && originalUser) {
+      try {
+        admitted = await this.visualizationAuthority.run(async () => {
+          // The first session read can overlap profile updates and revocation.
+          // Read the same request's original cookie again under their authority
+          // queue before persisting labels or admitting its identity snapshot.
+          const current = await authUser(auth, request, accessIdentity);
+          if (!current || current.id !== originalUser.id) return;
+          const legacyCoordinator = passwordMode
+            ? undefined
+            : await this.requestCoordinator(
+                path,
+                new URL(request.url).searchParams.get("projectId"),
+              );
+          return admitIdentity(current, legacyCoordinator);
+        });
+      } catch {
+        return Response.json({ error: "auth_unavailable" }, { status: 503 });
+      }
+      if (!admitted) return Response.json({ error: "unauthorized" }, { status: 401 });
+    } else {
+      admitted = admitIdentity(undefined);
     }
+    const { user, identity, rootAccess } = admitted;
+    const credentialActor = passwordMode ? identity.actor : accessIdentity!.actor;
     if (request.method === "GET" && ["/api/projects", "/api/repositories"].includes(path)) {
       const fixture =
         this.env.ENVIRONMENT === "development" &&
@@ -1590,7 +1622,6 @@ export class RepositoryAgent extends Agent<Env> {
     );
     if (!coordinator) return Response.json({ error: "not_found" }, { status: 404 });
     const access = new Collaboration(coordinator, identity, ownerEmail);
-    if (user && !passwordMode && coordinator !== root) access.rebindLegacy(accessIdentity!.actor);
     // Password credentials occupy new account namespaces. Existing Access AES
     // records remain in their original namespace and are never rebound here.
     const credentialEnv = passwordMode

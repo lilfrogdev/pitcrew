@@ -90,6 +90,11 @@ export class PasswordRepositoryFixture extends RepositoryAgent {
       turns: states.reduce((count, entry) => count + (entry.conversationTurns?.length ?? 0), 0),
       bindings: state.identityBindings,
       members: state.collaboration?.projectMembers,
+      profiles: states.map((entry) => ({
+        projectId: entry.project.id,
+        projectMembers: entry.collaboration?.projectMembers,
+        threadMembers: entry.collaboration?.threadMembers,
+      })),
       calls: [
         ...this.ctx.storage.sql.exec<{ operation: string }>("SELECT operation FROM password_calls"),
       ].map((row) => row.operation),
