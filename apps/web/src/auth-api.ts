@@ -10,12 +10,8 @@ export type AuthSession = { user: AuthUser };
 export interface AuthApi {
   session(): Promise<AuthSession | null>;
   signIn(email: string, password: string): Promise<void>;
-  enroll(name: string, username: string, email: string, password: string): Promise<void>;
+  enroll(name: string, username: string, code: string, password: string): Promise<void>;
   signOut(): Promise<void>;
-  verifyEmail(token: string): Promise<void>;
-  resendVerification(email: string): Promise<void>;
-  requestPasswordReset(email: string): Promise<void>;
-  resetPassword(token: string, newPassword: string): Promise<void>;
   updateUser(profile: { name: string; username: string }): Promise<void>;
 }
 
@@ -69,7 +65,7 @@ export const httpAuthApi: AuthApi = {
     if (
       typeof user?.id !== "string" ||
       typeof user.email !== "string" ||
-      user.emailVerified !== true ||
+      typeof user.emailVerified !== "boolean" ||
       typeof user.name !== "string" ||
       typeof user.username !== "string" ||
       (user.image != null &&
@@ -80,7 +76,7 @@ export const httpAuthApi: AuthApi = {
       user: {
         id: user.id,
         email: user.email,
-        emailVerified: true,
+        emailVerified: user.emailVerified,
         name: user.name,
         username: user.username,
         image: user.image ?? null,
@@ -90,23 +86,11 @@ export const httpAuthApi: AuthApi = {
   signIn: async (email, password) => {
     await authRequest("sign-in/email", { email, password });
   },
-  enroll: async (name, username, email, password) => {
-    await authRequest("sign-up/email", { name, username, email, password });
+  enroll: async (name, username, code, password) => {
+    await authRequest("enroll", { name, username, code, password });
   },
   signOut: async () => {
     await authRequest("sign-out", {});
-  },
-  verifyEmail: async (token) => {
-    await authRequest(`verify-email?token=${encodeURIComponent(token)}`);
-  },
-  resendVerification: async (email) => {
-    await authRequest("send-verification-email", { email });
-  },
-  requestPasswordReset: async (email) => {
-    await authRequest("request-password-reset", { email });
-  },
-  resetPassword: async (token, newPassword) => {
-    await authRequest("reset-password", { token, newPassword });
   },
   updateUser: async (profile) => {
     await authRequest("update-user", profile);

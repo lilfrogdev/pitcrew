@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode, useState } from "react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { AuthGate } from "./AuthGate";
@@ -9,32 +9,44 @@ const signedIn: AuthSession = {
   user: {
     id: "actor-1",
     name: "Lilfrog",
+    username: "lilfrog",
     email: "owner@example.com",
-    emailVerified: true,
-    image: "https://example.com/avatar.png",
+    emailVerified: false,
+    image: "/avatars/frog_green.svg",
   },
 };
+const setupCode = "a".repeat(42) + "A";
 function auth(session: AuthSession | null = null): AuthApi {
   return {
     session: vi.fn(async () => session),
     signIn: vi.fn(async () => {}),
     enroll: vi.fn(async () => {}),
     signOut: vi.fn(async () => {}),
-    verifyEmail: vi.fn(async () => {}),
-    resendVerification: vi.fn(async () => {}),
-    requestPasswordReset: vi.fn(async () => {}),
-    resetPassword: vi.fn(async () => {}),
     updateUser: vi.fn(async () => {}),
   };
 }
+function PrivateState({ name }: { name: string }) {
+  const [draft, setDraft] = useState("");
+  return (
+    <label>
+      {name}
+      <input
+        aria-label="Private draft"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+    </label>
+  );
+}
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   history.replaceState(null, "", "/");
 });
 
-it("shows work only after a verified session is returned", async () => {
+it("shows work after a password session even when the email is unverified", async () => {
   const api = auth();
-  const view = render(
+  render(
     <AuthGate api={api}>
       <div>Private work</div>
     </AuthGate>,
@@ -44,11 +56,27 @@ it("shows work only after a verified session is returned", async () => {
   vi.mocked(api.session).mockResolvedValue(signedIn);
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry session" }));
   await screen.findByText("Private work");
-  view.unmount();
 });
 
-it("signs in without retaining the entered password or exposing private work", async () => {
+it("offers only password sign-in without public signup, reset, verification, or OAuth actions", async () => {
+  render(
+    <AuthGate api={auth()}>
+      <div>Private work</div>
+    </AuthGate>,
+  );
+  await screen.findByRole("heading", { name: "Sign in" });
+  expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual([
+    "Sign in",
+    "Retry session",
+  ]);
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.queryByLabelText("Name")).toBeNull();
+  expect(screen.queryByLabelText("Username")).toBeNull();
+});
+
+it("clears a failed sign-in password without reflecting sensitive diagnostics", async () => {
   const api = auth();
+  vi.mocked(api.signIn).mockRejectedValue(Error("synthetic-sensitive-diagnostic"));
   const user = userEvent.setup();
   render(
     <AuthGate api={api}>
@@ -57,98 +85,158 @@ it("signs in without retaining the entered password or exposing private work", a
   );
   await screen.findByRole("heading", { name: "Sign in" });
   await user.type(screen.getByLabelText("Email"), "owner@example.com");
-  await user.type(screen.getByLabelText("Password"), "password1234");
+  const password = screen.getByLabelText("Password") as HTMLInputElement;
+  await user.type(password, "wrong-password");
   await user.click(screen.getByRole("button", { name: "Sign in" }));
-  await waitFor(() => expect(api.signIn).toHaveBeenCalledWith("owner@example.com", "password1234"));
-  expect((screen.getByLabelText("Password") as HTMLInputElement).value).toBe("");
+  await screen.findByText("Could not sign in. Check your email and password.");
+  expect(api.signIn).toHaveBeenCalledWith("owner@example.com", "wrong-password");
+  expect(password.value).toBe("");
   expect(screen.queryByText("Private work")).toBeNull();
-  expect(screen.getByRole("button", { name: "Forgot password" })).toBeTruthy();
+  expect(document.body.textContent).not.toContain("synthetic-sensitive-diagnostic");
+  expect(document.body.textContent).not.toContain("verification");
 });
 
-it("enrolls a username through the Access-restricted backend", async () => {
+it("checks the session after personally entered credentials succeed", async () => {
   const api = auth();
+  vi.mocked(api.signIn).mockImplementation(async () => {
+    vi.mocked(api.session).mockResolvedValue(signedIn);
+  });
   const user = userEvent.setup();
   render(
     <AuthGate api={api}>
       <div>Private work</div>
     </AuthGate>,
   );
-  await screen.findByRole("button", { name: "Set up account" });
-  await user.click(screen.getByRole("button", { name: "Set up account" }));
+  await screen.findByRole("heading", { name: "Sign in" });
+  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  const password = screen.getByLabelText("Password") as HTMLInputElement;
+  await user.type(password, "synthetic-password");
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  await screen.findByText("Private work");
+  expect(password.value).toBe("");
+  expect(api.signIn).toHaveBeenCalledWith("owner@example.com", "synthetic-password");
+  expect(api.session).toHaveBeenCalledTimes(2);
+});
+
+it("strips the private setup fragment before any API request and submits the recipient-bound code under StrictMode", async () => {
+  history.replaceState(null, "", `/auth/enroll#code=${setupCode}`);
+  const api = auth();
+  vi.mocked(api.session).mockImplementation(async () => {
+    expect(location.hash).toBe("");
+    expect(location.search).toBe("");
+    return null;
+  });
+  const storage = vi.spyOn(Storage.prototype, "setItem");
+  const user = userEvent.setup();
+  render(
+    <StrictMode>
+      <AuthGate api={api}>
+        <div>Private work</div>
+      </AuthGate>
+    </StrictMode>,
+  );
+  expect(location.href).not.toContain(setupCode);
+  await screen.findByRole("heading", { name: "Set up your account" });
+  expect(screen.queryByLabelText("Email")).toBeNull();
+  expect(screen.queryByLabelText("Code")).toBeNull();
+  expect(document.body.innerHTML).not.toContain(setupCode);
   await user.type(screen.getByLabelText("Name"), "Lilfrog");
   await user.type(screen.getByLabelText("Username"), "lilfrog");
-  await user.type(screen.getByLabelText("Email"), "owner@example.com");
-  await user.type(screen.getByLabelText("Password"), "password7890");
+  const password = screen.getByLabelText("Password") as HTMLInputElement;
+  await user.type(password, "synthetic-password");
   await user.click(screen.getByRole("button", { name: "Set password" }));
-  await waitFor(() =>
-    expect(api.enroll).toHaveBeenCalledWith(
-      "Lilfrog",
-      "lilfrog",
-      "owner@example.com",
-      "password7890",
-    ),
-  );
-  expect(
-    await screen.findByText("Check your email to verify your account, then sign in."),
-  ).toBeTruthy();
+  await screen.findByText("Account ready. Sign in with your email and password.");
+  expect(api.enroll).toHaveBeenCalledOnce();
+  expect(api.enroll).toHaveBeenCalledWith("Lilfrog", "lilfrog", setupCode, "synthetic-password");
+  expect(api.signIn).not.toHaveBeenCalled();
+  expect(password.value).toBe("");
+  expect(location.pathname).toBe("/");
+  expect(storage).not.toHaveBeenCalled();
 });
 
-it("strips a verification fragment before checking or redeeming it", async () => {
-  history.replaceState(null, "", "/auth/verify#token=synthetic-verification-token");
+it.each([
+  "/auth/enroll",
+  `/auth/enroll?code=${setupCode}`,
+  "/auth/enroll#code=invalid",
+  `/auth/enroll#code=${"a".repeat(43)}`,
+  `/auth/enroll#code=${setupCode}&code=${setupCode}`,
+])("does not offer enrollment for an unavailable setup link: %s", async (path) => {
+  history.replaceState(null, "", path);
   const api = auth();
-  vi.mocked(api.verifyEmail).mockImplementation(async (token) => {
-    expect(location.hash).toBe("");
-    expect(token).toBe("synthetic-verification-token");
-  });
   render(
     <AuthGate api={api}>
       <div>Private work</div>
     </AuthGate>,
   );
-  expect(location.href).not.toContain("synthetic-verification-token");
-  expect(await screen.findByText("Email verified. Sign in.")).toBeTruthy();
-  expect(api.verifyEmail).toHaveBeenCalledOnce();
+  await screen.findByText(
+    "This account setup link is unavailable. Ask for a new private setup link.",
+  );
+  expect(location.hash).toBe("");
+  expect(location.search).toBe("");
+  expect(screen.queryByLabelText("Password")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
+  expect(api.enroll).not.toHaveBeenCalled();
 });
 
-it("clears reset secrets and recovers from an expired reset link", async () => {
-  history.replaceState(null, "", "/auth/reset#token=synthetic-reset-token");
+it("allows an enrollment retry without retaining passwords or leaking the setup code", async () => {
+  history.replaceState(null, "", `/auth/enroll#code=${setupCode}`);
   const api = auth();
-  vi.mocked(api.resetPassword).mockRejectedValue(Error("expired"));
+  vi.mocked(api.enroll).mockRejectedValueOnce(Error(`private ${setupCode}`));
   const user = userEvent.setup();
   render(
     <AuthGate api={api}>
       <div>Private work</div>
     </AuthGate>,
   );
-  await screen.findByRole("heading", { name: "Choose a new password" });
-  await user.type(screen.getByLabelText("New password"), "synthetic-new-password");
-  await user.click(screen.getByRole("button", { name: "Reset password" }));
-  expect(
-    await screen.findByText("This reset link is unavailable. Request another email."),
-  ).toBeTruthy();
-  expect((screen.getByLabelText("New password") as HTMLInputElement).value).toBe("");
+  await screen.findByLabelText("Name");
+  await user.type(screen.getByLabelText("Name"), "Lilfrog");
+  await user.type(screen.getByLabelText("Username"), "lilfrog");
+  await user.type(screen.getByLabelText("Password"), "synthetic-password");
+  await user.click(screen.getByRole("button", { name: "Set password" }));
+  await screen.findByText(
+    "Could not set up this account. Check your details and private setup link.",
+  );
+  expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
+  expect(document.body.textContent).not.toContain(setupCode);
+  await user.type(screen.getByLabelText("Password"), "another-synthetic-password");
+  await user.click(screen.getByRole("button", { name: "Set password" }));
+  await screen.findByRole("heading", { name: "Sign in" });
+  expect(api.enroll).toHaveBeenLastCalledWith(
+    "Lilfrog",
+    "lilfrog",
+    setupCode,
+    "another-synthetic-password",
+  );
+});
+
+it("removes legacy auth links without offering unavailable email flows", async () => {
+  history.replaceState(null, "", "/auth/reset#token=synthetic-reset-token");
+  render(
+    <AuthGate api={auth()}>
+      <div>Private work</div>
+    </AuthGate>,
+  );
+  await screen.findByRole("heading", { name: "Sign in" });
+  expect(location.pathname).toBe("/");
   expect(location.hash).toBe("");
-  await user.click(screen.getByRole("button", { name: "Forgot password" }));
-  await user.type(screen.getByLabelText("Email"), "owner@example.com");
-  await user.click(screen.getByRole("button", { name: "Send email" }));
-  expect(api.requestPasswordReset).toHaveBeenCalledWith("owner@example.com");
+  expect(document.body.textContent).not.toContain("synthetic-reset-token");
+  expect(screen.queryByRole("button", { name: /reset|resend|verify/i })).toBeNull();
+});
+
+it("clears passwords when the form unmounts", async () => {
+  const view = render(
+    <AuthGate api={auth()}>
+      <div>Private work</div>
+    </AuthGate>,
+  );
+  const password = (await screen.findByLabelText("Password")) as HTMLInputElement;
+  await userEvent.setup().type(password, "synthetic-password");
+  view.unmount();
+  expect(password.value).toBe("");
 });
 
 it("remounts private state for a different account while preserving same-account profile updates", async () => {
   const api = auth(signedIn);
-  function PrivateState({ name }: { name: string }) {
-    const [draft, setDraft] = useState("");
-    return (
-      <label>
-        {name}
-        <input
-          aria-label="Private draft"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-      </label>
-    );
-  }
   const user = userEvent.setup();
   render(<AuthGate api={api}>{(account) => <PrivateState name={account.name} />}</AuthGate>);
   await screen.findByLabelText("Private draft");
@@ -163,4 +251,80 @@ it("remounts private state for a different account while preserving same-account
   fireEvent(window, new Event("online"));
   await screen.findByText("Bryan");
   expect(screen.getByLabelText("Private draft")).toHaveProperty("value", "");
+});
+
+it("drops private work immediately on logout or revocation and resets it even for the same account", async () => {
+  const api = auth(signedIn);
+  const user = userEvent.setup();
+  render(<AuthGate api={api}>{(account) => <PrivateState name={account.name} />}</AuthGate>);
+  await screen.findByLabelText("Private draft");
+  await user.type(screen.getByLabelText("Private draft"), "Owner’s private draft");
+  let complete: (value: AuthSession | null) => void = () => {};
+  vi.mocked(api.session).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  fireEvent(window, new Event("pitcrew-auth-required"));
+  expect(screen.queryByLabelText("Private draft")).toBeNull();
+  expect(screen.getByText("Checking session…")).toBeTruthy();
+  await act(async () => complete(null));
+  await screen.findByRole("heading", { name: "Sign in" });
+  vi.mocked(api.session).mockResolvedValue(signedIn);
+  await user.click(screen.getByRole("button", { name: "Retry session" }));
+  await screen.findByLabelText("Private draft");
+  expect(screen.getByLabelText("Private draft")).toHaveProperty("value", "");
+});
+
+it("ignores a stale session response after revocation", async () => {
+  const api = auth(signedIn);
+  render(
+    <AuthGate api={api}>
+      <div>Private work</div>
+    </AuthGate>,
+  );
+  await screen.findByText("Private work");
+  let complete: (value: AuthSession | null) => void = () => {};
+  vi.mocked(api.session).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  fireEvent(window, new Event("online"));
+  vi.mocked(api.session).mockResolvedValue(null);
+  fireEvent(window, new Event("pitcrew-auth-required"));
+  await screen.findByRole("heading", { name: "Sign in" });
+  await act(async () => complete(signedIn));
+  expect(screen.queryByText("Private work")).toBeNull();
+});
+
+it("does not revive work when a pending sign-in finishes after auth is required", async () => {
+  const api = auth();
+  let complete: () => void = () => {};
+  vi.mocked(api.signIn).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const user = userEvent.setup();
+  render(
+    <AuthGate api={api}>
+      <div>Private work</div>
+    </AuthGate>,
+  );
+  await screen.findByRole("heading", { name: "Sign in" });
+  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  await user.type(screen.getByLabelText("Password"), "synthetic-password");
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  fireEvent(window, new Event("pitcrew-auth-required"));
+  await screen.findByRole("heading", { name: "Sign in" });
+  vi.mocked(api.session).mockResolvedValue(signedIn);
+  await act(async () => complete());
+  expect(api.session).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText("Private work")).toBeNull();
+  expect(screen.getByLabelText("Email")).toHaveProperty("value", "");
+  expect(screen.getByLabelText("Password")).toHaveProperty("value", "");
 });

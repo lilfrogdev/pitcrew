@@ -68,6 +68,11 @@ import { principal, protectedFetch, type AccessEnv } from "./access";
 import { Collaboration } from "./collaboration";
 import { ThreadPresence } from "./thread-presence";
 import { configuredAuth, authRequest, authUser, type AuthEnv } from "./auth";
+import {
+  isPasswordIngress,
+  passwordIngressRequest,
+  privateIngressResponse,
+} from "./password-ingress";
 import { Agent, getAgentByName } from "agents";
 import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
 export { ChangeAgent, ReviewAgent };
@@ -78,7 +83,13 @@ import {
   boundedCleanupRpc,
 } from "./infrastructure-admission";
 import { api } from "./api";
-import { Coordinator, fakeExecution, initialState, type State } from "./coordinator";
+import {
+  AdmissionError,
+  Coordinator,
+  fakeExecution,
+  initialState,
+  type State,
+} from "./coordinator";
 interface Env extends PiEnv, AccessEnv, AuthEnv {
   ASSETS?: Fetcher;
   PROJECT_BASE_SHA?: string;
@@ -131,7 +142,7 @@ export class RepositoryAgent extends Agent<Env> {
     if (
       !core ||
       !grant ||
-      this.env.AUTH_MODE !== "better-auth" ||
+      this.env.AUTH_MODE !== (grant.mode === "password-only" ? "password-only" : "better-auth") ||
       !this.env.AUTH_DB ||
       !this.conversationsEnabled()
     )
@@ -1251,13 +1262,20 @@ export class RepositoryAgent extends Agent<Env> {
     return this.coordinator;
   }
   async onRequest(request: Request) {
-    const accessIdentity = await principal(request, this.env);
-    if (!accessIdentity) return Response.json({ error: "access_not_configured" }, { status: 403 });
+    const passwordMode = isPasswordIngress(request);
+    if (passwordMode) {
+      const normalized = passwordIngressRequest(request, this.env);
+      if (normalized instanceof Response) return normalized;
+      request = normalized;
+    }
+    const accessIdentity = passwordMode ? undefined : await principal(request, this.env);
+    if (!passwordMode && !accessIdentity)
+      return Response.json({ error: "access_not_configured" }, { status: 403 });
     const auth =
-      this.env.AUTH_MODE === "better-auth"
+      passwordMode || this.env.AUTH_MODE === "better-auth"
         ? configuredAuth(this.env, request, (task) => this.ctx.waitUntil(task), accessIdentity)
         : undefined;
-    if (this.env.AUTH_MODE === "better-auth" && !auth)
+    if ((passwordMode || this.env.AUTH_MODE === "better-auth") && !auth)
       return Response.json({ error: "auth_unavailable" }, { status: 503 });
     const path = new URL(request.url).pathname;
     if (path.startsWith("/api/auth/"))
@@ -1284,20 +1302,25 @@ export class RepositoryAgent extends Agent<Env> {
           username: user.username,
           avatar: user.image,
         }
-      : accessIdentity;
+      : accessIdentity!;
+    const credentialActor = passwordMode ? identity.actor : accessIdentity!.actor;
     const ownerEmail =
       this.env.ACCESS_EMAIL?.toLowerCase() ??
       (this.env.ENVIRONMENT === "development" && this.env.FIXTURE_IDENTITY === "lilfrogdev"
         ? "dev@lilfrogdev.com"
         : "");
     const root = this.getCoordinator();
-    if (user) root.bindVerifiedAccount(accessIdentity.actor, user.id, identity.email);
+    if (user && !passwordMode)
+      root.bindVerifiedAccount(accessIdentity!.actor, user.id, identity.email);
     const rootAccess = new Collaboration(root, identity, ownerEmail);
-    if (user) rootAccess.rebindLegacy(accessIdentity.actor);
-    rootAccess.bootstrap();
+    if (!passwordMode) {
+      if (user) rootAccess.rebindLegacy(accessIdentity!.actor);
+      rootAccess.bootstrap();
+    }
     if (request.method === "GET" && ["/api/projects", "/api/repositories"].includes(path)) {
       const fixture =
         this.env.ENVIRONMENT === "development" &&
+        !passwordMode &&
         this.env.AUTH_MODE !== "better-auth" &&
         this.env.FIXTURE_IDENTITY === "lilfrogdev";
       const projects = [
@@ -1402,7 +1425,17 @@ export class RepositoryAgent extends Agent<Env> {
     );
     if (!coordinator) return Response.json({ error: "not_found" }, { status: 404 });
     const access = new Collaboration(coordinator, identity, ownerEmail);
-    if (user && coordinator !== root) access.rebindLegacy(accessIdentity.actor);
+    if (user && !passwordMode && coordinator !== root) access.rebindLegacy(accessIdentity!.actor);
+    // Password credentials occupy new account namespaces. Existing Access AES
+    // records remain in their original namespace and are never rebound here.
+    const credentialEnv = passwordMode
+      ? {
+          ...this.env,
+          EXECUTION_MODE: "disabled",
+          INFRASTRUCTURE_ADMISSION_ENABLED: "false",
+          CLOUD_CONVERSATION_ENABLED: "false",
+        }
+      : this.env;
     if (/^\/api\/projects\/[^/]+\/threads\/[^/]+\/visualizations(?:\/[^/]+)?$/.test(path)) {
       if (!auth || !user)
         return Response.json(
@@ -1433,9 +1466,9 @@ export class RepositoryAgent extends Agent<Env> {
         );
     }
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter")
-      return providerConnectionRequest(request, this.env, accessIdentity.actor);
+      return providerConnectionRequest(request, credentialEnv, credentialActor);
     if (new URL(request.url).pathname === "/api/provider-connection/openrouter/models")
-      return providerModelsRequest(request, this.env, accessIdentity.actor);
+      return providerModelsRequest(request, credentialEnv, credentialActor);
     if (/^\/api\/repositories(?:\/|$)/.test(path)) {
       if (!user && identity.email !== ownerEmail)
         return Response.json({ error: "not_found" }, { status: 404 });
@@ -1479,17 +1512,17 @@ export class RepositoryAgent extends Agent<Env> {
       : 16384;
     if (Number(request.headers.get("content-length") ?? 0) > bodyLimit)
       return Response.json({ error: "body_too_large" }, { status: 413 });
-    let providerReady = this.env.EXECUTION_MODE === "fake" || !requiresUserOpenRouter(this.env);
-    if (!providerReady && credentialStorageAvailable(this.env)) {
+    let providerReady =
+      !passwordMode && (this.env.EXECUTION_MODE === "fake" || !requiresUserOpenRouter(this.env));
+    if (!passwordMode && !providerReady && credentialStorageAvailable(this.env)) {
       try {
-        providerReady = await userCredential(this.env, accessIdentity.actor).configured(
-          accessIdentity.actor,
-        );
+        providerReady = await userCredential(this.env, credentialActor).configured(credentialActor);
       } catch {
         /* Fail closed. */
       }
     }
     if (
+      !passwordMode &&
       this.env.EXECUTION_MODE === "cloud" &&
       !providerReady &&
       request.method === "POST" &&
@@ -1513,14 +1546,15 @@ export class RepositoryAgent extends Agent<Env> {
         this.env.EXECUTION_MODE === "fake"
           ? coordinator.dispatch(id, fakeExecution)
           : this.dispatchRun(id),
-      this.landing(coordinator, accessIdentity.actor),
-      accessIdentity,
-      this.env.CONVERSATION &&
+      passwordMode ? undefined : this.landing(coordinator, credentialActor),
+      passwordMode ? identity : accessIdentity!,
+      !passwordMode &&
+        this.env.CONVERSATION &&
         providerReady &&
         this.conversationsEnabled() &&
         (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
         ? {
-            catalog: resolveCatalog(userModelEnv(this.env, accessIdentity.actor)),
+            catalog: resolveCatalog(userModelEnv(this.env, credentialActor)),
             dispatch: async (id) => {
               if (auth && user) {
                 await this.visualizationAuthority.run(async () => {
@@ -1551,7 +1585,7 @@ export class RepositoryAgent extends Agent<Env> {
           }
         : undefined,
       access,
-      this.env.EXECUTION_MODE === "disabled",
+      passwordMode || this.env.EXECUTION_MODE === "disabled",
       this.env.ARTIFACTS
         ? new SourceReader(
             this.env.ARTIFACTS,
@@ -1566,12 +1600,38 @@ export class RepositoryAgent extends Agent<Env> {
           )
         : undefined,
       this.typingPresence,
+      auth && user
+        ? (operation) =>
+            this.visualizationAuthority
+              .run(async () => {
+                // The API admits bounded bodies before this queue. Recheck the
+                // original session before synchronous ACL/lease/response work so
+                // logout cannot be followed by a stale typing read or refresh.
+                const current = await visualizationSession(auth, request, accessIdentity);
+                if (!current || current.actor !== identity.actor)
+                  throw new AdmissionError("unauthorized", 401);
+                return operation();
+              })
+              .catch((error) => {
+                if (error instanceof VisualizationError)
+                  throw new AdmissionError("presence_unavailable", 503);
+                throw error;
+              })
+        : undefined,
     );
     return app.fetch(request);
   }
 }
 export default {
-  fetch(request: Request, env: Env) {
+  async fetch(request: Request, env: Env) {
+    if (isPasswordIngress(request)) {
+      const normalized = passwordIngressRequest(request, env);
+      if (normalized instanceof Response) return normalized;
+      const stub = env.REPOSITORY.get(env.REPOSITORY.idFromName("pitcrew"));
+      // Preserve the scoped URL for DO revalidation; only the DO normalizes it.
+      const scoped = new Request(request.url, normalized);
+      return privateIngressResponse(await stub.fetch(scoped));
+    }
     return protectedFetch(
       request,
       env,

@@ -1,125 +1,134 @@
-# Local Pitcrew accounts on Cloudflare
+# Local email/password accounts
 
-Prepared implementation only. No D1 database, DNS records, Access policy, secret,
-production account, mail delivery, or deployment was created by this change.
-Both clients remain local; only the shared backend is deployed after approval.
+Each person runs the frontend on localhost:5173. Cloudflare hosts only the shared
+Worker, D1 account database and existing repository Durable Objects. The active
+account design is email/password only: no email delivery, domain, SSO, OAuth,
+public signup or implicit provider/account linking. Earlier Access-bound email
+verification code remains available only on the protected legacy surface.
 
-## Tested contract
+## Identity and enrollment
 
-- `configuredAuth(env, request, waitUntil, access)` requires the fourth argument
-  `{actor: 'access:<verified JWT sub>', email: '<verified JWT email>'}` from the
-  existing signature/issuer/audience/expiry-checked Access gate.
-- `authRequest(auth, request, access)` handles the exact `/api/auth` route set;
-  `authUser(auth, request, access)` returns only a verified user bound to that
-  immutable Access subject **and** email. Use `account:${user.id}` for repository
-  membership/ACL. Keep `access:<sub>` for existing encrypted provider credentials.
-  Do not re-encrypt, copy, fall back, or implicitly link credentials by email.
-- Username is a distinct, unique field (3–32 ASCII letters, numbers, underscores).
-  Profile image is null or an approved local `/avatars/<id>.svg`; name is 1–80
-  characters. User responses contain `id,email,emailVerified,name,username,image`.
-- Signup and sign-in accept email/password. Signup also needs name/username; image
-  is optional. Email must equal the verified Access email and exactly match
-  `dev@lilfrogdev.com` or `bryan.aldair.zamora@gmail.com`. Passwords are entered by
-  the users and hashed by Better Auth. No OAuth providers or implicit linking.
-- Signups do not create sessions until email is verified. Session lifetime is 30
-  minutes with no cookie cache or automatic extension. Logout revokes the current
-  session; `/revoke-sessions` revokes all; reset revokes all and consumes its token
-  once. `/change-password` accepts `revokeOtherSessions:true` to revoke others.
-- Verification and reset tokens expire after 15 minutes. Emails use the native
-  `EMAIL.send({to,from,subject,text})` binding. Failures sent to `waitUntil` are
-  sanitized as `auth_email_delivery_failed`; library logging is disabled.
-- Atomic D1 Access-subject admission counts invalid bodies/tokens before validation.
-  Better Auth independently enforces IP limits using Cloudflare's trusted
-  `cf-connecting-ip`. Signup: 5/hour; login/reset/change-password: 5/5 minutes;
-  resend/reset request: 3/hour; verify: 10/5 minutes; other auth routes: 60/minute.
-  Do not forward browser-supplied client-IP headers from local relays.
+Only `dev@lilfrogdev.com` and `bryan.aldair.zamora@gmail.com` may be privately
+invited. An operator-issued 32-byte random capability is bound to one recipient
+in `auth_enrollment`; only its SHA256 hash persists. The user opens their private
+`/auth/enroll#code=...` link and personally chooses a password, name and username.
+The fragment is immediately removed from browser history. Neither typed email
+nor the allowlist alone establishes eligibility. The account's email remains
+`emailVerified=false`; no mailbox verification is claimed.
 
-## Local relay wiring
+Atomic consumption admits at most one redemption. Better Auth 1.7.7 performs
+real signup and native password hashing; no automatic sign-in follows enrollment.
+The immutable `enrollment:<grant-id>` provenance key occupies the existing
+`access_actor` column in this mode and is explicitly distinct from Access proof.
+The consumed grant must separately bind its exact recipient and `user.id` before
+any session can authorize the account. Partial creation burns the grant and fails
+closed; operators must inspect and deliberately resolve partial state. The issuer
+cannot replace an existing account by email or revive a consumed capability.
 
-Create **one** `authRelayPlugin({enabled, userAccessSession, origin})` instance in
-Vite. `enabled` and `userAccessSession` default false; `origin` must be exactly
-`http://localhost:5173` or `http://127.0.0.1:5173`. Add the plugin before `/api` proxy
-middleware. Pass its `sessionHeaders(req, accessToken)` callback to both existing
-backend and provider relays. Those relays obtain/verify their Access token and
-apply their own Host/loopback/origin/nonce admission first. The callback returns
-only the server-held `Cookie` for the matching Access subject, or `{}`.
+Product ACLs and new provider credential records use `account:<user-id>`. Existing
+`access:<sub>` credential ciphertext and repository ownership remain untouched;
+password accounts cannot read, rebind or migrate them by matching email. Any
+legacy linkage needs separate explicit proof and approval. Provider key entry is
+not needed for account setup or notes, and paid execution remains disabled.
 
-`createAuthRelayMiddleware(options)` exports a callable middleware with the same
-`sessionHeaders` and `clearSessions` helpers for other local servers. The cloud
-session cookie is never sent to browser JavaScript, browser storage, or response
-headers. It is memory-only, cleared on server close/restart, signout, reset,
-revocation, null session, Access identity change, Access redirect, or expiration.
+## HTTP and local transport
 
-Browser flow:
+The exact cloud origin is `https://pitcrew-backend.pitcrew-004.workers.dev`.
+The password surface is `/app/api/*`, with a method/path allowlist in
+`password-ingress.ts`. It revalidates the path in the singleton repository DO and
+normalizes to `/api/*` only there. Unknown methods/routes, recovery/signup/OAuth,
+paid dispatch, repository adoption/lifecycle and landing/publisher mutations are
+unavailable on that surface. Membership checks still gate shared product routes.
+Caller identity/Access headers never select a principal.
 
-1. GET `/api/auth/local-session` to obtain `{nonce}` and an HttpOnly,
-   SameSite=Strict, Path=/api relay cookie. Retain the nonce only in memory.
-2. Send `x-pitcrew-auth-nonce` for every later auth request, including GETs.
-3. GET `/api/auth/get-session` returns `null` or `{user:{...}}` without a raw
-   session token. POST JSON to signup/signin/signout/profile/password routes.
-4. Email opens local `/auth/verify#token=...` or `/auth/reset#token=...`. Strip the
-   fragment immediately. Redeem verification via GET
-   `/api/auth/verify-email?token=...` and reset via POST
-   `/api/auth/reset-password` with `{token,newPassword}`. Always use the local
-   relay; never render the token or write it to browser storage/logs.
-5. No caller-controlled `callbackURL`, `redirectTo`, email change, actor,
-   accessActor, or arbitrary auth/provider route is accepted.
+Password auth endpoints are POST `auth/enroll`, `auth/sign-in/email`,
+`auth/sign-out`, `auth/revoke-sessions`, `auth/update-user`, `auth/change-password`,
+and GET `auth/get-session`. Enrollment body is `{code,password,name,username,image?}`;
+email comes from the grant. Profile images are existing local avatar paths.
+Password changes require the current password and revoke other sessions.
+Verification, reset and email recovery routes are unavailable; there is no
+password-reset promise in the UI. Recovery requires a separately reviewed
+operator mechanism, not reissuing an enrollment for an existing email.
 
-## Exact approval bundle to prepare with the user
+Cloud cookies are Secure and HttpOnly; a single local relay keeps them only in
+server memory. The browser receives an unrelated HttpOnly, SameSite=Strict,
+Path=/api local cookie and an in-memory nonce. The auth, product and provider
+relays share one session instance. They require strict loopback sockets, Host,
+Origin/fetch-site checks and request nonces, target a fixed cloud origin, reject
+redirects and never acquire Cloudflare Access tokens in password mode. Logout
+clears the local credential even when transport fails; generation fences reject
+late sign-in/session responses after a newer revocation. Restart loses local
+sessions. Sessions last at most 30 minutes; cookies do not cache authority.
 
-Before any of the following cloud actions, obtain approval for the concrete
-resource/configuration diff and sender. Sender domain/address is still pending.
-`apps/worker/auth-bindings.example.json` is a review snippet, not a deployable
-configuration. Preserve all existing Worker bindings and migrations when merging.
+Durable global/IP admission runs before body/token lookup, with additional fixed
+recipient-purpose limits. Atomic D1 counters survive a restart. Indexed bounded
+cleanup removes admission rows older than 24 hours. JSON bodies are bounded to
+8192 bytes before they enter the shared visualization authority queue. Session
+creation, checks and revocation finish inside that queue; successful signout and
+revoke-all require primary-store session deletion to be confirmed.
+Typing presence reads and writes also recheck their original session in that
+queue after bounded body admission. A revoked session cannot refresh or read
+presence; current thread membership and the authenticated username govern the
+ephemeral lease. Presence disappears on backend restart and never becomes a
+stored message or draft.
 
-1. Create one D1 database named `pitcrew-auth` in Cloudflare account
-   `004227d2029c56b084ce15356768def3`; bind it as `AUTH_DB` on
-   `pitcrew-backend`. Apply only `apps/worker/migrations/auth/*.sql` in filename
-   order, with Wrangler's D1 migration ledger. These migrations assume a new empty
-   DB; a populated auth DB requires a separately reviewed migration.
-2. Onboard the user-approved sender domain into **Cloudflare Email Service**. It
-   must use Cloudflare DNS. Review the exact DNS delta Cloudflare proposes (MX,
-   SPF, DKIM, DMARC under its bounce/authentication setup) before approving it.
-   Inspect existing DMARC/MX records; do not blindly overwrite them. No separate
-   email-provider signup is needed. Bind native `EMAIL`; no SMTP/API token is
-   required for Worker mail.
-3. User privately enters an independently generated, high-entropy
-   `BETTER_AUTH_SECRET` (at least 32 characters) into Wrangler's interactive
-   `secret put BETTER_AUTH_SECRET --config apps/worker/wrangler.backend.json`.
-   Do not put the value in this thread, command arguments, files, dotenv,
-   frontend code, screenshots, or logs. Preserve `CREDENTIAL_ENCRYPTION_KEY`
-   exactly. This change generates/transmits no secret.
-4. Merge the approved D1 id/sender into the existing backend config. Set
-   `AUTH_MODE=better-auth`, the existing exact backend origin as
-   `BETTER_AUTH_URL`, the selected fixed local origin as `AUTH_CLIENT_ORIGIN`, and
-   approved sender as `AUTH_EMAIL_FROM`. Keep the exact Access issuer/audience
-   and two-address allowlist; keep hosted assets absent and paid execution gates
-   disabled. This step does not authorize any Access policy change.
-5. Review the integrated backend/frontend artifact, dry-run bundle and full test
-   results, then obtain explicit deployment approval. After deployment, obtain
-   approval to send verification/reset mail to the two users and verify actual
-   inbox delivery, expiry, logout/reset/revocation, and cross-user isolation.
-   Each user enters their own password locally. Never create passwords for them.
+## Approved setup sequence
 
-Any sender DNS onboarding, real D1 provisioning/migration, secret entry, real mail,
-deployment, publishing, merging, or paid inference remains blocked until approved.
-Cloudflare public-beta native Email Service account availability and real delivery
-are not established by local fake-binding tests.
+The operator approved the two-account bundle after confirming that the frontend
+stays local. This document records the exact order and private handoff; it does
+not permit unreviewed source or broader policy/resource changes.
 
-## Verification
+1. Review the final code, real workerd/D1 tests and independent security report.
+   Integrate the visualization queue, frozen session grants and typing presence
+   session fence before rollout.
+2. Obtain only the missing D1 OAuth scope through official consent, preserving
+   existing scopes. Commands remain pinned to Pitcrew account
+   `004227d2029c56b084ce15356768def3`. Re-list D1 databases; an earlier authentication
+   error10000 means the token lacks access, not that no database exists. Create
+   `pitcrew-auth` only if absent; never adopt a populated unknown database.
+3. Add `AUTH_DB` with that exact database id and `migrations/auth`; apply the
+   reviewed migrations only to the selected empty auth DB. Preserve all existing
+   namespace ids and the `CREDENTIAL_ENCRYPTION_KEY` binding.
+4. The user generates `BETTER_AUTH_SECRET` privately in a password manager and
+   personally enters it into the Worker's official secret UI or an interactive
+   `wrangler secret put BETTER_AUTH_SECRET --config <approved-config>` terminal.
+   Never paste it into chat, argv, source, dotenv or logs. Agents inspect binding
+   names only. Users also enter their own real passwords without agent assistance.
+5. Deploy the reviewed guarded Worker first, with the auth binding example merged
+   into the complete existing backend config. `AUTH_MODE=password-only`, fixed
+   `BETTER_AUTH_URL`; no EMAIL binding or hosted frontend assets. Preserve
+   `EXECUTION_MODE=disabled`, `INFRASTRUCTURE_ADMISSION_ENABLED=false`,
+   `CLOUD_CONVERSATION_ENABLED=false`, `REPOSITORY_LIFECYCLE=disabled`,
+   `TRUSTED_PUBLISHER_ENABLED=false`, existing limits and disabled preview URLs.
+6. After verifying guard failures, create only the more-specific Access app
+   **Pitcrew password API** for
+   `pitcrew-backend.pitcrew-004.workers.dev/app/api/*`, Bypass/Everyone policy scoped
+   to that app. Keep the existing whole-host app
+   `b8da5b4f-6783-4b88-b78c-0f0c381e7b9d` and its exact two-user allowlist unchanged.
+   If the dashboard cannot support the narrow path, stop; never remove whole-host
+   protection as a fallback. Existing `/api` admin/legacy routes stay protected.
+7. In the operator's own private terminal, run
+   `node scripts/issue-account-enrollment.mjs <approved-config.json> dev@lilfrogdev.com`.
+   The reviewed script requires a real terminal, validates the exact account,
+   Worker and D1 binding, writes only hash-bearing temporary SQL through Wrangler,
+   removes its temporary files and releases the link only after D1 confirms the
+   new grant. The operator privately hands Bryan his separate recipient-bound
+   link over an independently verified human channel. No automated sending occurs.
+8. The sole runtime writer activates clients sequentially using
+   `PITCREW_ACCOUNT_AUTH=true` and `PITCREW_AUTH_MODE=password-only`, preserving
+   local drafts/settings/processes. No Access sign-in is requested. Verify
+   enrollment/login/logout, wrong-password throttling, two-account ACL isolation,
+   absence of SSO on the new prefix and continued Access on legacy routes.
 
-Pinned Better Auth 1.7.7, Drizzle 0.45.2 and native Worker binding types are used.
-`vp test run apps/worker/src/auth.test.ts` exercises the actual Better Auth and
-Drizzle libraries inside workerd against real local D1 SQLite with synthetic
-signed Access JWTs and a fake native mail binding. `node --test
-scripts/auth-relay.test.mjs` covers loopback admission, duplicate/Unicode nonces,
-server-only cookies, identity changes, logout, throttles, redirects and expiration.
-Miniflare needs a local loopback listener; no production credentials or network
-mail are needed. Independent read-only security review is required before handoff.
+OAuth consent, user secret entry, private invitation handoff and actual password
+entry are human-owned steps. No agent executes the real invitation issuer or
+captures its output. If a rollout check fails, disable only the new scoped Access
+exemption and retain the prior protected Worker/runtime version. No paid task,
+email delivery, DNS change, hosting or legacy migration belongs to acceptance.
 
-Official references:
-
-- https://better-auth.com/docs/authentication/email-password
-- https://better-auth.com/docs/adapters/drizzle
-- https://better-auth.com/docs/concepts/rate-limit
-- https://developers.cloudflare.com/email-service/get-started/send-emails/
+Cloudflare's [path precedence documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)
+explains the more-specific app boundary. Better Auth's
+[options reference](https://better-auth.com/docs/reference/options) describes
+signup and email/password configuration. The normal library instance disables
+signup; a separate private instance enables its real signup endpoint only after
+atomic capability consumption and adds a grant-bound creation hook.

@@ -18,7 +18,8 @@ type Options = {
   userAccessSession?: boolean;
   origin?: string | (() => string | undefined);
   sharedApi?: boolean;
-  sessionHeaders?: (req: IncomingMessage, accessToken: string) => Promise<Record<string, string>>;
+  passwordMode?: boolean;
+  sessionHeaders?: (req: IncomingMessage, accessToken?: string) => Promise<Record<string, string>>;
 };
 export function createBackendRelayMiddleware(
   options?: Options,

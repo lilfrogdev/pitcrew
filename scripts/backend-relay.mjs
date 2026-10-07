@@ -74,7 +74,7 @@ const safeErrors = new Set([
 ]);
 // Explicit product API routes. Authentication and credentials have separate
 // relays; unknown paths never become a cloud proxy.
-function sharedRoute(path, method) {
+function sharedRoute(path, method, passwordMode = false) {
   const id = "[A-Za-z0-9:_-]{1,128}";
   const routes = {
     GET: [
@@ -99,6 +99,12 @@ function sharedRoute(path, method) {
     ],
     DELETE: [`(?:projects|threads)/${id}/members/[A-Za-z0-9:@._%+-]{1,256}`],
   };
+  if (passwordMode)
+    routes.POST = [
+      `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
+      `threads/${id}/(?:messages|invitations|presence)`,
+      "invitations/[a-f0-9]{64}/(?:accept|revoke)",
+    ];
   return (routes[method] ?? []).some((route) => new RegExp(`^/api/${route}$`).test(path));
 }
 const loopback = (value) => ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(value);
@@ -217,6 +223,7 @@ function admitted(req, origin) {
     "content-type",
     "x-pitcrew-backend-nonce",
     "x-pitcrew-local-nonce",
+    "x-pitcrew-connection-nonce",
     "cookie",
   ];
   const counts = new Map();
@@ -424,8 +431,10 @@ export function createBackendRelayMiddleware({
   verifyToken = verifyUserAccessToken,
   providerOnly = false,
   sharedApi = false,
+  passwordMode = false,
   sessionHeaders,
 } = {}) {
+  if (typeof passwordMode !== "boolean") throw Error("invalid_relay_mode");
   const configuredOrigin = origin;
   const validOrigin = (value) => {
     try {
@@ -484,7 +493,10 @@ export function createBackendRelayMiddleware({
       if (
         (providerOnly && raw.startsWith("/api/provider-connection/openrouter")) ||
         raw.startsWith("/api/repositories") ||
-        (enabled && userAccessSession && raw.startsWith("/api/backend-session"))
+        (enabled &&
+          (passwordMode || userAccessSession) &&
+          raw.startsWith("/api/backend-session")) ||
+        (sharedApi && raw.startsWith("/api/"))
       )
         return reply(res, 403, { error: "backend_relay_forbidden" });
       return next();
@@ -504,16 +516,23 @@ export function createBackendRelayMiddleware({
     } catch {
       return reply(res, 400, { error: "invalid_repository_request" });
     }
-    const shared = !providerOnly && sharedApi && sharedRoute(decodedPath, req.method);
+    const shared = !providerOnly && sharedApi && sharedRoute(decodedPath, req.method, passwordMode);
     const metadata =
       !providerOnly &&
-      (url.pathname === "/api/repositories" || url.pathname.startsWith("/api/repositories/"));
+      (url.pathname === "/api/repositories" ||
+        (!passwordMode && url.pathname.startsWith("/api/repositories/")));
     const session = providerOnly
       ? url.pathname === "/api/provider-connection/openrouter/session"
       : url.pathname === "/api/backend-session" ||
         (sharedApi && url.pathname === "/api/local-session");
-    if (!metadata && !shared && !provider && !models && !(session && enabled && userAccessSession))
-      return sharedApi &&
+    if (
+      !metadata &&
+      !shared &&
+      !provider &&
+      !models &&
+      !(session && enabled && (passwordMode || userAccessSession))
+    )
+      return (sharedApi || passwordMode) &&
         !providerOnly &&
         url.pathname.startsWith("/api/") &&
         !url.pathname.startsWith("/api/auth/") &&
@@ -521,7 +540,7 @@ export function createBackendRelayMiddleware({
         ? reply(res, 404, { error: "not_found" })
         : next();
     if (!admitted(req, origin)) return reply(res, 403, { error: "backend_relay_forbidden" });
-    if (!enabled || !userAccessSession)
+    if (!enabled || (!passwordMode && !userAccessSession))
       return reply(res, 503, { error: "repository_backend_unavailable" });
     if (session) {
       if (req.method !== "GET" || url.search)
@@ -649,29 +668,36 @@ export function createBackendRelayMiddleware({
     active++;
     if (write && !presenceWrite) busy = true;
     try {
-      const access = await token();
+      // This explicit mode never probes Access or touches a cloudflared cache.
+      const access = passwordMode ? "" : await token();
       const authHeaders = sessionHeaders ? await sessionHeaders(req, access) : {};
-      if (sharedApi && !authHeaders.Cookie) return reply(res, 401, { error: "unauthorized" });
+      if ((passwordMode || sharedApi) && !authHeaders.Cookie)
+        return reply(res, 401, { error: "unauthorized" });
       // Rebuild headers. Never forward browser Cookie/Authorization/identity, nonce or hints.
-      const response = await fetchImpl(`${BACKEND_ACCESS.origin}${url.pathname}${url.search}`, {
-        method: req.method,
-        redirect: "manual",
-        signal: AbortSignal.timeout(10000),
-        headers: {
-          Accept: "application/json",
-          "Cf-Access-Token": access,
-          ...(authHeaders.Cookie ? { Cookie: authHeaders.Cookie } : {}),
-          ...(write ? { Origin: BACKEND_ACCESS.origin, "Content-Type": "application/json" } : {}),
+      const response = await fetchImpl(
+        `${BACKEND_ACCESS.origin}${passwordMode ? "/app" : ""}${url.pathname}${url.search}`,
+        {
+          method: req.method,
+          redirect: "manual",
+          signal: AbortSignal.timeout(10000),
+          headers: {
+            Accept: "application/json",
+            ...(!passwordMode ? { "Cf-Access-Token": access } : {}),
+            ...(authHeaders.Cookie ? { Cookie: authHeaders.Cookie } : {}),
+            ...(write ? { Origin: BACKEND_ACCESS.origin, "Content-Type": "application/json" } : {}),
+          },
+          ...(write && content !== undefined ? { body: JSON.stringify(content) } : {}),
         },
-        ...(write && content !== undefined ? { body: JSON.stringify(content) } : {}),
-      });
+      );
       if (
         [301, 302, 303, 307, 308].includes(response.status) ||
-        (!sharedApi && [401, 403].includes(response.status))
+        (!passwordMode && !sharedApi && [401, 403].includes(response.status))
       ) {
         cached = undefined;
         await response.body?.cancel();
-        return reply(res, 403, { error: "backend_sign_in_required" });
+        return reply(res, 403, {
+          error: passwordMode ? "unauthorized" : "backend_sign_in_required",
+        });
       }
       if (shared && response.ok && /\/attachments\//.test(url.pathname)) {
         const mediaType = response.headers.get("content-type");
@@ -712,17 +738,24 @@ export function createBackendRelayMiddleware({
       if (!response.ok)
         return reply(res, response.status, {
           error:
-            provider || models
-              ? "provider_operation_failed"
-              : safeErrors.has(value?.error)
-                ? value.error
-                : "repository_operation_failed",
+            passwordMode && [401, 403].includes(response.status)
+              ? "unauthorized"
+              : provider || models
+                ? "provider_operation_failed"
+                : safeErrors.has(value?.error)
+                  ? value.error
+                  : "repository_operation_failed",
         });
       const nextSequence = response.headers.get("x-next-sequence");
       return reply(
         res,
         response.status,
-        shared ? value : cleanResponse(url.pathname, value),
+        shared
+          ? value
+          : cleanResponse(
+              url.pathname,
+              passwordMode && provider ? { ...value, executionEnabled: false } : value,
+            ),
         shared && /^\d{1,15}$/.test(nextSequence ?? "") ? { "X-Next-Sequence": nextSequence } : {},
       );
     } catch {
