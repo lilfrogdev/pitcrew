@@ -299,7 +299,10 @@ export function createAuthRelayMiddleware({
       );
       if (!current()) return superseded();
       if (response.status >= 300 && response.status < 400) {
-        sessions.delete(id);
+        // An empty native session read owns no credential to revoke. Deleting
+        // its nonce record would also cancel a sign-in pending in another tab.
+        if (!passwordMode || url.pathname !== "/api/auth/get-session" || s.cloudCookie)
+          sessions.delete(id);
         return reply(res, 401, { error: "backend_sign_in_required" });
       }
       const value = await responseJson(response);

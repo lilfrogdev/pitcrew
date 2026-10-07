@@ -492,7 +492,7 @@ test("a null refresh started during sign-in cannot clear the subsequently instal
 });
 
 test("a failing refresh of an empty session cannot cancel a pending successful sign-in", async (t) => {
-  for (const failure of ["transport", "invalid-json"]) {
+  for (const failure of ["transport", "invalid-json", "redirect", "unauthorized"]) {
     await t.test(failure, async () => {
       const started = Promise.withResolvers();
       const response = Promise.withResolvers();
@@ -502,11 +502,20 @@ test("a failing refresh of an empty session cannot cancel a pending successful s
           return response.promise;
         }
         if (failure === "transport") throw Error("synthetic refresh failure");
+        if (failure === "redirect")
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://example.com/private" },
+          });
+        if (failure === "unauthorized") return Response.json({ error: "private" }, { status: 401 });
         return new Response("invalid", { headers: { "Content-Type": "application/json" } });
       });
       const login = f.login();
       await started.promise;
-      assert.equal((await f.session()).status, 502);
+      assert.equal(
+        (await f.session()).status,
+        ["redirect", "unauthorized"].includes(failure) ? 401 : 502,
+      );
       response.resolve(Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } }));
       assert.equal((await login).status, 200);
       assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
