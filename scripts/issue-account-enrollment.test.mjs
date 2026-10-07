@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync, execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +11,13 @@ import {
   enrollmentConfirmed,
   assertEnrollmentConfig,
   enrollmentD1Args,
+  runEnrollmentWrangler,
+  runEnrollmentLegacyWrangler,
+  assertEnrollmentNode,
+  enrollmentPreflightSQL,
+  assertEnrollmentPreflight,
+  safeEnrollmentFailure,
+  enrollmentPreflightContext,
 } from "./issue-account-enrollment.mjs";
 import { NATIVE_AUTH_RECIPIENTS } from "../packages/protocol/src/native-auth-recipients.mjs";
 test("operator issuance cannot replace an active/used invitation or adopt an existing account by email", () => {
@@ -217,12 +223,12 @@ test(
           },
         }),
       );
-      const execute = promisify(execFile);
+      // Use the production launcher, resolved dependency and repository cwd.
+      // Only remote/local targeting differs for this disposable fixture.
       const cli = async (args, pinDefault = true) =>
-        execute(
-          process.execPath,
+        runEnrollmentWrangler(
+          resolve("."),
           [
-            resolve("node_modules/wrangler/bin/wrangler.js"),
             ...enrollmentD1Args
               .slice(0, pinDefault ? enrollmentD1Args.length : -2)
               .map((arg) => (arg === "--remote" ? "--local" : arg)),
@@ -233,16 +239,13 @@ test(
             ...args,
           ],
           {
-            cwd: temp,
             env: {
-              PATH: process.env.PATH,
+              PATH: "/nonexistent-node-path",
               CLOUDFLARE_ENV: "other",
-              WRANGLER_SEND_METRICS: "false",
-              WRANGLER_LOG_PATH: join(temp, "vendor.log"),
               CI: "true",
               NO_COLOR: "1",
             },
-            maxBuffer: 1048576,
+            logPath: join(temp, "vendor.log"),
           },
         );
       const migrations = new URL("../apps/worker/migrations/auth/", import.meta.url);
@@ -251,6 +254,48 @@ test(
         schema += (await readFile(new URL(file, migrations), "utf8")) + "\n";
       await writeFile(sqlPath, schema, { mode: 0o600 });
       await cli(["--file", sqlPath]);
+      await cli([
+        "--command",
+        "CREATE TABLE d1_migrations(name TEXT UNIQUE); INSERT INTO d1_migrations(name) VALUES('0004_username_identity.sql'),('0005_native_enrollment_recipients.sql');",
+      ]);
+      const before = await cli(["--command", "SELECT count(*) count FROM auth_enrollment;"]);
+      await writeFile(
+        sqlPath,
+        "EXPLAIN " +
+          enrollmentSQL({
+            id: "00000000-0000-0000-0000-000000000000",
+            email: "john.cena@example.com",
+            hash: "0".repeat(64),
+            now: 0,
+          }),
+        { mode: 0o600 },
+      );
+      await cli(["--file", sqlPath]);
+      await assert.rejects(
+        runEnrollmentLegacyWrangler(
+          resolve("."),
+          [
+            ...enrollmentD1Args.map((arg) => (arg === "--remote" ? "--local" : arg)),
+            "--persist-to",
+            state,
+            "--config",
+            config,
+            "--file",
+            sqlPath,
+          ],
+          {
+            env: { PATH: "/nonexistent-node-path", CI: "true" },
+            logPath: join(temp, "legacy-vendor.log"),
+          },
+        ),
+        (error) =>
+          safeEnrollmentFailure("legacy_preflight_file", error).code ===
+          "ENROLLMENT_LEGACY_PREFLIGHT_FILE_FAILED",
+      );
+      const ready = await cli(["--command", enrollmentPreflightSQL("john.cena@example.com")]);
+      assert.doesNotThrow(() => assertEnrollmentPreflight(ready.stdout));
+      const after = await cli(["--command", "SELECT count(*) count FROM auth_enrollment;"]);
+      assert.deepEqual(JSON.parse(after.stdout)[0].results, JSON.parse(before.stdout)[0].results);
       const alternate = await cli(
         ["--command", "SELECT name FROM sqlite_master WHERE name='auth_enrollment';"],
         false,
@@ -272,6 +317,11 @@ test(
       };
       await issue(data);
       assert.equal(await confirm(data), true);
+      const active = await cli(["--command", enrollmentPreflightSQL(data.email)]);
+      assert.throws(
+        () => assertEnrollmentPreflight(active.stdout),
+        (error) => error.enrollmentCode === "ENROLLMENT_INVITATION_ACTIVE",
+      );
       for (const value of [
         { ...data, id: "22345678-1234-1234-1234-123456789abc" },
         { ...data, email: "lara.croft@example.com" },
@@ -317,3 +367,100 @@ test(
     }
   },
 );
+
+test("preflight is available without a TTY and exposes only safe context or stage failures", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "scripts/issue-account-enrollment.mjs",
+      "--preflight",
+      "nonexistent-synthetic-config.json",
+      "john.cena@example.com",
+    ],
+    { encoding: "utf8", env: { PATH: process.env.PATH } },
+  );
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  const records = result.stderr
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(records[0].code, "ENROLLMENT_PREFLIGHT_CONTEXT");
+  assert.equal(records[0].stdinTTY, false);
+  assert.match(records[0].wrangler, /^\d+\.\d+\.\d+$/);
+  assert.deepEqual(records[1], {
+    code: "ENROLLMENT_CONFIG_READ_FAILED",
+    phase: "configuration_read",
+  });
+  assert.doesNotMatch(result.stderr, /nonexistent-synthetic-config|#code=|token_sha256/);
+  const context = enrollmentPreflightContext({
+    CLOUDFLARE_API_TOKEN: "must-not-leak",
+    CF_API_KEY: "must-not-leak",
+    CF_EMAIL: "must-not-leak",
+  });
+  assert.deepEqual(context.authEnvironment, { apiToken: true, apiKey: true, email: true });
+  assert.equal(JSON.stringify(context).includes("must-not-leak"), false);
+  assert.doesNotThrow(() => assertEnrollmentNode("22.0.0"));
+  assert.throws(
+    () => assertEnrollmentNode("20.0.0"),
+    (error) => error.enrollmentCode === "ENROLLMENT_NODE_UNSUPPORTED",
+  );
+});
+test("safe errors preserve fixed stage and allowlisted numeric codes without CLI contents", () => {
+  const error = {
+    code: 1,
+    message: "must-not-leak",
+    stdout: "must-not-leak",
+    stderr: "SQL token_sha256 must-not-leak [code: 9106]",
+  };
+  assert.deepEqual(safeEnrollmentFailure("issue", error), {
+    code: "ENROLLMENT_ISSUE_FAILED",
+    phase: "issue",
+    exit: 1,
+    provider: 9106,
+  });
+  assert.deepEqual(
+    safeEnrollmentFailure("preflight_file", {
+      ...error,
+      code: "ENOENT",
+      stderr: "private SQL [code: 7777]",
+    }),
+    { code: "ENROLLMENT_PREFLIGHT_FILE_FAILED", phase: "preflight_file" },
+  );
+  assert.deepEqual(safeEnrollmentFailure("must-not-leak", { ...error, code: 999 }), {
+    code: "ENROLLMENT_UNKNOWN_FAILURE",
+    phase: "unknown",
+    provider: 9106,
+  });
+  assert.equal(
+    JSON.stringify(safeEnrollmentFailure("confirmation_query", error)).includes("must-not-leak"),
+    false,
+  );
+  const ready = {
+    success: true,
+    results: [
+      { migration_count: 2, existing_account: 0, consumed_invitation: 0, active_invitation: 0 },
+    ],
+  };
+  for (const [field, value, code] of [
+    ["migration_count", 1, "ENROLLMENT_MIGRATIONS_REQUIRED"],
+    ["existing_account", 1, "ENROLLMENT_ACCOUNT_EXISTS"],
+    ["consumed_invitation", 1, "ENROLLMENT_INVITATION_CONSUMED"],
+    ["active_invitation", 1, "ENROLLMENT_INVITATION_ACTIVE"],
+  ]) {
+    assert.throws(
+      () =>
+        assertEnrollmentPreflight(
+          JSON.stringify([{ ...ready, results: [{ ...ready.results[0], [field]: value }] }]),
+        ),
+      (error) => error.enrollmentCode === code,
+    );
+  }
+  for (const stdout of [
+    "invalid",
+    "[]",
+    JSON.stringify([{ ...ready, success: false }]),
+    JSON.stringify([{ ...ready, results: [{ ...ready.results[0], existing_account: "0" }] }]),
+  ])
+    assert.throws(() => assertEnrollmentPreflight(stdout));
+});

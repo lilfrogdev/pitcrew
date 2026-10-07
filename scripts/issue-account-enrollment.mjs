@@ -1,10 +1,11 @@
 // Run personally in a private terminal. Never execute this through agent tools:
 // the one-time account capability must go only to its operator and recipient.
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { readFile, mkdtemp, writeFile, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { NATIVE_AUTH_RECIPIENTS as emails } from "../packages/protocol/src/native-auth-recipients.mjs";
@@ -87,76 +88,268 @@ export function assertEnrollmentConfig(config) {
   )
     throw Error("An approved Pitcrew auth config is required.");
 }
-async function main() {
-  if (!process.stdin.isTTY || !process.stdout.isTTY)
-    throw Error("Use your own private interactive terminal.");
-  const [configArg, email, ...rest] = process.argv.slice(2);
-  if (!configArg || !emails.includes(email) || rest.length)
-    throw Error(
-      "Usage: node scripts/issue-account-enrollment.mjs <approved-config.json> <exact-recipient-email>",
-    );
-  const configPath = resolve(configArg);
-  const config = JSON.parse(await readFile(configPath, "utf8"));
-  assertEnrollmentConfig(config);
-  const code = randomBytes(32).toString("base64url"),
-    id = randomUUID();
-  const data = {
-    id,
-    email,
-    hash: createHash("sha256").update(code).digest("hex"),
-    now: Date.now(),
+async function resolveEnrollmentWrangler(root) {
+  const require = createRequire(resolve(root, "package.json"));
+  const packagePath = require.resolve("wrangler/package.json");
+  const manifest = JSON.parse(await readFile(packagePath, "utf8"));
+  const script = resolve(dirname(packagePath), manifest.bin.wrangler);
+  await access(script);
+  return {
+    script,
+    version: /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/.test(manifest.version)
+      ? manifest.version
+      : "unavailable",
   };
-  const sql = enrollmentSQL(data);
-  const temp = await mkdtemp(resolve(tmpdir(), "pitcrew-private-enrollment-"));
+}
+export async function runEnrollmentWrangler(root, args, { env = process.env, logPath } = {}) {
+  const { script } = await resolveEnrollmentWrangler(root);
+  return execute(process.execPath, [script, ...args], {
+    cwd: root,
+    env: {
+      ...env,
+      WRANGLER_SEND_METRICS: "false",
+      ...(logPath ? { WRANGLER_LOG_PATH: logPath } : {}),
+    },
+    maxBuffer: 1048576,
+  });
+}
+export async function runEnrollmentLegacyWrangler(root, args, { env = process.env, logPath } = {}) {
+  return execute(resolve(root, "node_modules/.bin/wrangler"), args, {
+    cwd: root,
+    env: {
+      ...env,
+      WRANGLER_SEND_METRICS: "false",
+      ...(logPath ? { WRANGLER_LOG_PATH: logPath } : {}),
+    },
+    maxBuffer: 1048576,
+  });
+}
+export function assertEnrollmentNode(version = process.versions.node) {
+  if (!/^\d+\./.test(version) || Number(version.split(".")[0]) < 22)
+    throw Object.assign(Error(), { enrollmentCode: "ENROLLMENT_NODE_UNSUPPORTED" });
+}
+export function enrollmentPreflightSQL(email) {
+  if (!emails.includes(email)) throw Error("Invalid recipient.");
+  return `SELECT
+    (SELECT count(*) FROM d1_migrations WHERE name IN ('0004_username_identity.sql','0005_native_enrollment_recipients.sql')) AS migration_count,
+    EXISTS(SELECT 1 FROM user WHERE email='${email}') AS existing_account,
+    EXISTS(SELECT 1 FROM auth_enrollment WHERE recipient_email='${email}' AND (consumed_at IS NOT NULL OR consumed_user_id IS NOT NULL)) AS consumed_invitation,
+    EXISTS(SELECT 1 FROM auth_enrollment WHERE recipient_email='${email}' AND expires_at>cast(unixepoch('subsecond') * 1000 as integer)) AS active_invitation;`;
+}
+export function assertEnrollmentPreflight(stdout) {
+  const entries = JSON.parse(stdout);
+  if (
+    !Array.isArray(entries) ||
+    entries.length !== 1 ||
+    entries[0]?.success !== true ||
+    !Array.isArray(entries[0].results) ||
+    entries[0].results.length !== 1
+  )
+    throw Error();
+  const row = entries[0].results[0];
+  if (
+    !Number.isSafeInteger(row?.migration_count) ||
+    !["existing_account", "consumed_invitation", "active_invitation"].every(
+      (key) => row[key] === 0 || row[key] === 1,
+    )
+  )
+    throw Error();
+  const code =
+    row.migration_count !== 2
+      ? "ENROLLMENT_MIGRATIONS_REQUIRED"
+      : row.existing_account
+        ? "ENROLLMENT_ACCOUNT_EXISTS"
+        : row.consumed_invitation
+          ? "ENROLLMENT_INVITATION_CONSUMED"
+          : row.active_invitation
+            ? "ENROLLMENT_INVITATION_ACTIVE"
+            : undefined;
+  if (code) throw Object.assign(Error(), { enrollmentCode: code });
+}
+export function enrollmentPreflightContext(env = process.env, wranglerVersion = "unavailable") {
+  const present = (names) => names.some((name) => Object.hasOwn(env, name));
+  return {
+    code: "ENROLLMENT_PREFLIGHT_CONTEXT",
+    phase: "preflight",
+    node: process.versions.node,
+    wrangler: wranglerVersion,
+    stdinTTY: process.stdin.isTTY === true,
+    stdoutTTY: process.stdout.isTTY === true,
+    authEnvironment: {
+      apiToken: present(["CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"]),
+      apiKey: present(["CLOUDFLARE_API_KEY", "CF_API_KEY"]),
+      email: present(["CLOUDFLARE_EMAIL", "CF_EMAIL"]),
+    },
+  };
+}
+const failureCodes = Object.freeze({
+  arguments: "ENROLLMENT_ARGUMENTS_INVALID",
+  dependencies: "ENROLLMENT_DEPENDENCIES_UNAVAILABLE",
+  terminal: "ENROLLMENT_PRIVATE_TTY_REQUIRED",
+  configuration_read: "ENROLLMENT_CONFIG_READ_FAILED",
+  configuration_validate: "ENROLLMENT_CONFIG_REJECTED",
+  temporary_directory: "ENROLLMENT_TEMP_DIRECTORY_FAILED",
+  preflight_write: "ENROLLMENT_PREFLIGHT_WRITE_FAILED",
+  preflight_file: "ENROLLMENT_PREFLIGHT_FILE_FAILED",
+  preflight_query: "ENROLLMENT_PREFLIGHT_QUERY_FAILED",
+  preflight_response: "ENROLLMENT_PREFLIGHT_RESPONSE_REJECTED",
+  legacy_preflight_file: "ENROLLMENT_LEGACY_PREFLIGHT_FILE_FAILED",
+  legacy_preflight_query: "ENROLLMENT_LEGACY_PREFLIGHT_QUERY_FAILED",
+  legacy_preflight_response: "ENROLLMENT_LEGACY_PREFLIGHT_RESPONSE_REJECTED",
+  generation: "ENROLLMENT_GENERATION_FAILED",
+  sql_write: "ENROLLMENT_SQL_WRITE_FAILED",
+  issue: "ENROLLMENT_ISSUE_FAILED",
+  confirmation_query: "ENROLLMENT_CONFIRMATION_QUERY_FAILED",
+  confirmation_response: "ENROLLMENT_NOT_CONFIRMED",
+  output: "ENROLLMENT_OUTPUT_FAILED",
+  cleanup: "ENROLLMENT_CLEANUP_FAILED",
+});
+const stateCodes = [
+  "ENROLLMENT_NODE_UNSUPPORTED",
+  "ENROLLMENT_MIGRATIONS_REQUIRED",
+  "ENROLLMENT_ACCOUNT_EXISTS",
+  "ENROLLMENT_INVITATION_CONSUMED",
+  "ENROLLMENT_INVITATION_ACTIVE",
+];
+export function safeEnrollmentFailure(phase, error) {
+  const known = Object.hasOwn(failureCodes, phase);
+  const result = {
+    code: stateCodes.includes(error?.enrollmentCode)
+      ? error.enrollmentCode
+      : known
+        ? failureCodes[phase]
+        : "ENROLLMENT_UNKNOWN_FAILURE",
+    phase: known ? phase : "unknown",
+  };
+  if (Number.isInteger(error?.code) && error.code >= 0 && error.code <= 255)
+    result.exit = error.code;
+  // Only documented authentication/invalid-binding numbers may be reported.
+  const codes = [...String(error?.stderr ?? "").matchAll(/\[code:\s*(\d+)\]/g)].map((match) =>
+    Number(match[1]),
+  );
+  const provider = codes.find((code) => [9106, 10000, 10021].includes(code));
+  if (provider !== undefined) result.provider = provider;
+  return result;
+}
+async function main() {
+  let phase = "arguments",
+    temp;
   try {
-    const sqlPath = resolve(temp, "hash-only.sql");
-    await writeFile(sqlPath, sql, { mode: 0o600 });
+    const args = process.argv.slice(2),
+      preflight = args[0] === "--preflight";
+    const [configArg, email, ...rest] = preflight ? args.slice(1) : args;
+    if (!configArg || !emails.includes(email) || rest.length) throw Error();
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-    await execute(
-      resolve(root, "node_modules/.bin/wrangler"),
-      [...enrollmentD1Args, "--config", configPath, "--file", sqlPath],
-      {
-        cwd: root,
-        env: {
-          ...process.env,
-          WRANGLER_SEND_METRICS: "false",
-          WRANGLER_LOG_PATH: resolve(temp, "vendor.log"),
-        },
-        maxBuffer: 1048576,
-      },
-    );
-    // --remote --file uses Wrangler's bulk import path: it prints upload
-    // progress and aggregate statistics, not the INSERT's RETURNING rows.
-    // Confirm separately through a fresh primary query before releasing code.
-    const { stdout } = await execute(
-      resolve(root, "node_modules/.bin/wrangler"),
-      [...enrollmentD1Args, "--config", configPath, "--command", enrollmentConfirmationSQL(data)],
-      {
-        cwd: root,
-        env: {
-          ...process.env,
-          WRANGLER_SEND_METRICS: "false",
-          WRANGLER_LOG_PATH: resolve(temp, "vendor.log"),
-        },
-        maxBuffer: 1048576,
-      },
-    );
-    if (!enrollmentConfirmed(stdout, data))
-      throw Error(
-        "Enrollment was not issued. Existing accounts or active/consumed invitations cannot be replaced.",
+    let runtime;
+    if (preflight) {
+      try {
+        runtime = await resolveEnrollmentWrangler(root);
+      } catch {
+        /* reported by the dependencies phase below */
+      }
+      process.stderr.write(
+        JSON.stringify(enrollmentPreflightContext(process.env, runtime?.version)) + "\n",
       );
+    }
+    phase = "terminal";
+    if (!preflight && (!process.stdin.isTTY || !process.stdout.isTTY)) throw Error();
+    const configPath = resolve(configArg);
+    phase = "configuration_read";
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    phase = "configuration_validate";
+    assertEnrollmentConfig(config);
+    phase = "temporary_directory";
+    temp = await mkdtemp(resolve(tmpdir(), "pitcrew-private-enrollment-"));
+    phase = "dependencies";
+    assertEnrollmentNode();
+    runtime ??= await resolveEnrollmentWrangler(root);
+    const run = (args) =>
+      runEnrollmentWrangler(root, [...enrollmentD1Args, "--config", configPath, ...args], {
+        logPath: resolve(temp, "vendor.log"),
+      });
+    // Exercise the same file import and primary query paths without generating
+    // a capability or running the INSERT. These EXPLAIN literals are synthetic.
+    phase = "preflight_write";
+    const sqlPath = resolve(temp, "hash-only.sql");
+    await writeFile(
+      sqlPath,
+      "EXPLAIN " +
+        enrollmentSQL({
+          id: "00000000-0000-0000-0000-000000000000",
+          email,
+          hash: "0".repeat(64),
+          now: 0,
+        }),
+      { mode: 0o600 },
+    );
+    phase = "preflight_file";
+    await run(["--file", sqlPath]);
+    phase = "preflight_query";
+    const ready = await run(["--command", enrollmentPreflightSQL(email)]);
+    phase = "preflight_response";
+    assertEnrollmentPreflight(ready.stdout);
+    if (preflight) {
+      // Compare the old shell launcher using only the same read-only requests.
+      // A legacy failure is diagnostic; the direct launcher's result stays clear.
+      try {
+        const legacy = (args) =>
+          runEnrollmentLegacyWrangler(
+            root,
+            [...enrollmentD1Args, "--config", configPath, ...args],
+            { logPath: resolve(temp, "legacy-vendor.log") },
+          );
+        phase = "legacy_preflight_file";
+        await legacy(["--file", sqlPath]);
+        phase = "legacy_preflight_query";
+        const checked = await legacy(["--command", enrollmentPreflightSQL(email)]);
+        phase = "legacy_preflight_response";
+        assertEnrollmentPreflight(checked.stdout);
+        process.stderr.write(
+          JSON.stringify({ code: "ENROLLMENT_LEGACY_PREFLIGHT_READY", phase: "legacy_preflight" }) +
+            "\n",
+        );
+      } catch (error) {
+        process.stderr.write(JSON.stringify(safeEnrollmentFailure(phase, error)) + "\n");
+      }
+      phase = "output";
+      process.stdout.write(
+        JSON.stringify({ code: "ENROLLMENT_PREFLIGHT_READY", phase: "preflight" }) + "\n",
+      );
+      return;
+    }
+    phase = "generation";
+    const code = randomBytes(32).toString("base64url"),
+      id = randomUUID();
+    const data = {
+      id,
+      email,
+      hash: createHash("sha256").update(code).digest("hex"),
+      now: Date.now(),
+    };
+    phase = "sql_write";
+    await writeFile(sqlPath, enrollmentSQL(data), { mode: 0o600 });
+    phase = "issue";
+    await run(["--file", sqlPath]);
+    // Bulk import stdout contains progress/aggregate statistics, never grant rows.
+    phase = "confirmation_query";
+    const confirmed = await run(["--command", enrollmentConfirmationSQL(data)]);
+    phase = "confirmation_response";
+    if (!enrollmentConfirmed(confirmed.stdout, data)) throw Error();
+    phase = "output";
     process.stdout.write(
       `Private setup for ${email} (expires in 30 minutes):\nhttp://127.0.0.1:5173/auth/enroll#code=${code}\nHand this link only to its intended recipient. Do not paste it into chat.\n`,
     );
+  } catch (error) {
+    process.stderr.write(JSON.stringify(safeEnrollmentFailure(phase, error)) + "\n");
+    process.exitCode = 1;
   } finally {
-    await rm(temp, { recursive: true, force: true });
+    if (temp)
+      try {
+        await rm(temp, { recursive: true, force: true });
+      } catch (error) {
+        process.stderr.write(JSON.stringify(safeEnrollmentFailure("cleanup", error)) + "\n");
+        process.exitCode = 1;
+      }
   }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(() => {
-    process.stderr.write(
-      "Private enrollment failed. No setup link was released; inspect the approved database state before retrying.\n",
-    );
-    process.exitCode = 1;
-  });
-}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
