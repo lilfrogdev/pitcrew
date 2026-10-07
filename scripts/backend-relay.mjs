@@ -65,6 +65,7 @@ const safeErrors = new Set([
   "invalid_email",
   "invalid_role",
   "invalid_member",
+  "invalid_mentions",
   "already_member",
   "capacity",
   "idempotency_conflict",

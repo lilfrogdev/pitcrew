@@ -282,6 +282,30 @@ it("fails closed before a mutation when session bootstrap is denied or malformed
     expect(fetch).toHaveBeenCalledOnce();
   }
 });
+it("sends stable mention references and gives a bounded stale-member recovery error", async () => {
+  const fetch = vi
+    .fn()
+    .mockImplementation(async (path: string) =>
+      path === "/api/local-session"
+        ? Response.json({ nonce: null })
+        : Response.json(
+            { error: "invalid_mentions", diagnostic: "private detail" },
+            { status: 400 },
+          ),
+    );
+  vi.stubGlobal("fetch", fetch);
+  const mentions = [{ actor: "account:john", start: 0, end: 9 }];
+  await expect(
+    httpApi.send("thread", "@johncena review", "mention-retry", undefined, undefined, mentions),
+  ).rejects.toThrow(
+    "A mentioned member changed or is unavailable. Reselect the @username before sending.",
+  );
+  expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
+    content: "@johncena review",
+    idempotencyKey: "mention-retry",
+    mentions,
+  });
+});
 it("shares bootstrap between simultaneous first mutations", async () => {
   const nonce = "b".repeat(64);
   let complete!: (response: Response) => void;
