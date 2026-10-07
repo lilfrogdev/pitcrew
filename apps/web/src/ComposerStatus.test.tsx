@@ -1,0 +1,22 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vite-plus/test";
+import { ComposerStatus } from "./ComposerStatus";
+afterEach(cleanup);
+it("shows one/two/several names with polite status and deterministic priority", () => {
+  const onOpen = vi.fn();
+  const { rerender } = render(<ComposerStatus usernames={["Alice"]} reconnecting={false} />);
+  expect(screen.getByRole("status").textContent).toBe("Alice is typing…");
+  rerender(<ComposerStatus usernames={["Alice", "Bob"]} reconnecting={false} />);
+  expect(screen.getByRole("status").textContent).toBe("Alice and Bob are typing…");
+  rerender(<ComposerStatus usernames={["Alice", "Bob", "Charlie"]} reconnecting={false} />);
+  expect(screen.getByRole("status").textContent).toBe("Several people are typing…");
+  rerender(<ComposerStatus usernames={["Alice"]} reconnecting />);
+  expect(screen.getByRole("status").textContent).toBe("Reconnecting…");
+  rerender(<ComposerStatus usernames={["Alice"]} reconnecting approval={{ onOpen }} />);
+  expect(screen.getByRole("status").textContent).toBe("Agent needs your approval");
+  fireEvent.click(screen.getByRole("button", { name: "Review" }));
+  expect(onOpen).toHaveBeenCalledOnce();
+  rerender(<ComposerStatus usernames={["Alice"]} reconnecting={false} />);
+  expect(screen.getByRole("status").textContent).toBe("Alice is typing…");
+  expect(screen.getByRole("status").getAttribute("aria-live")).toBe("polite");
+});

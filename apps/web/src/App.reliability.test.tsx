@@ -60,7 +60,7 @@ describe("conversation read ordering", () => {
       .mockRejectedValueOnce(Error("Conversation unavailable"))
       .mockImplementation(() => retried.promise);
     fireEvent(window, new Event("online"));
-    await screen.findByRole("alert");
+    await screen.findByText("Reconnecting…");
     fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
     await waitFor(() => expect(api.projects).toHaveBeenCalled());
     await waitFor(() =>
@@ -107,7 +107,7 @@ describe("conversation read ordering", () => {
       .mockRejectedValueOnce(Error("Offline"))
       .mockImplementation(() => snapshot.promise);
     fireEvent(window, new Event("online"));
-    await screen.findByRole("alert");
+    await screen.findByText("Reconnecting…");
     fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
     await waitFor(() => expect(api.snapshot).toHaveBeenCalledTimes(2));
     await act(async () => {});
@@ -144,11 +144,12 @@ it("clears a post-send read failure when a later read recovers", async () => {
     target: { value: "Committed message" },
   });
   fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
-  await screen.findByRole("alert");
+  await screen.findByText("Reconnecting…");
   expect((screen.getByLabelText("Message your crew") as HTMLTextAreaElement).value).toBe("");
   fireEvent(window, new Event("online"));
   await screen.findByText("Committed message");
   expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByText("Reconnecting…")).toBeNull();
 });
 
 it("keeps a failed write and its draft visible when background reads succeed", async () => {

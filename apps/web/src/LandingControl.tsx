@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { RunEvidence } from "@pitcrew/protocol";
 import type { Api, Authorization, LandingResult, Run, Review } from "./api";
 import { isLandedReceipt } from "./landing-receipt";
+import { landingEvidenceEligible, landingApprovalPending } from "./landing-approval";
 export type LandingState = {
   key?: string;
   fingerprint?: string;
@@ -43,30 +44,7 @@ export function LandingControl({
     run.configurationRevision,
     backend,
   ]);
-  const bound = (item: { baseSha: string; candidateSha: string; configurationRevision: string }) =>
-    item.baseSha === run.baseSha &&
-    item.candidateSha === run.candidateSha &&
-    evidence?.run.id === run.id &&
-    item.configurationRevision === run.configurationRevision;
-  const tests = evidence?.tests;
-  const eligible = Boolean(
-    run.candidateSha &&
-    !run.error &&
-    ["awaiting_review", "waiting_user", "completed"].includes(run.status) &&
-    tests?.status === "passed" &&
-    tests.exitCode === 0 &&
-    !tests.truncated &&
-    tests.argv.length > 0 &&
-    bound(tests) &&
-    reviews.some(
-      (review) =>
-        review.runId === run.id &&
-        review.decision === "approve" &&
-        Boolean(review.actor.trim()) &&
-        bound(review),
-    ) &&
-    !reviews.some((review) => review.decision === "request_changes" && bound(review)),
-  );
+  const eligible = landingEvidenceEligible(run, evidence, reviews);
   const authorization = state.authorization;
   const matches = Boolean(
     authorization &&
@@ -92,7 +70,7 @@ export function LandingControl({
   const fixture = (backend ?? receiptResult?.backend ?? authorization?.backend) === "fixture";
   const prefix = fixture ? "Fixture landing" : "Landing";
   const capability = enabled && ["fixture", "artifacts"].includes(backend ?? "");
-  const canApprove = capability && eligible && !state.busy && !authorization && !receiptResult;
+  const canApprove = landingApprovalPending(run, evidence, reviews, enabled, backend, state);
   const canLand =
     capability &&
     eligible &&
@@ -202,7 +180,7 @@ export function LandingControl({
     }
   }
   return (
-    <div className="merge-control">
+    <div className="merge-control" id={`landing-control-${run.id}`}>
       {landed ? null : !capability ? (
         <p>Landing is unavailable.</p>
       ) : !eligible ? (

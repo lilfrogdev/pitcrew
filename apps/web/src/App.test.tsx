@@ -276,9 +276,10 @@ describe("project conversations", () => {
       .mockRejectedValueOnce(new Error("Offline test"))
       .mockImplementation(snapshot);
     fireEvent(window, new Event("online"));
-    await screen.findByRole("alert");
+    await screen.findByText("Reconnecting…");
     await user.click(screen.getByRole("button", { name: "Retry connection" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Reconnecting…")).toBeNull());
     expect(screen.getByRole("heading", { name: "Recover interrupted work" })).toBeTruthy();
     expect(api.send).not.toHaveBeenCalled();
   });
