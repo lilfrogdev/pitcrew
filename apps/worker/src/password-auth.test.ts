@@ -10,7 +10,7 @@ const syntheticCode = () =>
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
-async function fixture() {
+async function fixture(through = "9999") {
   const bundle = await build({
     entryPoints: [new URL("../test/password-auth-worker.ts", import.meta.url).pathname],
     bundle: true,
@@ -39,7 +39,7 @@ async function fixture() {
   const mf = new Miniflare(convertV4MiniflareOptions(options));
   let db = await mf.getD1Database("AUTH_DB");
   for (const file of (await readdir(new URL("../migrations/auth", import.meta.url)))
-    .filter((f) => f.endsWith(".sql"))
+    .filter((f) => f.endsWith(".sql") && f.slice(0, 4) <= through)
     .sort()) {
     const sql = await readFile(new URL(`../migrations/auth/${file}`, import.meta.url), "utf8");
     for (const statement of sql
@@ -79,8 +79,8 @@ async function fixture() {
       username,
       image: "/avatars/frog.svg",
     });
-  const login = async (email = "dev@lilfrogdev.com", pw = password) => {
-    const response = await req("/api/auth/sign-in/email", { email, password: pw });
+  const login = async (username = "owner", pw = password) => {
+    const response = await req("/api/auth/sign-in/username", { username, password: pw });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: true });
     expect(response.headers.get("set-cookie")).toContain("HttpOnly");
@@ -149,7 +149,7 @@ it("real Better Auth/workerd/D1 creates two privately enrolled unverified accoun
       actor: `account:${user.id}`,
       credentialActor: `account:${user.id}`,
     });
-    const bryanCookie = await f.login(bryan.email);
+    const bryanCookie = await f.login("bryan");
     expect(
       JSON.parse(await (await f.req("/api/auth/get-session", undefined, bryanCookie)).text()).user
         .id,
@@ -205,18 +205,18 @@ it("capability recipient binding, expiry, atomic race/replay and partial-creatio
           .first()
       )?.consumed_user_id,
     ).toBeNull();
-    expect((await f.req("/api/auth/sign-in/email", { email: bryan.email, password })).status).toBe(
-      401,
-    );
+    expect(
+      (await f.req("/api/auth/sign-in/username", { username: "bryan", password })).status,
+    ).toBe(401);
     const cookie = await f.login();
     await f.db
       .prepare("UPDATE auth_enrollment SET consumed_user_id=NULL WHERE id=?")
       .bind(owner.id)
       .run();
     expect(await (await f.req("/api/auth/get-session", undefined, cookie)).json()).toBeNull();
-    expect((await f.req("/api/auth/sign-in/email", { email: owner.email, password })).status).toBe(
-      401,
-    );
+    expect(
+      (await f.req("/api/auth/sign-in/username", { username: "owner", password })).status,
+    ).toBe(401);
   } finally {
     await f.mf.dispose();
   }
@@ -262,14 +262,14 @@ it("public signup, recovery, SSO/linking and cross-origin or injected profile cl
     expect(
       JSON.parse(await (await f.req("/api/auth/get-session", undefined, cookie)).text()).user,
     ).toMatchObject({ name: "New Name", username: "new_name", emailVerified: false });
-    // A pre-existing Access-backed account is not admitted by an email match.
+    // A pre-existing Access-backed account is not admitted by a username match.
     await f.db
       .prepare("UPDATE user SET access_actor='access:legacy' WHERE email=?")
       .bind(owner.email)
       .run();
-    expect((await f.req("/api/auth/sign-in/email", { email: owner.email, password })).status).toBe(
-      401,
-    );
+    expect(
+      (await f.req("/api/auth/sign-in/username", { username: "new_name", password })).status,
+    ).toBe(401);
   } finally {
     await f.mf.dispose();
   }
@@ -288,22 +288,22 @@ it("password change verifies old password, revokes other sessions, logout/revoke
     );
     expect(changed.status).toBe(200);
     expect(await (await f.req("/api/auth/get-session", undefined, first)).json()).toBeNull();
-    expect((await f.req("/api/auth/sign-in/email", { email: owner.email, password })).status).toBe(
-      401,
-    );
-    const cookie = await f.login(owner.email, password + "new");
+    expect(
+      (await f.req("/api/auth/sign-in/username", { username: "owner", password })).status,
+    ).toBe(401);
+    const cookie = await f.login("owner", password + "new");
     expect((await f.req("/api/auth/revoke-sessions", {}, cookie)).status).toBe(200);
     expect(await (await f.req("/api/auth/get-session", undefined, cookie)).json()).toBeNull();
     await f.db.prepare("DELETE FROM auth_admission").run();
     await f.db.prepare("DELETE FROM rate_limit").run();
-    const logout = await f.login(owner.email, password + "new");
+    const logout = await f.login("owner", password + "new");
     expect((await f.req("/api/auth/sign-out", {}, logout)).status).toBe(200);
     expect(await (await f.req("/api/auth/get-session", undefined, logout)).json()).toBeNull();
   } finally {
     await f.mf.dispose();
   }
 });
-it("atomic IP and recipient-purpose admission count malformed requests and persist across a Worker restart", async () => {
+it("atomic IP and normalized-username admission count malformed requests and persist across a Worker restart", async () => {
   const f = await fixture();
   try {
     await f.db
@@ -326,10 +326,15 @@ it("atomic IP and recipient-purpose admission count malformed requests and persi
     expect(Number(throttled.headers.get("x-retry-after"))).toBeGreaterThan(0);
     for (let n = 0; n < 5; n++)
       expect(
-        (await f.req("/api/auth/sign-in/email", { email: "dev@lilfrogdev.com", password })).status,
+        (
+          await f.req("/api/auth/sign-in/username", {
+            username: n % 2 ? "OwNeR" : "owner",
+            password,
+          })
+        ).status,
       ).toBe(401);
     expect(
-      (await f.req("/api/auth/sign-in/email", { email: "dev@lilfrogdev.com", password })).status,
+      (await f.req("/api/auth/sign-in/username", { username: "OwNeR", password })).status,
     ).toBe(429);
   } finally {
     await f.mf.dispose();
@@ -389,8 +394,8 @@ it("the real shared authority queue orders a paused old-password signin before p
     expect((await f.enroll(owner.code)).status).toBe(200);
     const cookie = await f.login();
     const pendingLogin = f.req(
-      "/api/auth/sign-in/email",
-      { email: owner.email, password },
+      "/api/auth/sign-in/username",
+      { username: "owner", password },
       undefined,
       { "x-test-pause-sign-in": "true" },
     );
@@ -420,10 +425,202 @@ it("the real shared authority queue orders a paused old-password signin before p
       .join("; ");
     expect((await changing).status).toBe(200);
     expect(await (await f.req("/api/auth/get-session", undefined, staleCookie)).json()).toBeNull();
-    expect((await f.req("/api/auth/sign-in/email", { email: owner.email, password })).status).toBe(
-      401,
-    );
+    expect(
+      (await f.req("/api/auth/sign-in/username", { username: "owner", password })).status,
+    ).toBe(401);
   } finally {
     await f.mf.dispose();
+  }
+});
+it("username signin normalizes casing, requires no email, and keeps account authority through optional-name/profile changes", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.grant();
+    expect(
+      (await f.req("/api/auth/enroll", { code: owner.code, password, username: "MiXeD_Owner" }))
+        .status,
+    ).toBe(200);
+    const before = await f.db.prepare("SELECT id,email,username,name FROM user").first();
+    expect(before).toMatchObject({ email: owner.email, username: "mixed_owner", name: "" });
+    const credential = await f.db.prepare("SELECT password FROM account").first();
+    const cookie = await f.login("MIXED_OWNER");
+    const getUser = async () =>
+      JSON.parse(await (await f.req("/api/auth/get-session", undefined, cookie)).text()).user;
+    expect(await getUser()).toMatchObject({ id: before!.id, username: "mixed_owner", name: "" });
+    expect(
+      (await f.req("/api/auth/update-user", { username: "RENAMED_owner", name: "" }, cookie))
+        .status,
+    ).toBe(200);
+    expect(await getUser()).toMatchObject({
+      id: before!.id,
+      username: "renamed_owner",
+      email: owner.email,
+      name: "",
+    });
+    expect(await (await f.req("/api/test/principal", undefined, cookie)).json()).toEqual({
+      actor: `account:${before!.id}`,
+      credentialActor: `account:${before!.id}`,
+    });
+    expect(await f.db.prepare("SELECT password FROM account").first()).toEqual(credential);
+    expect(
+      (await f.req("/api/auth/sign-in/username", { username: "mixed_owner", password })).status,
+    ).toBe(401);
+    await f.login("Renamed_Owner");
+    for (const path of ["sign-in/email", "is-username-available", "sign-up/email", "link-social"])
+      expect((await f.req(`/api/auth/${path}`, {})).status).toBe(404);
+    const generic = await f.req("/api/auth/sign-in/username", {
+      username: "renamed_owner",
+      password: "wrong",
+    });
+    expect(generic.status).toBe(401);
+    expect(await generic.json()).toEqual({ error: "invalid_credentials" });
+    for (const username of [" renamed_owner", "renamed_owner ", "ééé", "ab"]) {
+      const invalid = await f.req("/api/auth/sign-in/username", { username, password });
+      expect(invalid.status).toBe(401);
+      expect(await invalid.json()).toEqual({ error: "invalid_credentials" });
+    }
+    const missing = await f.req("/api/auth/sign-in/username", {
+      username: "absent_owner",
+      password,
+    });
+    expect(missing.status).toBe(401);
+    expect(await missing.json()).toEqual({ error: "invalid_credentials" });
+    await f.db.prepare("UPDATE auth_enrollment SET consumed_user_id=NULL").run();
+    const disabled = await f.req("/api/auth/sign-in/username", {
+      username: "renamed_owner",
+      password,
+    });
+    expect(disabled.status).toBe(401);
+    expect(await disabled.json()).toEqual({ error: "invalid_credentials" });
+    expect(await (await f.req("/api/auth/get-session", undefined, cookie)).json()).toBeNull();
+  } finally {
+    await f.mf.dispose();
+  }
+});
+it("actual Better Auth/D1 concurrent enrollment and profile edits cannot claim usernames differing only by case", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.grant(),
+      bryan = await f.grant("bryan.aldair.zamora@gmail.com");
+    const raced = await Promise.all([
+      f.req("/api/auth/enroll", { code: owner.code, password, username: "Collision" }, undefined, {
+        "x-test-bypass-queue": "true",
+      }),
+      f.req("/api/auth/enroll", { code: bryan.code, password, username: "COLLISION" }, undefined, {
+        "x-test-bypass-queue": "true",
+      }),
+    ]);
+    expect(raced.filter((r) => r.status === 200)).toHaveLength(1);
+    expect(
+      (
+        await f.db
+          .prepare("SELECT count(*) count FROM user WHERE lower(username)='collision'")
+          .first()
+      )?.count,
+    ).toBe(1);
+    expect(
+      (
+        await f.db
+          .prepare("SELECT count(*) count FROM auth_enrollment WHERE consumed_user_id IS NOT NULL")
+          .first()
+      )?.count,
+    ).toBe(1);
+    // The losing grant stays consumed. A fresh synthetic grant supplies the
+    // second account, without expanding the production recipient allowlist.
+    const remaining = raced[0].status === 200 ? bryan.email : owner.email;
+    await f.db
+      .prepare("DELETE FROM auth_enrollment WHERE recipient_email=? AND consumed_user_id IS NULL")
+      .bind(remaining)
+      .run();
+    const replacement = await f.grant(remaining);
+    expect((await f.enroll(replacement.code, "second_owner")).status).toBe(200);
+    const firstCookie = await f.login("collision"),
+      secondCookie = await f.login("second_owner");
+    const profiles = await Promise.all([
+      f.req("/api/auth/update-user", { username: "NewCollision" }, firstCookie, {
+        "x-test-bypass-queue": "true",
+      }),
+      f.req("/api/auth/update-user", { username: "NEWCOLLISION" }, secondCookie, {
+        "x-test-bypass-queue": "true",
+      }),
+    ]);
+    expect(profiles.filter((r) => r.status === 200)).toHaveLength(1);
+    expect(
+      (
+        await f.db
+          .prepare("SELECT count(*) count FROM user WHERE lower(username)='newcollision'")
+          .first()
+      )?.count,
+    ).toBe(1);
+    // Exercise the primary-store constraint directly, independent of plugin
+    // prechecks and the application's authority serialization.
+    const users = await f.db.prepare("SELECT id FROM user ORDER BY id").all<{ id: string }>();
+    const writes = await Promise.allSettled(
+      users.results.map((u, i) =>
+        f.db
+          .prepare("UPDATE user SET username=? WHERE id=?")
+          .bind(i ? "D1_CONFLICT" : "d1_conflict", u.id)
+          .run(),
+      ),
+    );
+    expect(writes.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(
+      (
+        await f.db
+          .prepare("SELECT count(*) count FROM user WHERE lower(username)='d1_conflict'")
+          .first()
+      )?.count,
+    ).toBe(1);
+  } finally {
+    await f.mf.dispose();
+  }
+});
+it("append-only username migration preserves existing email-backed IDs, hashes and grant bindings and blocks case collisions before rewriting", async () => {
+  const sql = await readFile(
+    new URL("../migrations/auth/0004_username_identity.sql", import.meta.url),
+    "utf8",
+  );
+  const statements = sql
+    .split(";")
+    .map((s) => s.replace(/--> statement-breakpoint/g, "").trim())
+    .filter(Boolean);
+  const f = await fixture("0003");
+  try {
+    const grant = await f.grant();
+    expect((await f.enroll(grant.code)).status).toBe(200);
+    await f.db.prepare("UPDATE user SET username='LegacyOwner'").run();
+    const before = await f.db.prepare("SELECT id,email,access_actor FROM user").first();
+    const hash = await f.db.prepare("SELECT password FROM account").first();
+    const binding = await f.db.prepare("SELECT consumed_user_id FROM auth_enrollment").first();
+    for (const statement of statements) await f.db.prepare(statement).run();
+    expect(await f.db.prepare("SELECT id,email,access_actor FROM user").first()).toEqual(before);
+    expect(await f.db.prepare("SELECT username FROM user").first()).toEqual({
+      username: "legacyowner",
+    });
+    expect(await f.db.prepare("SELECT password FROM account").first()).toEqual(hash);
+    expect(await f.db.prepare("SELECT consumed_user_id FROM auth_enrollment").first()).toEqual(
+      binding,
+    );
+    await f.login("LEGACYOWNER");
+  } finally {
+    await f.mf.dispose();
+  }
+  const conflict = await fixture("0003");
+  try {
+    expect((await conflict.enroll((await conflict.grant()).code)).status).toBe(200);
+    expect(
+      (await conflict.enroll((await conflict.grant("bryan.aldair.zamora@gmail.com")).code, "bryan"))
+        .status,
+    ).toBe(200);
+    await conflict.db
+      .prepare(
+        "UPDATE user SET username=CASE WHEN username='owner' THEN 'Conflict' ELSE 'CONFLICT' END",
+      )
+      .run();
+    const rows = await conflict.db.prepare("SELECT * FROM user ORDER BY id").all();
+    await expect(conflict.db.prepare(statements[0]).run()).rejects.toThrow();
+    expect(await conflict.db.prepare("SELECT * FROM user ORDER BY id").all()).toEqual(rows);
+  } finally {
+    await conflict.mf.dispose();
   }
 });

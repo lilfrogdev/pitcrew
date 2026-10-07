@@ -36,6 +36,7 @@ export const authOptions = {
     customRules: {
       "/sign-up/email": { window: 3600, max: 5 },
       "/sign-in/email": { window: 300, max: 5 },
+      "/sign-in/username": { window: 300, max: 5 },
       "/request-password-reset": { window: 3600, max: 3 },
       "/send-verification-email": { window: 3600, max: 3 },
       "/reset-password": { window: 300, max: 5 },

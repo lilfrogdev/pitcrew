@@ -351,7 +351,7 @@ test("password mode never reads Access, accepts unverified controlled sessions a
             }
           : { status: true, token: "must-not-leak" },
         {
-          headers: url.endsWith("sign-in/email")
+          headers: url.endsWith("sign-in/username")
             ? { "Set-Cookie": cloudCookie + "; HttpOnly; Secure" }
             : {},
         },
@@ -369,6 +369,8 @@ test("password mode never reads Access, accepts unverified controlled sessions a
     "reset-password",
     "send-verification-email",
     "sign-in/social",
+    "sign-in/email",
+    "is-username-available",
   ])
     assert.equal(
       (await call(relay, request(`/api/auth/${path}`, { ...options, method: "POST", body: {} })))
@@ -377,16 +379,16 @@ test("password mode never reads Access, accepts unverified controlled sessions a
     );
   const login = await call(
     relay,
-    request("/api/auth/sign-in/email", {
+    request("/api/auth/sign-in/username", {
       ...options,
       method: "POST",
-      body: { email: "dev@lilfrogdev.com", password: "synthetic" },
+      body: { username: "OwNeR", password: "synthetic" },
       headers: { "cf-access-jwt-assertion": "injected", authorization: "injected" },
     }),
   );
   assert.deepEqual(login.value, { status: true });
   assert.equal(login.headers["Set-Cookie"], undefined);
-  assert.equal(calls[0].url, BACKEND_ACCESS.origin + "/app/api/auth/sign-in/email");
+  assert.equal(calls[0].url, BACKEND_ACCESS.origin + "/app/api/auth/sign-in/username");
   assert.deepEqual(calls[0].init.headers, {
     Origin: BACKEND_ACCESS.origin,
     "Content-Type": "application/json",
@@ -419,7 +421,7 @@ test("late sign-in and session responses cannot restore a locally revoked passwo
     enabled: true,
     passwordMode: true,
     requestBackend: async (url) => {
-      if (url.endsWith("sign-in/email")) {
+      if (url.endsWith("sign-in/username")) {
         started();
         await paused;
         return Response.json({ status: true }, { headers: { "Set-Cookie": cloudCookie } });
@@ -434,7 +436,7 @@ test("late sign-in and session responses cannot restore a locally revoked passwo
   };
   const login = call(
     relay,
-    request("/api/auth/sign-in/email", { ...options, method: "POST", body: {} }),
+    request("/api/auth/sign-in/username", { ...options, method: "POST", body: {} }),
   );
   await seen;
   assert.equal(
@@ -458,7 +460,7 @@ async function passwordFixture(requestBackend) {
     relay,
     options,
     login: () =>
-      call(relay, request("/api/auth/sign-in/email", { ...options, method: "POST", body: {} })),
+      call(relay, request("/api/auth/sign-in/username", { ...options, method: "POST", body: {} })),
     session: () => call(relay, request("/api/auth/get-session", options)),
     headers: () => relay.sessionHeaders(request("/api/projects", options)),
   };
@@ -470,7 +472,7 @@ test("a null refresh started during sign-in cannot clear the subsequently instal
   const loginResponse = Promise.withResolvers();
   const refreshResponse = Promise.withResolvers();
   const f = await passwordFixture(async (url, init) => {
-    if (url.endsWith("sign-in/email")) {
+    if (url.endsWith("sign-in/username")) {
       loginStarted.resolve();
       return loginResponse.promise;
     }
@@ -497,7 +499,7 @@ test("a failing refresh of an empty session cannot cancel a pending successful s
       const started = Promise.withResolvers();
       const response = Promise.withResolvers();
       const f = await passwordFixture(async (url) => {
-        if (url.endsWith("sign-in/email")) {
+        if (url.endsWith("sign-in/username")) {
           started.resolve();
           return response.promise;
         }
@@ -531,7 +533,7 @@ test("delayed failures and logout from another tab cannot wipe a newer sign-in",
         const delayed = Promise.withResolvers();
         let loginCount = 0;
         const f = await passwordFixture(async (url) => {
-          if (url.endsWith("sign-in/email")) {
+          if (url.endsWith("sign-in/username")) {
             loginCount++;
             return Response.json(
               { status: true },
@@ -598,7 +600,7 @@ test("a logout waiting for its request body cannot acquire a newer sign-in cooki
   body.push(null);
   assert.equal((await pending).status, 409);
   assert.equal(calls.length, 1);
-  assert.ok(calls[0].url.endsWith("sign-in/email"));
+  assert.ok(calls[0].url.endsWith("sign-in/username"));
   assert.deepEqual(await f.headers(), { Cookie: cloudCookie });
 });
 
@@ -606,7 +608,7 @@ test("repeated overlapping tab refreshes cannot restore or clear later session s
   let pending;
   let counter = 0;
   const f = await passwordFixture(async (url) => {
-    if (url.endsWith("sign-in/email"))
+    if (url.endsWith("sign-in/username"))
       return Response.json(
         { status: true },
         {

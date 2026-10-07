@@ -21,7 +21,7 @@ export function passwordApiRoute(path: string, method: string) {
       "invitations/[a-f0-9]{64}",
     ],
     POST: [
-      "auth/(?:enroll|sign-in/email|sign-out|revoke-sessions|update-user|change-password)",
+      "auth/(?:enroll|sign-in/username|sign-out|revoke-sessions|update-user|change-password)",
       "provider-connection/openrouter",
       "projects",
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,

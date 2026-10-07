@@ -22,7 +22,7 @@ const routes = new Map([
 ]);
 const passwordRoutes = new Map([
   ["/api/auth/enroll", "POST"],
-  ["/api/auth/sign-in/email", "POST"],
+  ["/api/auth/sign-in/username", "POST"],
   ["/api/auth/sign-out", "POST"],
   ["/api/auth/get-session", "GET"],
   ["/api/auth/update-user", "POST"],
@@ -270,6 +270,7 @@ export function createAuthRelayMiddleware({
     if (
       [
         "/api/auth/sign-in/email",
+        "/api/auth/sign-in/username",
         "/api/auth/sign-out",
         "/api/auth/revoke-sessions",
         "/api/auth/reset-password",
@@ -290,7 +291,8 @@ export function createAuthRelayMiddleware({
             Origin: BACKEND_ACCESS.origin,
             ...(!passwordMode ? { "Cf-Access-Token": token } : {}),
             ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-            ...(sentCookie && url.pathname !== "/api/auth/sign-in/email"
+            ...(sentCookie &&
+            !["/api/auth/sign-in/email", "/api/auth/sign-in/username"].includes(url.pathname)
               ? { Cookie: sentCookie }
               : {}),
           },
@@ -331,7 +333,10 @@ export function createAuthRelayMiddleware({
         if (url.pathname === "/api/auth/get-session" && output === null) nextCookie = undefined;
         // Installing a sign-in cookie is a second boundary: refreshes issued
         // while sign-in was pending queried the previous (empty) state.
-        if (nextCookie !== s.cloudCookie || url.pathname === "/api/auth/sign-in/email") {
+        if (
+          nextCookie !== s.cloudCookie ||
+          ["/api/auth/sign-in/email", "/api/auth/sign-in/username"].includes(url.pathname)
+        ) {
           s.cloudCookie = nextCookie;
           s.generation++;
         }
