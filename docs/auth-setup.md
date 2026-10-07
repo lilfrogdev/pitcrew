@@ -100,7 +100,7 @@ sessions. Sessions last at most 30 minutes; cookies do not cache authority.
 
 Durable global/IP admission runs before body/token lookup, with additional
 recipient-purpose enrollment limits and normalized username sign-in limits. Case
-variants share one sign-in bucket. Atomic D1 counters survive a restart. Indexed bounded
+variants share one sign-in bucket. Atomic D1 counters survive a restart. Bounded indexed
 cleanup removes admission rows older than 24 hours. JSON bodies are bounded to
 8192 bytes before they enter the shared visualization authority queue. Session
 creation, checks and revocation finish inside that queue; successful signout and
@@ -136,8 +136,11 @@ username and current password after migration. Legacy Access-bound email auth is
 unchanged and retains its exact two-person admission restriction.
 
 Username changes never rename `account:<user.id>`, rekey credentials or change
-memberships. A fresh authenticated identity refreshes only that actor's member
-profile metadata. Historical message author snapshots retain the username
+memberships. Before any profile write, the original request's session is read
+again from the primary store inside the shared authority queue and must retain
+the same user ID. That fresh identity refreshes only its existing actor's member
+profile metadata. Revoked requests and stale API instances cannot restore old
+labels. Historical message author snapshots retain the username
 verified when the message was admitted; client-supplied author fields are ignored.
 
 This upgrade needs its own reviewed migration, backend deployment and sequential
