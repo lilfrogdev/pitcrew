@@ -20,9 +20,14 @@ import { LandingControl, type LandingState } from "./LandingControl";
 import { isLandedReceipt, runDisplayStatus } from "./landing-receipt";
 import { landingStateKey, readLandingStates, saveLandingState } from "./landing-storage";
 import { Workspace, WorkspaceResize, workspaceStyle } from "./Workspace";
+import { uploadInputs } from "./uploads/input";
+import { UploadDrafts } from "./uploads/drafts";
+import { StoredFile } from "./uploads/Preview";
 import { Composer, readAttachment, attachmentError, type AttachmentDraft } from "./Composer";
 import {
   validateMessageAttachments,
+  isStoredFile,
+  type UploadSubmission,
   selectionAttachmentCapabilities,
   TEXT_ATTACHMENT_CAPABILITIES,
   type SubmittedAttachment,
@@ -92,6 +97,12 @@ export function App({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<Record<string, AttachmentDraft[]>>({});
   const attachmentDrafts = useRef<Record<string, AttachmentDraft[]>>({});
+  const uploadManager = useMemo(
+    () => (api.uploads ? new UploadDrafts(api.uploads, updateAttachments) : undefined),
+    [api.uploads, viewer?.id],
+  );
+  useEffect(() => () => uploadManager?.dispose(), [uploadManager, viewer?.id]);
+  const [uploadsEnabled, setUploadsEnabled] = useState(false);
   const [attachmentErrors, setAttachmentErrors] = useState<Record<string, string>>({});
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -126,13 +137,20 @@ export function App({
   const requestedThread = useRef<string | undefined>(undefined);
   const generation = useRef(0);
   const snapshotSequence = useRef(0);
-  const pending = useRef<{
-    threadId: string;
-    content: string;
-    attachments: string;
-    selection: string;
-    key: string;
-  } | null>(null);
+  const pending = useRef<
+    Record<
+      string,
+      {
+        threadId: string;
+        content: string;
+        attachments: string;
+        drafts: string;
+        submitted: (SubmittedAttachment | UploadSubmission)[];
+        selection: string;
+        key: string;
+      }
+    >
+  >({});
   const createKey = useRef<{ projectId: string; title: string; key: string } | null>(null);
   const mutation = useRef(false);
   const refresh = useCallback(() => {
@@ -140,6 +158,11 @@ export function App({
     setRevision((value) => value + 1);
   }, []);
   const accessLost = useCallback(() => {
+    uploadManager?.dispose();
+    pending.current = {};
+    attachmentDrafts.current = {};
+    setAttachments({});
+    setAttachmentErrors({});
     window.dispatchEvent(new Event("pitcrew-access-lost"));
     setSnapshot(empty);
     setThreads([]);
@@ -148,7 +171,7 @@ export function App({
     setProjects([]);
     setMutationError("Access changed. Your workspace is refreshing.");
     setRevision((value) => value + 1);
-  }, []);
+  }, [uploadManager]);
   const presence = useThreadPresence(api.presence, threadId, section === "work", accessLost);
   const [connectionFailed, setConnectionFailed] = useState(false);
   const connectionThread = useRef("");
@@ -160,6 +183,7 @@ export function App({
     setProvidersLoading(true);
     setComposerCapabilities(undefined);
     setNotesEnabled(false);
+    setUploadsEnabled(false);
     if (api.collaboration && !projectId) {
       setProvidersLoading(false);
       return;
@@ -170,6 +194,7 @@ export function App({
         if (!cancelled) {
           setComposerCapabilities(capabilities.composer);
           setNotesEnabled(capabilities.notesEnabled === true);
+          setUploadsEnabled(!!capabilities.uploads && !!api.uploads);
           setProvidersLoading(false);
           setLandingEnabled(
             capabilities.landing.enabled &&
@@ -413,12 +438,42 @@ export function App({
           reviewer: composerCapabilities.settings.roles?.reviewer ?? selection,
         })
       : TEXT_ATTACHMENT_CAPABILITIES;
+  const draftFingerprint = (items: AttachmentDraft[]) =>
+    JSON.stringify(items.map((item) => [item.id, item.attachment]));
+  function prepareAttachments() {
+    const files = attachmentDrafts.current[threadId] ?? [];
+    const prior = pending.current[threadId];
+    if (
+      prior &&
+      prior.threadId === threadId &&
+      prior.content === (drafts[threadId] ?? "").trim() &&
+      prior.selection === JSON.stringify(selection) &&
+      prior.drafts === draftFingerprint(files)
+    ) {
+      // A refreshed transcript may include this very submission. Keep its exact
+      // input decisions and request body while an unchanged send is uncertain.
+      return files.map((item, index) => ({
+        ...item,
+        attachment: prior.submitted[index],
+        modelInput:
+          "uploadId" in prior.submitted[index] ? prior.submitted[index].modelInput : undefined,
+      }));
+    }
+    return uploadInputs(
+      files,
+      snapshot.messages.flatMap((message) => message.attachments ?? []),
+      attachmentCapabilities,
+      !humanMessages && executionEnabled,
+    );
+  }
+  const preparedAttachments = prepareAttachments();
   let attachmentCompatibilityError = "";
   try {
     validateMessageAttachments(
       (attachments[threadId] ?? [])
         .filter((item) => item.status === "ready")
-        .map((item) => item.attachment!),
+        .map((item) => item.attachment!)
+        .filter((item) => !("uploadId" in item)),
       attachmentCapabilities,
     );
   } catch (cause) {
@@ -476,6 +531,18 @@ export function App({
   function addFiles(files: File[]) {
     if (!threadId || mutation.current || !files.length) return;
     const selected = threadId;
+    if (uploadsEnabled && uploadManager) {
+      try {
+        uploadManager.add(selected, files, attachmentDrafts.current[selected] ?? []);
+        setAttachmentErrors((all) => ({ ...all, [selected]: "" }));
+      } catch (cause) {
+        setAttachmentErrors((all) => ({
+          ...all,
+          [selected]: cause instanceof Error ? cause.message : "Upload failed.",
+        }));
+      }
+      return;
+    }
     if ((attachmentDrafts.current[selected]?.length ?? 0) + files.length > 4) {
       setAttachmentErrors((all) => ({
         ...all,
@@ -512,7 +579,7 @@ export function App({
   async function send(event: React.FormEvent) {
     event.preventDefault();
     const content = (drafts[threadId] ?? "").trim();
-    const files = attachmentDrafts.current[threadId] ?? [];
+    const files = prepareAttachments();
     if (
       !content ||
       content.length > 8000 ||
@@ -522,13 +589,19 @@ export function App({
       !threadId ||
       selectionSaving[threadId] ||
       (!humanMessages && !modelValid) ||
-      (humanMessages && files.length > 0) ||
+      (humanMessages && files.length > 0 && !uploadsEnabled) ||
       files.some((item) => item.status !== "ready")
     )
       return;
-    const submittedAttachments = files.map((item) => item.attachment!) as SubmittedAttachment[];
+    const submittedAttachments = files.map((item) => item.attachment!) as (
+      | SubmittedAttachment
+      | UploadSubmission
+    )[];
     try {
-      validateMessageAttachments(submittedAttachments, attachmentCapabilities);
+      validateMessageAttachments(
+        submittedAttachments.filter((item) => !("uploadId" in item)),
+        attachmentCapabilities,
+      );
     } catch (cause) {
       setAttachmentErrors((all) => ({ ...all, [threadId]: attachmentError(cause) }));
       return;
@@ -539,27 +612,37 @@ export function App({
     const selectedGeneration = generation.current;
     // Supersede any poll started before this write; it may contain an older transcript.
     const selectedSequence = ++snapshotSequence.current;
+    const existing = pending.current[selected];
     if (
-      !pending.current ||
-      pending.current.threadId !== selected ||
-      pending.current.content !== content ||
-      pending.current.attachments !== attachmentFingerprint ||
-      pending.current.selection !== selectionFingerprint
+      !existing ||
+      existing.content !== content ||
+      existing.attachments !== attachmentFingerprint ||
+      existing.selection !== selectionFingerprint
     )
-      pending.current = {
+      pending.current[selected] = {
         threadId: selected,
         content,
         attachments: attachmentFingerprint,
+        drafts: draftFingerprint(attachmentDrafts.current[threadId] ?? []),
+        submitted: structuredClone(submittedAttachments),
         selection: selectionFingerprint,
         key: crypto.randomUUID(),
       };
+    uploadManager?.freezeExpiry(files.map((file) => file.id));
     mutation.current = true;
     setBusy(true);
     setMutationError("");
     try {
-      await api.send(selected, content, pending.current.key, submittedAttachments, selection);
-      pending.current = null;
+      await api.send(
+        selected,
+        content,
+        pending.current[selected].key,
+        submittedAttachments,
+        selection,
+      );
+      delete pending.current[selected];
       setDrafts((all) => ({ ...all, [selected]: "" }));
+      files.forEach((file) => uploadManager?.remove(file.id, false));
       updateAttachments(selected, () => []);
       setAttachmentErrors((all) => ({ ...all, [selected]: "" }));
       setAnnouncement(
@@ -848,25 +931,36 @@ export function App({
                         </time>
                       </div>
                       <p>{message.content}</p>
-                      {message.attachments?.map((attachment) => (
-                        <details className="message-attachment" key={attachment.id}>
-                          <summary>
-                            {attachment.name} · Attached{" "}
-                            {attachment.mediaType === "text/plain" ? "text" : "image"}
-                          </summary>
-                          {attachment.mediaType === "text/plain" ? (
-                            <pre>{attachment.text}</pre>
-                          ) : (
-                            <img
-                              alt={`Attached ${attachment.name}`}
-                              src={
-                                api.attachmentUrl?.(message.threadId, attachment.attachmentId) ??
-                                `/api/threads/${encodeURIComponent(message.threadId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`
-                              }
-                            />
-                          )}
-                        </details>
-                      ))}
+                      {message.attachments?.map((attachment) =>
+                        isStoredFile(attachment) ? (
+                          <StoredFile
+                            key={attachment.id}
+                            attachment={attachment}
+                            url={
+                              api.attachmentUrl?.(message.threadId, attachment.attachmentId) ??
+                              `/api/threads/${encodeURIComponent(message.threadId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`
+                            }
+                          />
+                        ) : (
+                          <details className="message-attachment" key={attachment.id}>
+                            <summary>
+                              {attachment.name} · Attached{" "}
+                              {attachment.mediaType === "text/plain" ? "text" : "image"}
+                            </summary>
+                            {attachment.mediaType === "text/plain" ? (
+                              <pre>{attachment.text}</pre>
+                            ) : (
+                              <img
+                                alt={`Attached ${attachment.name}`}
+                                src={
+                                  api.attachmentUrl?.(message.threadId, attachment.attachmentId) ??
+                                  `/api/threads/${encodeURIComponent(message.threadId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`
+                                }
+                              />
+                            )}
+                          </details>
+                        ),
+                      )}
                     </div>
                   </article>
                 );
@@ -915,15 +1009,18 @@ export function App({
             dictationEnabled={section === "work"}
             draft={drafts[threadId] ?? ""}
             onDraft={(text) => setDrafts((all) => ({ ...all, [threadId]: text }))}
-            attachments={attachments[threadId] ?? []}
+            attachments={preparedAttachments}
             onFiles={addFiles}
+            uploadsEnabled={uploadsEnabled}
+            onRetry={(id) => uploadManager?.retry(id)}
             onRemove={(id) => {
+              uploadManager?.remove(id);
               updateAttachments(threadId, (items) => items.filter((item) => item.id !== id));
               setAttachmentErrors((all) => ({ ...all, [threadId]: "" }));
             }}
             onSend={send}
             disabled={!threadId || busy}
-            attachmentsEnabled={!humanMessages}
+            attachmentsEnabled={uploadsEnabled || !humanMessages}
             sending={busy}
             canSend={
               !!threadId &&
@@ -932,7 +1029,7 @@ export function App({
               (humanMessages || executionEnabled) &&
               !selectionSaving[threadId] &&
               (humanMessages || modelValid) &&
-              (!humanMessages || !(attachments[threadId] ?? []).length) &&
+              (!humanMessages || uploadsEnabled || !(attachments[threadId] ?? []).length) &&
               !attachmentCompatibilityError &&
               !!(drafts[threadId] ?? "").trim() &&
               (drafts[threadId] ?? "").length <= 8000 &&

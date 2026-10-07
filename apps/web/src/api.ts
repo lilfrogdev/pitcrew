@@ -1,3 +1,5 @@
+import { createUploadApi, type UploadApi } from "./uploads/api";
+import type { UploadSubmission } from "@pitcrew/protocol";
 import { createRepositoryApi, type RepositoryApi } from "./repository-api";
 import type { PresenceApi, TypingSnapshot } from "./thread-presence";
 import type {
@@ -33,6 +35,7 @@ export type LandingCapabilities = {
   landing: { enabled: boolean; backend: LandingAuthorizationReceipt["backend"] | null };
   /** Enables durable human messages without claiming agent execution. */
   notesEnabled?: boolean;
+  uploads?: { fileBytes: number; totalBytes: number; count: number };
   composer?: {
     models: ModelChoice[];
     settings: ModelSettings;
@@ -94,6 +97,7 @@ export interface CollaborationApi {
   removeThreadMember(threadId: string, actor: string): Promise<unknown>;
 }
 export interface Api {
+  uploads?: UploadApi;
   source?: SourceApi;
   visualizations?(projectId: string, threadId: string, signal: AbortSignal): Promise<unknown>;
   presence?: PresenceApi;
@@ -121,7 +125,7 @@ export interface Api {
     threadId: string,
     content: string,
     key: string,
-    attachments?: SubmittedAttachment[],
+    attachments?: (SubmittedAttachment | UploadSubmission)[],
     selection?: ModelSelection,
   ): Promise<unknown>;
 }
@@ -286,6 +290,7 @@ const sourceQuery = (values: Record<string, string | undefined>) => {
   return query.toString();
 };
 export const httpApi: Api = {
+  uploads: createUploadApi(mutationHeaders),
   source: {
     tree: (id, path = "", version, cursor) =>
       request(

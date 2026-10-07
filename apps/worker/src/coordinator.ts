@@ -4,6 +4,8 @@ import { validateSelection, resolveRunModels } from "./model-selection";
 import { selectionAttachmentCapabilities } from "@pitcrew/protocol";
 import type { ModelSettings } from "@pitcrew/protocol";
 import type { AttachmentStore } from "./attachment-store";
+import type { UploadStore } from "./uploads";
+import { isStoredFile } from "@pitcrew/protocol";
 import {
   applyKnowledgePage,
   projectKnowledge,
@@ -221,6 +223,7 @@ export class Coordinator {
     private id: () => string = () => crypto.randomUUID(),
     private attachments?: AttachmentStore,
     private atomic: <T>(operation: () => T) => T = (operation) => operation(),
+    private uploads?: UploadStore,
   ) {
     const needsMigration =
       Object.keys(state.keys).some(
@@ -797,6 +800,13 @@ export class Coordinator {
       .find(
         (attachment) => "attachmentId" in attachment && attachment.attachmentId === attachmentId,
       );
+    if (reference && isStoredFile(reference)) {
+      const message = this.state.messages.find(
+        (item) => item.threadId === threadId && item.attachments?.includes(reference),
+      );
+      if (!message || !this.uploads) throw new AdmissionError("not_found", 404);
+      return this.uploads.download(attachmentId, threadId, message.id);
+    }
     if (!reference || !("attachmentId" in reference) || !this.attachments)
       throw new AdmissionError("not_found", 404);
     return this.attachments.get(reference);
@@ -1015,7 +1025,14 @@ export class Coordinator {
     const models =
       previous?.turn.models ?? resolveRunModels(catalog, chosen, this.state.project.modelSettings);
     const capabilities = selectionAttachmentCapabilities(catalog.choices, models);
-    const accepted = validateMessageAttachments(attachments, capabilities);
+    const resolved = this.uploads?.resolve(
+      attachments,
+      author?.actor ?? actor,
+      threadId,
+      capabilities,
+      previous?.message.id,
+    );
+    const accepted = resolved?.attachments ?? validateMessageAttachments(attachments, capabilities);
     // Replay compares bytes against immutable references, without storing user image bytes in keys.
     if (previous)
       accepted.forEach((item, index) => {
@@ -1025,6 +1042,7 @@ export class Coordinator {
             !this.attachments ||
             !ref ||
             !("attachmentId" in ref) ||
+            isStoredFile(ref) ||
             !this.attachments.matches(ref, item)
           )
             throw new AdmissionError("idempotency_conflict", 409);
@@ -1050,11 +1068,14 @@ export class Coordinator {
         const historyAttachments = this.state.messages
           .filter((m) => m.threadId === threadId)
           .flatMap((m) => m.attachments ?? [])
-          .map((item) => ("attachmentId" in item ? this.attachments!.get(item) : item));
+          .map((item) =>
+            isStoredFile(item) ? item : "attachmentId" in item ? this.attachments!.get(item) : item,
+          );
         let imageBytes = 0,
           imageCount = 0,
           textBytes = 0;
         for (const item of [...historyAttachments, ...accepted]) {
+          if ("kind" in item) continue;
           validateMessageAttachments([item], capabilities);
           if ("data" in item) {
             imageBytes += atob(item.data).length;
@@ -1122,6 +1143,8 @@ export class Coordinator {
           attachments: stored?.length ? stored : undefined,
           createdAt: this.now(),
         };
+        if (resolved?.ids.length)
+          this.uploads!.link(resolved.ids, author?.actor ?? actor, threadId, message.id);
         const history = [...this.state.messages.filter((m) => m.threadId === threadId), message];
         if (new TextEncoder().encode(JSON.stringify(history)).byteLength > 196608)
           throw new AdmissionError("conversation_context_limit", 413);
@@ -1241,25 +1264,62 @@ export class Coordinator {
     key: string,
     actor: string,
     author?: Message["author"],
+    attachments?: unknown,
   ): Message {
     this.validateKey(key);
-    return this.transaction(`note_${JSON.stringify([actor, key])}`, { threadId, content }, () => {
-      this.thread(threadId);
-      if (typeof content !== "string" || !content.trim() || content.length > 8000)
-        throw new AdmissionError("invalid_content");
-      if (this.state.messages.length >= 500) throw new AdmissionError("capacity", 429);
-      const message: Message = {
-        id: this.id(),
+    if (
+      attachments !== undefined &&
+      (!Array.isArray(attachments) ||
+        attachments.some((item) => !item || typeof item !== "object" || !("uploadId" in item)))
+    )
+      throw new AdmissionError("note_attachments_unavailable");
+    if (new TextEncoder().encode(JSON.stringify(this.state)).byteLength > 15 * 1024 * 1024)
+      throw new AdmissionError("repository_storage_limit", 413);
+    const storageKey = `note_${JSON.stringify([actor, key])}`;
+    const previous = this.state.keys[storageKey]?.result as Message | undefined;
+    const resolved = this.uploads?.resolve(
+      attachments,
+      author?.actor ?? actor,
+      threadId,
+      undefined,
+      previous?.id,
+    );
+    if (!this.uploads && Array.isArray(attachments) && attachments.length)
+      throw new AdmissionError("note_attachments_unavailable");
+    return this.transaction(
+      `note_${JSON.stringify([actor, key])}`,
+      {
         threadId,
-        role: "user",
-        content: content.trim(),
-        createdAt: this.now(),
-        ...(author ? { author: structuredClone(author) } : {}),
-      };
-      this.state.messages.push(message);
-      this.event("message.created", message.id, { kind: "principal", id: actor });
-      return structuredClone(message);
-    });
+        content,
+        ...(resolved?.attachments.length ? { attachments: resolved.attachments } : {}),
+      },
+      () => {
+        this.thread(threadId);
+        if (typeof content !== "string" || !content.trim() || content.length > 8000)
+          throw new AdmissionError("invalid_content");
+        if (this.state.messages.length >= 500) throw new AdmissionError("capacity", 429);
+        const message: Message = {
+          id: this.id(),
+          threadId,
+          role: "user",
+          ...(resolved?.attachments.length
+            ? {
+                attachments: resolved.attachments.map((item) =>
+                  "data" in item ? this.attachments!.put(item) : item,
+                ),
+              }
+            : {}),
+          content: content.trim(),
+          createdAt: this.now(),
+          ...(author ? { author: structuredClone(author) } : {}),
+        };
+        if (resolved?.ids.length)
+          this.uploads!.link(resolved.ids, author?.actor ?? actor, threadId, message.id);
+        this.state.messages.push(message);
+        this.event("message.created", message.id, { kind: "principal", id: actor });
+        return structuredClone(message);
+      },
+    );
   }
   delegateConversation(id: string) {
     const turn = this.conversationTurn(id);

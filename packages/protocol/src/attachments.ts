@@ -15,7 +15,10 @@ export interface StoredImageAttachment extends AttachmentIdentity {
   attachmentId: string;
 }
 export type SubmittedAttachment = TextAttachment | ImageAttachment;
-export type MessageAttachment = TextAttachment | StoredImageAttachment;
+export type MessageAttachment =
+  | TextAttachment
+  | StoredImageAttachment
+  | import("./uploads").StoredFileAttachment;
 export interface AttachmentCapabilities {
   images: boolean;
   maxImages: number;

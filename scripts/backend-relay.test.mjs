@@ -59,7 +59,8 @@ async function request(handler, path = "/api/repositories", options = {}) {
     },
     end(text) {
       result.text = text;
-      result.json = JSON.parse(text);
+      if (Buffer.isBuffer(text)) result.bytes = text;
+      else result.json = JSON.parse(text);
     },
   };
   await handler(req, res, () => {
@@ -943,4 +944,204 @@ test("thread presence uses authenticated exact routes, excludes draft fields, an
     cloud.filter((call) => call.url.endsWith("/presence") && call.init.method === "POST").length,
     1,
   );
+});
+
+test("password uploads forward bounded exact bytes with account authority, enforce nonce and preserve safe downloads", async () => {
+  const cloud = [];
+  const bytes = Buffer.from([0, 255, 60, 115, 99, 114, 105, 112, 116, 62]);
+  const id = "00000000-0000-0000-0000-000000000010";
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "__Secure-pitcrew-auth.session_token=synthetic-held" }),
+    fetchImpl: async (url, init) => {
+      cloud.push({ url, init });
+      return url.includes("/attachments/")
+        ? new Response(bytes, {
+            headers: {
+              "content-type": "application/octet-stream",
+              "content-disposition": "inline; filename=unsafe.html",
+              "set-cookie": "evil=synthetic",
+              "x-private-path": "/private/synthetic",
+            },
+          })
+        : Response.json({ ok: true });
+    },
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const headers = {
+    origin,
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    "x-pitcrew-local-nonce": local.json.nonce,
+    "content-type": "application/pdf",
+    "x-pitcrew-filename": "synthetic.pdf",
+    authorization: "synthetic-client",
+    "x-user-id": "forged",
+    "cf-access-token": "forged",
+  };
+  const path = `/api/threads/thread/uploads/${id}`;
+  assert.equal(
+    (
+      await request(f.handler, path, {
+        method: "PUT",
+        body: bytes,
+        headers: { ...headers, "x-pitcrew-local-nonce": "wrong" },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await request(f.handler, path + "?actor=forged", { method: "PUT", body: bytes, headers }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/thread/uploads/not-a-uuid", {
+        method: "PUT",
+        body: bytes,
+        headers,
+      })
+    ).status,
+    404,
+  );
+  assert.equal(cloud.length, 0);
+  assert.equal(
+    (await request(f.handler, path, { method: "PUT", body: bytes, headers })).status,
+    200,
+  );
+  assert.equal(cloud[0].url, BACKEND_ACCESS.origin + "/app" + path);
+  assert.deepEqual(cloud[0].init.body, bytes);
+  assert.deepEqual(cloud[0].init.headers, {
+    Accept: "application/json",
+    Cookie: "__Secure-pitcrew-auth.session_token=synthetic-held",
+    Origin: BACKEND_ACCESS.origin,
+    "Content-Type": "application/pdf",
+    "X-Pitcrew-Filename": "synthetic.pdf",
+  });
+  assert.equal(f.tokens.length, 0);
+  const download = await request(f.handler, `/api/threads/thread/attachments/${id}`);
+  assert.equal(download.status, 200);
+  assert.deepEqual(download.bytes, bytes);
+  assert.match(download.headers["Content-Disposition"], /^attachment;/);
+  assert.equal(download.headers["Content-Type"], "application/octet-stream");
+  assert.equal(download.headers["X-Content-Type-Options"], "nosniff");
+  assert.equal(download.headers["Cache-Control"], "private, no-store");
+  assert.equal(download.headers["Set-Cookie"], undefined);
+  assert.equal(download.headers["x-private-path"], undefined);
+  assert.equal((await request(f.handler, path, { method: "DELETE", headers })).status, 200);
+  assert.equal(cloud.at(-1).init.body, undefined);
+  assert.equal(
+    (await request(f.handler, path, { method: "PUT", body: Buffer.alloc(8388609), headers }))
+      .status,
+    413,
+  );
+});
+
+test("an in-flight upload leaves message and presence mutations available", async () => {
+  let release;
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-held" }),
+    fetchImpl: async (_url, init) => {
+      if (init.method === "PUT")
+        await new Promise((done) => {
+          release = done;
+        });
+      return Response.json({ ok: true });
+    },
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const headers = {
+    origin,
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    "x-pitcrew-local-nonce": local.json.nonce,
+    "content-type": "application/octet-stream",
+    "x-pitcrew-filename": "synthetic.bin",
+  };
+  const pending = request(
+    f.handler,
+    "/api/threads/one/uploads/00000000-0000-0000-0000-000000000011",
+    { method: "PUT", headers, body: Buffer.from([1]) },
+  );
+  await new Promise(setImmediate);
+  assert.equal(typeof release, "function");
+  try {
+    assert.equal(
+      (
+        await request(f.handler, "/api/threads/two/messages", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ content: "synthetic", idempotencyKey: "another-thread" }),
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await request(f.handler, "/api/threads/two/presence", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            clientId: "00000000-0000-0000-0000-000000000012",
+            sequence: 1,
+            active: true,
+          }),
+        })
+      ).status,
+      200,
+    );
+  } finally {
+    release();
+    await pending;
+  }
+});
+
+test("a slow upload cannot move its selected bytes to a replacement account", async () => {
+  let accountCookie = "synthetic-Alice";
+  const cloud = [];
+  let started;
+  const entered = new Promise((done) => {
+    started = done;
+  });
+  let release;
+  const held = new Promise((done) => {
+    release = done;
+  });
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: accountCookie }),
+    fetchImpl: async (url, init) => {
+      cloud.push({ url, init });
+      return Response.json({ ok: true });
+    },
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const headers = {
+    origin,
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    "x-pitcrew-local-nonce": local.json.nonce,
+    "content-type": "application/octet-stream",
+    "x-pitcrew-filename": "synthetic.bin",
+  };
+  const chunks = (async function* () {
+    yield Buffer.from([65]);
+    started();
+    await held;
+    yield Buffer.from([66]);
+  })();
+  const pending = request(
+    f.handler,
+    "/api/threads/shared/uploads/00000000-0000-0000-0000-000000000013",
+    { method: "PUT", headers, chunks },
+  );
+  await entered;
+  accountCookie = "synthetic-Bob";
+  release();
+  const result = await pending;
+  assert.equal(result.status, 409);
+  assert.equal(result.json.error, "backend_account_changed");
+  assert.equal(cloud.length, 0);
 });

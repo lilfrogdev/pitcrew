@@ -87,7 +87,9 @@ it("runs production repository routes with trusted evidence, one-use SQLite appr
     };
     const runPath = `/api/runs/${input.runId}`;
     expect((await mf.dispatchFetch("http://remote.example/api/projects")).status).toBe(403);
-    expect(await (await mf.dispatchFetch("http://localhost/api/capabilities")).json()).toEqual({
+    expect(
+      await (await mf.dispatchFetch("http://localhost/api/capabilities")).json(),
+    ).toMatchObject({
       landing: { enabled: true, backend: "fixture" },
     });
     expect(
