@@ -489,8 +489,21 @@ export function api(
   });
   app.get("/api/threads/:threadId/messages", (c) => {
     coordinator.thread(c.req.param("threadId"));
-    return c.json(coordinator.state.messages.filter((m) => m.threadId === c.req.param("threadId")));
+    return c.json(
+      coordinator.state.messages
+        .filter((m) => m.threadId === c.req.param("threadId"))
+        .map(publicMessage),
+    );
   });
+  const publicMessage = (message: import("@pitcrew/protocol").Message) =>
+    message.mentions
+      ? {
+          ...message,
+          mentions: message.mentions.filter((mention) =>
+            coordinator.actorAuthorized(mention.actor, message.threadId),
+          ),
+        }
+      : message;
   app.post("/api/threads/:threadId/messages", async (c) => {
     const body = c.get("body");
     const admit = async <T>(operation: () => T) =>
@@ -508,14 +521,17 @@ export function api(
       )
         throw new AdmissionError("note_attachments_unavailable");
       return c.json(
-        await admit(() =>
-          coordinator.appendNote(
-            c.req.param("threadId"),
-            body.content as string,
-            body.idempotencyKey as string,
-            identity.actor,
-            access?.identity,
-            body.attachments,
+        publicMessage(
+          await admit(() =>
+            coordinator.appendNote(
+              c.req.param("threadId"),
+              body.content as string,
+              body.idempotencyKey as string,
+              identity.actor,
+              access?.identity,
+              body.attachments,
+              body.mentions,
+            ),
           ),
         ),
         201,
@@ -532,10 +548,11 @@ export function api(
           body.modelSelection,
           body.attachments,
           access?.identity,
+          body.mentions,
         ),
       );
       await conversation.dispatch(result.turn.id);
-      return c.json(result, 201);
+      return c.json({ ...result, message: publicMessage(result.message) }, 201);
     }
     const result = await admit(() =>
       coordinator.submit(
@@ -545,10 +562,11 @@ export function api(
         identity.actor,
         body.attachments,
         access?.identity,
+        body.mentions,
       ),
     );
     await dispatch(result.run.id);
-    return c.json(result, 201);
+    return c.json({ ...result, message: publicMessage(result.message) }, 201);
   });
   app.get("/api/threads/:threadId/changes", (c) => {
     coordinator.thread(c.req.param("threadId"));

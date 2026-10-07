@@ -182,7 +182,9 @@ export class Collaboration {
   }
   threadMembers(threadId: string) {
     this.requireThread(threadId);
-    return Object.values(this.state()!.threadMembers[threadId] ?? {});
+    return Object.values(this.state()!.threadMembers[threadId] ?? {}).filter((member) =>
+      this.core.actorAuthorized(member.actor, threadId),
+    );
   }
   async invite(scope: "project" | "thread", scopeId: string, emailValue: unknown, role: unknown) {
     if (scope === "project") this.requireProject(scopeId, true);

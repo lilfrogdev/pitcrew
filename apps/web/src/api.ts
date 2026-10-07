@@ -134,6 +134,7 @@ export interface Api {
     key: string,
     attachments?: (SubmittedAttachment | UploadSubmission)[],
     selection?: ModelSelection,
+    mentions?: import("@pitcrew/protocol").SubmittedMention[],
   ): Promise<unknown>;
 }
 export class ApiError extends Error {
@@ -226,6 +227,14 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   }
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    if (
+      response.status === 400 &&
+      ((await response.json().catch(() => null)) as { error?: unknown } | null)?.error ===
+        "invalid_mentions"
+    )
+      throw new Error(
+        "A mentioned member changed or is unavailable. Reselect the @username before sending.",
+      );
     throw new ApiError(response.status);
   }
   try {
@@ -471,11 +480,12 @@ export const httpApi: Api = {
     ),
   setModelSettings: (projectId, settings) =>
     request(`/projects/${encodeURIComponent(projectId)}/model-settings`, { settings }),
-  send: (id, content, idempotencyKey, attachments, modelSelection) =>
+  send: (id, content, idempotencyKey, attachments, modelSelection, mentions) =>
     request(`/threads/${encodeURIComponent(id)}/messages`, {
       content,
       idempotencyKey,
       attachments,
       modelSelection,
+      mentions,
     }),
 };

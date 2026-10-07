@@ -654,6 +654,45 @@ test("shared routes bind server-held account cookies, nonce writes, deny arbitra
   assert.equal((await request(loggedOut.handler, "/api/projects")).status, 401);
   assert.equal(loggedOut.calls.length, 1); // Access protection check only, no product read.
 });
+test("shared message writes preserve actor mentions and sanitize stale-mention errors", async () => {
+  const writes = [];
+  const f = fixture({
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "trusted-session" }),
+    fetchImpl: async (url, init) => {
+      if (url.endsWith("/api/local-session"))
+        return new Response(null, {
+          status: 302,
+          headers: { location: `${BACKEND_ACCESS.issuer}/cdn-cgi/access/login/backend` },
+        });
+      writes.push(JSON.parse(init.body));
+      return Response.json(
+        { error: "invalid_mentions", actor: "private-member", diagnostic: "private detail" },
+        { status: 400 },
+      );
+    },
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const body = {
+    content: "@johncena please review",
+    idempotencyKey: "mention-retry",
+    mentions: [{ actor: "account:john", start: 0, end: 9 }],
+  };
+  const result = await request(f.handler, "/api/threads/task/messages", {
+    method: "POST",
+    headers: {
+      origin,
+      "content-type": "application/json",
+      cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+      "x-pitcrew-local-nonce": local.json.nonce,
+    },
+    body: JSON.stringify(body),
+  });
+  assert.deepEqual(writes, [body]);
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.json, { error: "invalid_mentions" });
+});
+
 test("source viewers use explicit authenticated read routes and preserve bounded selectors", async () => {
   const f = fixture({
     sharedApi: true,

@@ -1,3 +1,4 @@
+import { validateMentions } from "./mentions";
 import type { ConversationTurn, ConversationInput } from "./conversation";
 import type { ModelCatalog } from "./model-selection";
 import { validateSelection, resolveRunModels } from "./model-selection";
@@ -1015,6 +1016,7 @@ export class Coordinator {
     selection?: unknown,
     attachments?: unknown,
     author?: Message["author"],
+    mentions?: unknown,
   ) {
     this.validateKey(key);
     const storageKey = `conversation_${JSON.stringify([actor, key])}`;
@@ -1067,10 +1069,27 @@ export class Coordinator {
     );
     return this.transaction(
       storageKey,
-      { threadId, content, actor, selection: chosen, attachments: descriptor },
+      {
+        threadId,
+        content,
+        actor,
+        selection: chosen,
+        attachments: descriptor,
+        ...(Array.isArray(mentions) && !mentions.length
+          ? {}
+          : mentions === undefined
+            ? {}
+            : { mentions }),
+      },
       () => {
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
           throw new AdmissionError("invalid_content");
+        const acceptedMentions = validateMentions(
+          content,
+          mentions,
+          threadId,
+          this.state.collaboration,
+        );
         const turns = (this.state.conversationTurns ??= []);
         if (
           this.state.messages.length >= 500 ||
@@ -1107,6 +1126,7 @@ export class Coordinator {
           id: "$pending",
           threadId,
           role: "user",
+          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           content: content.trim(),
           attachments: accepted.map((item) =>
             "data" in item
@@ -1152,6 +1172,7 @@ export class Coordinator {
           id: this.id(),
           threadId,
           role: "user",
+          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           ...(author ? { author: structuredClone(author) } : {}),
           content: content.trim(),
           attachments: stored?.length ? stored : undefined,
@@ -1279,6 +1300,7 @@ export class Coordinator {
     actor: string,
     author?: Message["author"],
     attachments?: unknown,
+    mentions?: unknown,
   ): Message {
     this.validateKey(key);
     if (
@@ -1305,6 +1327,11 @@ export class Coordinator {
       {
         threadId,
         content,
+        ...(Array.isArray(mentions) && !mentions.length
+          ? {}
+          : mentions === undefined
+            ? {}
+            : { mentions }),
         ...(resolved?.attachments.length ? { attachments: resolved.attachments } : {}),
       },
       () => {
@@ -1312,10 +1339,17 @@ export class Coordinator {
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
           throw new AdmissionError("invalid_content");
         if (this.state.messages.length >= 500) throw new AdmissionError("capacity", 429);
+        const acceptedMentions = validateMentions(
+          content,
+          mentions,
+          threadId,
+          this.state.collaboration,
+        );
         const message: Message = {
           id: this.id(),
           threadId,
           role: "user",
+          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           ...(resolved?.attachments.length
             ? {
                 attachments: resolved.attachments.map((item) =>
@@ -1386,6 +1420,7 @@ export class Coordinator {
     actor = "local-fixture",
     attachments?: unknown,
     author?: Message["author"],
+    mentions?: unknown,
   ): SubmitResult {
     this.validateKey(key);
     let acceptedAttachments;
@@ -1403,6 +1438,11 @@ export class Coordinator {
       {
         threadId,
         content,
+        ...(Array.isArray(mentions) && !mentions.length
+          ? {}
+          : mentions === undefined
+            ? {}
+            : { mentions }),
         ...(acceptedAttachments.length ? { attachments: acceptedAttachments } : {}),
       },
       () => {
@@ -1415,10 +1455,17 @@ export class Coordinator {
           this.state.runs.filter((r) => ["queued", "running"].includes(r.status)).length >= 4
         )
           throw new AdmissionError("capacity", 429);
+        const acceptedMentions = validateMentions(
+          content,
+          mentions,
+          threadId,
+          this.state.collaboration,
+        );
         const message: Message = {
           id: this.id(),
           threadId,
           role: "user",
+          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           ...(author ? { author: structuredClone(author) } : {}),
           content: content.trim(),
           ...(acceptedAttachments.length ? { attachments: acceptedAttachments } : {}),

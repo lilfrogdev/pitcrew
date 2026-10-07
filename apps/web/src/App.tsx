@@ -1,3 +1,5 @@
+import { useMentionMembers, useMentionDrafts } from "./mentions/useMentions";
+import { MessageContent, Mentioned } from "./mentions/Message";
 import { Repositories } from "./Repositories";
 import { AccountRepositories } from "./AccountRepositories";
 import { NavigationRail, WorkspacePlaceholder, type WorkspaceSection } from "./NavigationRail";
@@ -95,6 +97,7 @@ export function App({
   const [threadId, setThreadId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const mentionDraft = useMentionDrafts(threadId, drafts[threadId] ?? "");
   const [attachments, setAttachments] = useState<Record<string, AttachmentDraft[]>>({});
   const attachmentDrafts = useRef<Record<string, AttachmentDraft[]>>({});
   const uploadManager = useMemo(
@@ -111,6 +114,12 @@ export function App({
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const loading = projectsLoading || threadsLoading || snapshotLoading;
+  const mentionMembers = useMentionMembers(
+    api.collaboration,
+    threadId,
+    section === "work" && !loading,
+    viewer?.id,
+  );
   const visualizationThreadAvailable = threads.some(
     (thread) => thread.id === threadId && thread.projectId === projectId,
   );
@@ -147,6 +156,7 @@ export function App({
         drafts: string;
         submitted: (SubmittedAttachment | UploadSubmission)[];
         selection: string;
+        mentions: string;
         key: string;
       }
     >
@@ -607,6 +617,8 @@ export function App({
       setAttachmentErrors((all) => ({ ...all, [threadId]: attachmentError(cause) }));
       return;
     }
+    const submittedMentions = mentionDraft.submitted();
+    const mentionFingerprint = JSON.stringify(submittedMentions);
     const attachmentFingerprint = JSON.stringify(submittedAttachments);
     const selectionFingerprint = JSON.stringify(selection);
     const selected = threadId;
@@ -618,7 +630,8 @@ export function App({
       !existing ||
       existing.content !== content ||
       existing.attachments !== attachmentFingerprint ||
-      existing.selection !== selectionFingerprint
+      existing.selection !== selectionFingerprint ||
+      existing.mentions !== mentionFingerprint
     )
       pending.current[selected] = {
         threadId: selected,
@@ -627,6 +640,7 @@ export function App({
         drafts: draftFingerprint(attachmentDrafts.current[threadId] ?? []),
         submitted: structuredClone(submittedAttachments),
         selection: selectionFingerprint,
+        mentions: mentionFingerprint,
         key: crypto.randomUUID(),
       };
     uploadManager?.freezeExpiry(files.map((file) => file.id));
@@ -640,8 +654,10 @@ export function App({
         pending.current[selected].key,
         submittedAttachments,
         selection,
+        submittedMentions.length ? submittedMentions : undefined,
       );
       delete pending.current[selected];
+      mentionDraft.clear();
       setDrafts((all) => ({ ...all, [selected]: "" }));
       files.forEach((file) => uploadManager?.remove(file.id, false));
       updateAttachments(selected, () => []);
@@ -933,8 +949,12 @@ export function App({
                             minute: "2-digit",
                           })}
                         </time>
+                        <Mentioned
+                          message={message}
+                          recipient={viewer ? `account:${viewer.id}` : undefined}
+                        />
                       </div>
-                      <p>{message.content}</p>
+                      <MessageContent message={message} members={mentionMembers} />
                       {message.attachments?.map((attachment) =>
                         isStoredFile(attachment) ? (
                           <StoredFile
@@ -1012,7 +1032,15 @@ export function App({
             sessionKey={threadId}
             dictationEnabled={section === "work"}
             draft={drafts[threadId] ?? ""}
-            onDraft={(text) => setDrafts((all) => ({ ...all, [threadId]: text }))}
+            mentionMembers={mentionMembers}
+            onMention={(text, mention) => {
+              mentionDraft.change(text, mention);
+              setDrafts((all) => ({ ...all, [threadId]: text }));
+            }}
+            onDraft={(text) => {
+              mentionDraft.change(text);
+              setDrafts((all) => ({ ...all, [threadId]: text }));
+            }}
             attachments={preparedAttachments}
             onFiles={addFiles}
             uploadsEnabled={uploadsEnabled}
