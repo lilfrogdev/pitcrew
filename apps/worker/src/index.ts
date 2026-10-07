@@ -18,6 +18,7 @@ export { RepoConversationAgent };
 import { resolveCatalog, validateFrozenModels, requiresUserOpenRouter } from "./model-selection";
 import { providerModelsRequest } from "./provider-models";
 import { attachmentStore, type AttachmentStore } from "./attachment-store";
+import { sqlUploadStore, type UploadStore } from "./uploads";
 import { VisualizationStore } from "./visualization-store";
 import { VisualizationTurnGrants } from "./visualization-turn-grants";
 import { VisualizationAuthorityGate } from "./visualization-authority-gate";
@@ -34,6 +35,7 @@ import {
 } from "../../../packages/protocol/src/visualizations";
 import {
   ATTACHMENT_LIMITS,
+  UPLOAD_LIMITS,
   type StoredImageAttachment,
   type ImageAttachment,
 } from "@pitcrew/protocol";
@@ -216,6 +218,7 @@ export class RepositoryAgent extends Agent<Env> {
         undefined,
         this.getImages(),
         (operation) => this.ctx.storage.transactionSync(operation),
+        this.getUploads(),
       );
       this.projectCoordinators.set(id, core);
       core.recover(this.env.EXECUTION_MODE === "cloud");
@@ -420,6 +423,31 @@ export class RepositoryAgent extends Agent<Env> {
     );
   }
   private imageStore?: AttachmentStore;
+  private uploadStore?: UploadStore;
+  private uploadCleanupScheduling?: Promise<void>;
+  private ensureUploadCleanup() {
+    return (this.uploadCleanupScheduling ??= (async () => {
+      const expiry = this.getUploads().nextExpiry();
+      if (
+        expiry !== undefined &&
+        !this.getSchedules().some((task) => task.callback === "cleanupUploads")
+      )
+        await this.schedule(new Date(Math.max(Date.now() + 1000, expiry)), "cleanupUploads");
+    })().finally(() => {
+      this.uploadCleanupScheduling = undefined;
+    }));
+  }
+  async cleanupUploads() {
+    this.getUploads().cleanup();
+    const expiry = this.getUploads().nextExpiry();
+    if (expiry !== undefined)
+      await this.schedule(new Date(Math.max(Date.now() + 1000, expiry)), "cleanupUploads");
+  }
+  private getUploads() {
+    return (this.uploadStore ??= sqlUploadStore(this.ctx.storage.sql, (operation) =>
+      this.ctx.storage.transactionSync(operation),
+    ));
+  }
   private getImages() {
     if (this.imageStore) return this.imageStore;
     void this
@@ -1257,6 +1285,7 @@ export class RepositoryAgent extends Agent<Env> {
       undefined,
       this.getImages(),
       (operation) => this.ctx.storage.transactionSync(operation),
+      this.getUploads(),
     );
     this.coordinator.recover(this.env.EXECUTION_MODE === "cloud");
     return this.coordinator;
@@ -1507,9 +1536,12 @@ export class RepositoryAgent extends Agent<Env> {
         },
       );
     }
-    const bodyLimit = /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
-      ? ATTACHMENT_LIMITS.requestBytes
-      : 16384;
+    const bodyLimit =
+      request.method === "PUT" && /\/uploads\/[^/]+$/.test(path)
+        ? UPLOAD_LIMITS.fileBytes
+        : /^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname)
+          ? ATTACHMENT_LIMITS.requestBytes
+          : 16384;
     if (Number(request.headers.get("content-length") ?? 0) > bodyLimit)
       return Response.json({ error: "body_too_large" }, { status: 413 });
     let providerReady =
@@ -1618,8 +1650,29 @@ export class RepositoryAgent extends Agent<Env> {
                 throw error;
               })
         : undefined,
+      this.getUploads(),
+      (operation) =>
+        this.visualizationAuthority
+          .run(async () => {
+            if (auth && user) {
+              // Recheck original session eligibility inside the same queue as logout
+              // and membership changes, immediately before byte/state work.
+              const current = await visualizationSession(auth, request, accessIdentity);
+              if (!current || current.actor !== identity.actor)
+                throw new AdmissionError("unauthorized", 401);
+            }
+            return operation();
+          })
+          .catch((error) => {
+            if (error instanceof VisualizationError)
+              throw new AdmissionError("uploads_unavailable", 503);
+            throw error;
+          }),
     );
-    return app.fetch(request);
+    const response = await app.fetch(request);
+    if (/\/uploads\//.test(path) && ["PUT", "DELETE"].includes(request.method) && response.ok)
+      await this.ensureUploadCleanup();
+    return response;
   }
 }
 export default {

@@ -6,6 +6,7 @@ import type {
 } from "./knowledge.ts";
 export * from "./knowledge.ts";
 export * from "./attachments.ts";
+export * from "./uploads.ts";
 export * from "./models.ts";
 import type { ModelSelection, ModelSettings, FrozenRunModels } from "./models.ts";
 import type { MessageAttachment, SubmittedAttachment } from "./attachments.ts";

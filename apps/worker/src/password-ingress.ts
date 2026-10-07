@@ -1,6 +1,7 @@
 /** The public password surface is deliberately narrower than the Access API. */
 export function passwordApiRoute(path: string, method: string) {
   const id = "[A-Za-z0-9:_-]{1,128}";
+  const upload = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
   const routes: Record<string, string[]> = {
     GET: [
       "auth/get-session",
@@ -15,6 +16,7 @@ export function passwordApiRoute(path: string, method: string) {
       `threads/${id}/(?:members|messages|changes|runs|turns|presence|attachments/${id})`,
       `changes/${id}(?:/runs)?`,
       `runs/${id}/(?:evidence|reviews)`,
+      `threads/${id}/uploads/${upload}`,
       "invitations/[a-f0-9]{64}",
     ],
     POST: [
@@ -24,7 +26,11 @@ export function passwordApiRoute(path: string, method: string) {
       `threads/${id}/(?:messages|invitations|presence)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
     ],
-    DELETE: [`(?:projects|threads)/${id}/members/[A-Za-z0-9:@._+-]{1,256}`],
+    PUT: [`threads/${id}/uploads/${upload}`],
+    DELETE: [
+      `threads/${id}/uploads/${upload}`,
+      `(?:projects|threads)/${id}/members/[A-Za-z0-9:@._+-]{1,256}`,
+    ],
   };
   return (routes[method] ?? []).some((route) => new RegExp(`^/api/${route}$`).test(path));
 }
@@ -108,7 +114,12 @@ export function passwordIngressRequest(
   const headers = new Headers(request.headers);
   for (const name of Array.from(headers.keys())) {
     if (
-      /^(?:cf-access-|x-pitcrew-)/i.test(name) ||
+      (/^(?:cf-access-|x-pitcrew-)/i.test(name) &&
+        !(
+          request.method === "PUT" &&
+          path.includes("/uploads/") &&
+          name === "x-pitcrew-filename"
+        )) ||
       ["authorization", "x-auth-mode", "x-user-id", "x-user-email", "x-forwarded-user"].includes(
         name,
       )

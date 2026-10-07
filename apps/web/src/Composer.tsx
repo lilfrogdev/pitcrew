@@ -1,18 +1,28 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import {
   ATTACHMENT_LIMITS,
+  type UploadSubmission,
+  type UploadReceipt,
   validateMessageAttachments,
   type SubmittedAttachment,
   type AttachmentCapabilities,
 } from "@pitcrew/protocol";
+import { UploadPreview } from "./uploads/Preview";
+import uploadStyles from "./uploads/uploads.module.css";
 import { Icon } from "./icons";
 import { useDictation } from "./useDictation";
 
 export interface AttachmentDraft {
   id: string;
   name: string;
-  status: "reading" | "ready" | "error";
-  attachment?: SubmittedAttachment;
+  status: "reading" | "uploading" | "ready" | "error";
+  attachment?: SubmittedAttachment | UploadSubmission;
+  size?: number;
+  upload?: UploadReceipt;
+  preview?: string;
+  video?: boolean;
+  progress?: number;
+  modelInput?: "text" | "image" | "storage";
   error?: string;
 }
 export function attachmentError(error: unknown): string {
@@ -32,6 +42,8 @@ export function Composer({
   attachments,
   onFiles,
   onRemove,
+  onRetry,
+  uploadsEnabled = false,
   onSend,
   disabled,
   sending,
@@ -49,6 +61,8 @@ export function Composer({
   attachments: AttachmentDraft[];
   onFiles: (files: File[]) => void;
   onRemove: (id: string) => void;
+  onRetry?: (id: string) => void;
+  uploadsEnabled?: boolean;
   onSend: (event: React.FormEvent) => void;
   disabled: boolean;
   sending: boolean;
@@ -133,23 +147,32 @@ export function Composer({
               >
                 <Icon kind="close" />
               </button>
-              {item.status === "reading" ? (
+              {item.size !== undefined ? (
+                <UploadPreview
+                  {...item}
+                  disabled={disabled}
+                  capabilities={capabilities}
+                  receipt={item.upload}
+                  retry={item.status === "error" ? () => onRetry?.(item.id) : undefined}
+                />
+              ) : item.status === "reading" ? (
                 <span role="status">Reading…</span>
               ) : item.status === "error" ? (
                 <span role="alert">{item.error}</span>
-              ) : item.attachment!.mediaType === "text/plain" ? (
+              ) : ("mediaType" in item.attachment! ? item.attachment!.mediaType : undefined) ===
+                "text/plain" ? (
                 <details className="attachment-text">
                   <summary title={item.name}>
                     <Icon kind="file" />
                     <span>{item.name}</span>
                   </summary>
-                  <pre>{item.attachment!.text}</pre>
+                  <pre>{"text" in item.attachment! ? item.attachment!.text : ""}</pre>
                 </details>
               ) : (
                 <img
                   className="attachment-image"
                   alt={`Preview of ${item.name}`}
-                  src={`data:${item.attachment!.mediaType};base64,${item.attachment!.data}`}
+                  src={`data:${"mediaType" in item.attachment! ? item.attachment!.mediaType : undefined};base64,${"data" in item.attachment! ? item.attachment!.data : ""}`}
                 />
               )}
             </li>
@@ -198,6 +221,11 @@ export function Composer({
           truncated.
         </p>
       )}
+      {uploadsEnabled && attachments.length > 0 && (
+        <p className={uploadStyles.hint}>
+          4 files · 8 MiB each · 16 MiB total. Stored files are private to this thread.
+        </p>
+      )}
       <div className="composer-footer">
         <input
           ref={input}
@@ -205,7 +233,7 @@ export function Composer({
           className="sr-only"
           tabIndex={-1}
           aria-label="Choose attachments"
-          accept={extensions}
+          accept={uploadsEnabled ? undefined : extensions}
           multiple
           disabled={disabled || !attachmentsEnabled}
           onChange={(event) => {
@@ -216,7 +244,13 @@ export function Composer({
         <button
           type="button"
           className="composer-attach"
-          title={attachmentsEnabled ? support : "Attachments require agent execution."}
+          title={
+            attachmentsEnabled
+              ? uploadsEnabled
+                ? "Images, videos and files · 4 files · 8 MiB each · 16 MiB total"
+                : support
+              : "Attachments unavailable for this connection."
+          }
           aria-label="Attach files"
           disabled={disabled || !attachmentsEnabled}
           onClick={() => input.current?.click()}

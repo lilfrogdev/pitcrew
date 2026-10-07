@@ -12,6 +12,8 @@ import type { LandingApi } from "./landing-api";
 import { AdmissionError, Coordinator } from "./coordinator";
 import type { Collaboration } from "./collaboration";
 import type { ThreadPresence } from "./thread-presence";
+import { stageUpload, type UploadStore, type UploadAuthority } from "./uploads";
+import { validUploadId, UPLOAD_LIMITS } from "@pitcrew/protocol";
 export function fixtureAccess(
   request: Request,
   env: { ENVIRONMENT: string; FIXTURE_IDENTITY?: string },
@@ -40,6 +42,8 @@ export function api(
   },
   presence?: ThreadPresence,
   presenceAuthority?: (operation: () => Response) => Promise<Response>,
+  uploads?: UploadStore,
+  uploadAuthority?: UploadAuthority,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("/api/threads/:threadId/presence", async (c, next) => {
@@ -161,6 +165,52 @@ export function api(
             ? 409
             : 500,
     ),
+  );
+  app.use("/api/threads/:threadId/uploads/:uploadId", async (c, next) => {
+    c.header("Cache-Control", "private, no-store");
+    c.header("X-Content-Type-Options", "nosniff");
+    if (!access || !uploads || !uploadAuthority)
+      throw new AdmissionError("uploads_unavailable", 503);
+    if (!validUploadId(c.req.param("uploadId")) || new URL(c.req.url).search)
+      throw new AdmissionError("invalid_upload_id");
+    access.requireThread(c.req.param("threadId"));
+    await next();
+  });
+  app.put("/api/threads/:threadId/uploads/:uploadId", async (c) =>
+    c.json(
+      await stageUpload(
+        c.req.raw,
+        c.req.param("uploadId"),
+        access!.identity.actor,
+        c.req.param("threadId"),
+        uploads!,
+        (operation) =>
+          uploadAuthority!(async () => {
+            access!.requireThread(c.req.param("threadId"));
+            return operation();
+          }),
+      ),
+      201,
+    ),
+  );
+  app.get("/api/threads/:threadId/uploads/:uploadId", (c) =>
+    uploadAuthority!(() => {
+      access!.requireThread(c.req.param("threadId"));
+      const receipt = uploads!.receipt(
+        c.req.param("uploadId"),
+        access!.identity.actor,
+        c.req.param("threadId"),
+      );
+      if (!receipt) throw new AdmissionError("upload_unavailable", 404);
+      return c.json(receipt);
+    }),
+  );
+  app.delete("/api/threads/:threadId/uploads/:uploadId", (c) =>
+    uploadAuthority!(() => {
+      access!.requireThread(c.req.param("threadId"));
+      uploads!.remove(c.req.param("uploadId"), access!.identity.actor, c.req.param("threadId"));
+      return c.json({ ok: true });
+    }),
   );
   app.get("/api/threads/:threadId/source/:action", async (c) => {
     const action = c.req.param("action");
@@ -381,19 +431,36 @@ export function api(
     );
   });
   app.get("/api/threads/:threadId/attachments/:attachmentId", (c) => {
-    const image = coordinator.readThreadAttachment(
-      c.req.param("threadId"),
-      c.req.param("attachmentId"),
-    );
-    const bytes = Uint8Array.from(atob(image.data), (character) => character.charCodeAt(0));
-    return new Response(bytes, {
-      headers: {
-        "content-type": image.mediaType,
-        "x-content-type-options": "nosniff",
-        "cache-control": "private, no-store",
-        "content-security-policy": "default-src 'none'; sandbox",
-      },
-    });
+    const download = () => {
+      access?.requireThread(c.req.param("threadId"));
+      const image = coordinator.readThreadAttachment(
+        c.req.param("threadId"),
+        c.req.param("attachmentId"),
+      );
+      if ("bytes" in image)
+        return new Response(image.bytes.slice().buffer, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(image.row.name).replace(/[!'()*]/g, (character) => "%" + character.charCodeAt(0).toString(16))}`,
+            "Content-Length": String(image.row.size),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "default-src 'none'; sandbox; frame-ancestors 'none'",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "Referrer-Policy": "no-referrer",
+          },
+        });
+      const bytes = Uint8Array.from(atob(image.data), (character) => character.charCodeAt(0));
+      return new Response(bytes, {
+        headers: {
+          "content-type": image.mediaType,
+          "x-content-type-options": "nosniff",
+          "cache-control": "private, no-store",
+          "content-security-policy": "default-src 'none'; sandbox",
+        },
+      });
+    };
+    return uploadAuthority ? uploadAuthority(download) : download();
   });
   app.get("/api/threads/:threadId/turns", (c) => {
     coordinator.thread(c.req.param("threadId"));
@@ -411,44 +478,59 @@ export function api(
   });
   app.post("/api/threads/:threadId/messages", async (c) => {
     const body = c.get("body");
+    const admit = async <T>(operation: () => T) =>
+      uploadAuthority
+        ? uploadAuthority(() => {
+            access?.requireThread(c.req.param("threadId"));
+            return operation();
+          })
+        : operation();
     if (executionDisabled) {
       if (
+        !uploads &&
         body.attachments !== undefined &&
         (!Array.isArray(body.attachments) || body.attachments.length)
       )
         throw new AdmissionError("note_attachments_unavailable");
       return c.json(
-        coordinator.appendNote(
-          c.req.param("threadId"),
-          body.content as string,
-          body.idempotencyKey as string,
-          identity.actor,
-          access?.identity,
+        await admit(() =>
+          coordinator.appendNote(
+            c.req.param("threadId"),
+            body.content as string,
+            body.idempotencyKey as string,
+            identity.actor,
+            access?.identity,
+            body.attachments,
+          ),
         ),
         201,
       );
     }
     if (conversation) {
-      const result = coordinator.queueTurn(
-        c.req.param("threadId"),
-        body.content as string,
-        body.idempotencyKey as string,
-        identity.actor,
-        conversation.catalog,
-        body.modelSelection,
-        body.attachments,
-        access?.identity,
+      const result = await admit(() =>
+        coordinator.queueTurn(
+          c.req.param("threadId"),
+          body.content as string,
+          body.idempotencyKey as string,
+          identity.actor,
+          conversation.catalog,
+          body.modelSelection,
+          body.attachments,
+          access?.identity,
+        ),
       );
       await conversation.dispatch(result.turn.id);
       return c.json(result, 201);
     }
-    const result = coordinator.submit(
-      c.req.param("threadId"),
-      body.content as string,
-      body.idempotencyKey as string,
-      identity.actor,
-      body.attachments,
-      access?.identity,
+    const result = await admit(() =>
+      coordinator.submit(
+        c.req.param("threadId"),
+        body.content as string,
+        body.idempotencyKey as string,
+        identity.actor,
+        body.attachments,
+        access?.identity,
+      ),
     );
     await dispatch(result.run.id);
     return c.json(result, 201);
@@ -502,6 +584,7 @@ export function api(
   app.get("/api/capabilities", (c) =>
     c.json({
       landing: { enabled: !!landing, backend: landing?.backend ?? null },
+      ...(uploads && access && uploadAuthority ? { uploads: UPLOAD_LIMITS } : {}),
       ...(executionDisabled ? { notesEnabled: true } : {}),
       ...(conversation
         ? {

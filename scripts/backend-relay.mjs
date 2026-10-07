@@ -26,6 +26,17 @@ const statuses = new Set([
   "deleted",
 ]);
 const safeErrors = new Set([
+  "invalid_upload",
+  "invalid_upload_id",
+  "invalid_upload_name",
+  "invalid_upload_type",
+  "upload_unavailable",
+  "upload_capacity",
+  "upload_conflict",
+  "upload_cancelled",
+  "upload_too_large",
+  "upload_timeout",
+  "uploads_unavailable",
   "repository_backend_unavailable",
   "repository_name_retired",
   "deletion_pending",
@@ -84,6 +95,7 @@ function sharedRoute(path, method, passwordMode = false) {
       `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
       `threads/${id}/source/(?:tree|file|diff)`,
       `projects/${id}/threads/${id}/visualizations(?:/${id})?`,
+      `threads/${id}/uploads/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`,
       `threads/${id}/(?:members|messages|changes|runs|turns|presence|attachments/${id})`,
       `changes/${id}(?:/runs)?`,
       `runs/${id}/(?:evidence|reviews)`,
@@ -97,7 +109,11 @@ function sharedRoute(path, method, passwordMode = false) {
       `runs/${id}/(?:merge-approval|landing(?:/reconcile)?)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
     ],
-    DELETE: [`(?:projects|threads)/${id}/members/[A-Za-z0-9:@._%+-]{1,256}`],
+    PUT: [`threads/${id}/uploads/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`],
+    DELETE: [
+      `threads/${id}/uploads/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`,
+      `(?:projects|threads)/${id}/members/[A-Za-z0-9:@._%+-]{1,256}`,
+    ],
   };
   if (passwordMode)
     routes.POST = [
@@ -221,6 +237,7 @@ function admitted(req, origin) {
     "host",
     "origin",
     "content-type",
+    "x-pitcrew-filename",
     "x-pitcrew-backend-nonce",
     "x-pitcrew-local-nonce",
     "x-pitcrew-connection-nonce",
@@ -249,8 +266,11 @@ function cookie(req) {
     ? values[0].slice(cookieName.length + 1)
     : undefined;
 }
-async function body(req, limit = 8192) {
-  if (req.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json")
+async function body(req, limit = 8192, binary = false) {
+  if (
+    !binary &&
+    req.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json"
+  )
     throw Object.assign(Error(), { status: 415 });
   const chunks = [];
   let size = 0;
@@ -264,6 +284,7 @@ async function body(req, limit = 8192) {
   } finally {
     clearTimeout(timer);
   }
+  if (binary) return Buffer.concat(chunks);
   const parsed = JSON.parse(
     new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
   );
@@ -566,9 +587,11 @@ export function createBackendRelayMiddleware({
       req.method === "GET" &&
       (shared || provider || models || url.pathname === "/api/repositories");
     const write =
-      (shared && ["POST", "DELETE"].includes(req.method)) ||
+      (shared && ["POST", "PUT", "DELETE"].includes(req.method)) ||
       (req.method === "POST" &&
         (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname)));
+    const uploadCancel = shared && req.method === "DELETE" && /\/uploads\//.test(url.pathname);
+    const uploadWrite = shared && req.method === "PUT" && /\/uploads\//.test(url.pathname);
     const presenceWrite = shared && write && url.pathname.endsWith("/presence");
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
@@ -602,6 +625,8 @@ export function createBackendRelayMiddleware({
     )
       return reply(res, 400, { error: "invalid_cursor" });
     let content;
+    let uploadAccess;
+    let uploadAccountCookie;
     if (write) {
       const nonce = cookie(req);
       if (
@@ -620,20 +645,39 @@ export function createBackendRelayMiddleware({
         )
       )
         return reply(res, 403, { error: "backend_session_required" });
+      if (uploadWrite) {
+        // Bind file selection to the account present before reading its bytes.
+        // Another tab may replace this local vault while the stream is pending.
+        uploadAccess = passwordMode ? "" : await token();
+        const captured = sessionHeaders ? await sessionHeaders(req, uploadAccess) : {};
+        uploadAccountCookie = captured.Cookie;
+        if (!uploadAccountCookie) return reply(res, 401, { error: "unauthorized" });
+      }
       try {
         content =
           req.method === "DELETE"
             ? undefined
             : await body(
                 req,
-                shared && url.pathname.endsWith("/presence")
-                  ? 512
-                  : shared && url.pathname.endsWith("/messages")
-                    ? 2097152
-                    : shared
-                      ? 16384
-                      : 8192,
+                uploadWrite
+                  ? 8388608
+                  : shared && url.pathname.endsWith("/presence")
+                    ? 512
+                    : shared && url.pathname.endsWith("/messages")
+                      ? 2097152
+                      : shared
+                        ? 16384
+                        : 8192,
+                uploadWrite,
               );
+        if (
+          uploadWrite &&
+          (typeof req.headers["x-pitcrew-filename"] !== "string" ||
+            req.headers["x-pitcrew-filename"].length > 1536 ||
+            typeof req.headers["content-type"] !== "string" ||
+            req.headers["content-type"].length > 128)
+        )
+          throw Error();
         if (provider) {
           const fields = Object.keys(content).sort().join(",");
           if (
@@ -660,33 +704,46 @@ export function createBackendRelayMiddleware({
       } catch (error) {
         return reply(res, error.status ?? 400, { error: "invalid_repository_request" });
       }
-      if (busy && !presenceWrite) return reply(res, 409, { error: "backend_relay_busy" });
+      if (busy && !presenceWrite && !uploadCancel && !uploadWrite)
+        return reply(res, 409, { error: "backend_relay_busy" });
     }
     // Ephemeral writes do not lock message/approval writes, and leave their last slot free.
-    if (active >= (presenceWrite ? 3 : 4))
+    if (active >= (presenceWrite || uploadWrite ? 3 : 4))
       return reply(res, 429, { error: "backend_relay_capacity" });
     active++;
-    if (write && !presenceWrite) busy = true;
+    if (write && !presenceWrite && !uploadCancel && !uploadWrite) busy = true;
     try {
       // This explicit mode never probes Access or touches a cloudflared cache.
-      const access = passwordMode ? "" : await token();
+      const access = uploadAccess ?? (passwordMode ? "" : await token());
       const authHeaders = sessionHeaders ? await sessionHeaders(req, access) : {};
       if ((passwordMode || sharedApi) && !authHeaders.Cookie)
         return reply(res, 401, { error: "unauthorized" });
+      if (uploadWrite && authHeaders.Cookie !== uploadAccountCookie)
+        return reply(res, 409, { error: "backend_account_changed" });
       // Rebuild headers. Never forward browser Cookie/Authorization/identity, nonce or hints.
       const response = await fetchImpl(
         `${BACKEND_ACCESS.origin}${passwordMode ? "/app" : ""}${url.pathname}${url.search}`,
         {
           method: req.method,
           redirect: "manual",
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(uploadWrite ? 45000 : 10000),
           headers: {
             Accept: "application/json",
             ...(!passwordMode ? { "Cf-Access-Token": access } : {}),
-            ...(authHeaders.Cookie ? { Cookie: authHeaders.Cookie } : {}),
-            ...(write ? { Origin: BACKEND_ACCESS.origin, "Content-Type": "application/json" } : {}),
+            ...(authHeaders.Cookie
+              ? { Cookie: uploadWrite ? uploadAccountCookie : authHeaders.Cookie }
+              : {}),
+            ...(write
+              ? {
+                  Origin: BACKEND_ACCESS.origin,
+                  "Content-Type": uploadWrite ? req.headers["content-type"] : "application/json",
+                }
+              : {}),
+            ...(uploadWrite ? { "X-Pitcrew-Filename": req.headers["x-pitcrew-filename"] } : {}),
           },
-          ...(write && content !== undefined ? { body: JSON.stringify(content) } : {}),
+          ...(write && content !== undefined
+            ? { body: uploadWrite ? content : JSON.stringify(content) }
+            : {}),
         },
       );
       if (
@@ -701,7 +758,15 @@ export function createBackendRelayMiddleware({
       }
       if (shared && response.ok && /\/attachments\//.test(url.pathname)) {
         const mediaType = response.headers.get("content-type");
-        if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mediaType))
+        if (
+          ![
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "application/octet-stream",
+          ].includes(mediaType)
+        )
           throw Error();
         const reader = response.body?.getReader();
         if (!reader) throw Error();
@@ -712,7 +777,8 @@ export function createBackendRelayMiddleware({
             const chunk = await reader.read();
             if (chunk.done) break;
             length += chunk.value.byteLength;
-            if (length > 1048576) throw Error();
+            if (length > (mediaType === "application/octet-stream" ? 8388608 : 1048576))
+              throw Error();
             chunks.push(chunk.value);
           }
         } finally {
@@ -720,6 +786,18 @@ export function createBackendRelayMiddleware({
         }
         res.writeHead(response.status, {
           "Content-Type": mediaType,
+          ...(mediaType === "application/octet-stream"
+            ? {
+                "Content-Disposition":
+                  /^attachment; filename="download"; filename\*=UTF-8\x27\x27[A-Za-z0-9%_.~-]{1,1536}$/.test(
+                    response.headers.get("content-disposition") ?? "",
+                  )
+                    ? response.headers.get("content-disposition")
+                    : "attachment; filename=download",
+              }
+            : {}),
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "Referrer-Policy": "no-referrer",
           "Cache-Control": "private, no-store",
           "X-Content-Type-Options": "nosniff",
           "Content-Security-Policy": "default-src 'none'; sandbox",
@@ -763,7 +841,7 @@ export function createBackendRelayMiddleware({
       return reply(res, 503, { error: "repository_backend_unavailable" });
     } finally {
       active--;
-      if (write && !presenceWrite) busy = false;
+      if (write && !presenceWrite && !uploadCancel && !uploadWrite) busy = false;
     }
   };
 }

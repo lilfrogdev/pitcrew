@@ -302,6 +302,97 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     }[];
     expect(messages).toHaveLength(8);
     expect(messages.every((note) => [...actors.values()].includes(note.author.actor))).toBe(true);
+    // Actual production ingress/account/session/DO path, synthetic bytes only.
+    const upload = (id: string, bytes: Uint8Array, name: string, type: string, email = emails[0]) =>
+      mf.dispatchFetch(`${base}/app/api/threads/${thread.id}/uploads/${id}`, {
+        method: "PUT",
+        body: bytes,
+        headers: {
+          origin: base,
+          cookie: cookies.get(email)!,
+          "content-type": type,
+          "x-pitcrew-filename": encodeURIComponent(name),
+          "x-user-id": "access:forged",
+          "cf-access-jwt-assertion": "forged",
+        },
+      });
+    const syntheticFiles = [
+      {
+        name: "synthetic.png",
+        type: "image/png",
+        bytes: Uint8Array.from(
+          atob(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+          ),
+          (c) => c.charCodeAt(0),
+        ),
+      },
+      {
+        name: "synthetic.mp4",
+        type: "video/mp4",
+        bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109]),
+      },
+      {
+        name: "synthetic.pdf",
+        type: "application/pdf",
+        bytes: new TextEncoder().encode("%PDF-1.4 synthetic fixture only"),
+      },
+      {
+        name: "synthetic.txt",
+        type: "text/plain",
+        bytes: new TextEncoder().encode("Synthetic account uploads only."),
+      },
+    ].map((file) => ({ ...file, id: crypto.randomUUID() }));
+    for (const file of syntheticFiles) {
+      const staged = await upload(file.id, file.bytes, file.name, file.type);
+      expect(staged.status, await staged.clone().text()).toBe(201);
+      expect(await staged.json()).toMatchObject({
+        uploadId: file.id,
+        name: file.name,
+        size: file.bytes.length,
+      });
+      expect((await app(`/threads/${thread.id}/uploads/${file.id}`, emails[1])).status).toBe(404);
+      expect((await app(`/threads/${thread.id}/attachments/${file.id}`)).status).toBe(404);
+    }
+    expect(
+      (
+        await app(`/threads/${thread.id}/messages`, emails[1], "POST", {
+          content: "Cannot adopt another account's staged file",
+          idempotencyKey: "upload-steal",
+          attachments: [{ uploadId: syntheticFiles[0].id, modelInput: "storage" }],
+        })
+      ).status,
+    ).toBe(404);
+    const uploadedNote = {
+      content: "Four synthetic stored files",
+      idempotencyKey: "four-upload-note",
+      attachments: syntheticFiles.map((file) => ({ uploadId: file.id, modelInput: "storage" })),
+    };
+    expect(
+      (await app(`/threads/${thread.id}/messages`, emails[0], "POST", uploadedNote)).status,
+    ).toBe(201);
+    expect(
+      (await app(`/threads/${thread.id}/messages`, emails[0], "POST", uploadedNote)).status,
+    ).toBe(201);
+    for (const file of syntheticFiles) {
+      const download = await app(`/threads/${thread.id}/attachments/${file.id}`, emails[1]);
+      expect(download.status).toBe(200);
+      expect(download.headers.get("content-type")).toBe("application/octet-stream");
+      expect(download.headers.get("content-disposition")).toContain("attachment;");
+      expect(new Uint8Array(await download.arrayBuffer())).toEqual(file.bytes);
+    }
+    const removedUpload = crypto.randomUUID();
+    expect(
+      (await upload(removedUpload, new Uint8Array([1]), "removed.bin", "application/octet-stream"))
+        .status,
+    ).toBe(201);
+    expect(
+      (await app(`/threads/${thread.id}/uploads/${removedUpload}`, emails[0], "DELETE")).status,
+    ).toBe(200);
+    expect(
+      (await upload(removedUpload, new Uint8Array([1]), "removed.bin", "application/octet-stream"))
+        .status,
+    ).toBe(409);
     const capabilities = await (await app(`/capabilities?projectId=${project.id}`)).json();
     expect(capabilities).toMatchObject({ notesEnabled: true, landing: { enabled: false } });
     for (const path of [
@@ -387,6 +478,8 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     let staleRead: ReturnType<typeof app> | undefined;
     let staleTyping: ReturnType<typeof app> | undefined;
     let stalePeers: ReturnType<typeof app> | undefined;
+    let staleDownload: ReturnType<typeof app> | undefined;
+    let staleUpload: ReturnType<typeof upload> | undefined;
     try {
       await waitPending(2);
       staleRead = app(visualizationPath);
@@ -395,6 +488,15 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       await waitPending(4);
       stalePeers = app(presencePath);
       await waitPending(5);
+      staleDownload = app(`/threads/${thread.id}/attachments/${syntheticFiles[0].id}`);
+      await waitPending(6);
+      staleUpload = upload(
+        crypto.randomUUID(),
+        new Uint8Array([2]),
+        "revoked.bin",
+        "application/octet-stream",
+      );
+      await waitPending(7);
     } finally {
       await repository.releaseAuthority();
     }
@@ -402,6 +504,8 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     expect((await staleRead!).status).toBe(401);
     expect((await staleTyping!).status).toBe(401);
     expect((await stalePeers!).status).toBe(401);
+    expect((await staleDownload!).status).toBe(401);
+    expect((await staleUpload!).status).toBe(401);
     expect((await app(visualizationPath)).status).toBe(401);
     const replacement = await app("/auth/sign-in/email", emails[0], "POST", {
       email: emails[0],
@@ -437,7 +541,12 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       configured: true,
       executionEnabled: false,
     });
-    expect(await (await app(`/threads/${thread.id}/messages`, emails[1])).json()).toHaveLength(8);
+    expect(await (await app(`/threads/${thread.id}/messages`, emails[1])).json()).toHaveLength(9);
+    for (const file of syntheticFiles) {
+      const download = await app(`/threads/${thread.id}/attachments/${file.id}`);
+      expect(download.status).toBe(200);
+      expect(new Uint8Array(await download.arrayBuffer())).toEqual(file.bytes);
+    }
     expect(
       (
         await app(
@@ -454,6 +563,20 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     );
     expect(await (await app(presencePath)).json()).toEqual({ typers: [] });
     expect((await app(visualizationPath, emails[1])).status).toBe(404);
+    expect(
+      (await app(`/threads/${thread.id}/attachments/${syntheticFiles[0].id}`, emails[1])).status,
+    ).toBe(404);
+    expect(
+      (
+        await upload(
+          crypto.randomUUID(),
+          new Uint8Array([1]),
+          "denied.bin",
+          "application/octet-stream",
+          emails[1],
+        )
+      ).status,
+    ).toBe(404);
     expect(
       (
         await app(`/threads/${thread.id}/messages`, emails[1], "POST", {
@@ -475,6 +598,9 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     expect(loggedOut.status).toBe(200);
     expect((await app("/account")).status).toBe(401);
     expect((await app(presencePath)).status).toBe(401);
+    expect((await app(`/threads/${thread.id}/attachments/${syntheticFiles[0].id}`)).status).toBe(
+      401,
+    );
     expect((await request("/api/account")).status).toBe(403);
   } finally {
     await mf.dispose();

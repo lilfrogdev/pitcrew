@@ -1,3 +1,5 @@
+import { isStoredFile } from "@pitcrew/protocol";
+import { StoredFile } from "./uploads/Preview";
 import { useEffect, useRef, useState, type ReactNode, type CSSProperties } from "react";
 import {
   IconWorld,
@@ -245,7 +247,15 @@ export function Workspace({
               {selectedFile && (
                 <article className="workspace-file">
                   <h3>{selectedFile.name}</h3>
-                  {selectedFile.mediaType === "text/plain" ? (
+                  {isStoredFile(selectedFile) ? (
+                    <StoredFile
+                      attachment={selectedFile}
+                      url={
+                        api.attachmentUrl?.(selectedFile.threadId, selectedFile.attachmentId) ??
+                        `/api/threads/${encodeURIComponent(selectedFile.threadId)}/attachments/${encodeURIComponent(selectedFile.attachmentId)}`
+                      }
+                    />
+                  ) : selectedFile.mediaType === "text/plain" ? (
                     <pre>{selectedFile.text}</pre>
                   ) : (
                     <img
