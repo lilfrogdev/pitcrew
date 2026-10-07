@@ -40,11 +40,13 @@ export function AuthGate({
   const keyboardFocus = useKeyboardFocus();
   const generation = useRef(0);
   const operation = useRef(0);
+  const submitting = useRef(false);
   useEffect(() => {
     if (!checking) heading.current?.focus();
   }, [entry.mode, checking]);
   const check = useCallback(
     async (foreground = true) => {
+      if (!foreground && submitting.current) return;
       const current = ++generation.current;
       if (foreground) setChecking(true);
       try {
@@ -69,6 +71,7 @@ export function AuthGate({
     const online = () => void check(false);
     const required = () => {
       operation.current++;
+      submitting.current = false;
       setSession(null);
       setBusy(false);
       setEntry({ mode: "sign-in", code: "" });
@@ -86,6 +89,7 @@ export function AuthGate({
     return () => {
       generation.current++;
       operation.current++;
+      submitting.current = false;
       if (password.current) password.current.value = "";
       window.removeEventListener("online", online);
       window.removeEventListener("pitcrew-auth-required", required);
@@ -115,8 +119,10 @@ export function AuthGate({
   };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy || (entry.mode === "enroll" && !entry.code)) return;
+    if (submitting.current || (entry.mode === "enroll" && !entry.code)) return;
     const current = ++operation.current;
+    submitting.current = true;
+    generation.current++;
     const secret = password.current?.value ?? "";
     if (password.current) password.current.value = "";
     setBusy(true);
@@ -142,7 +148,10 @@ export function AuthGate({
             : "Could not set up this account. Check your details and private setup link.",
         );
     } finally {
-      if (current === operation.current) setBusy(false);
+      if (current === operation.current) {
+        submitting.current = false;
+        setBusy(false);
+      }
     }
   };
   const enrolling = entry.mode === "enroll";

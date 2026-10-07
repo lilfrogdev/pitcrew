@@ -375,6 +375,49 @@ it("reads the account directory envelope and scopes capabilities to the selected
   expect(fetch.mock.calls[1][0]).toBe("/api/capabilities?projectId=repo%20%2F%20one");
 });
 
+it("reads approved adoptions without caching and submits only the exact name and immutable repository ID", async () => {
+  const candidate = { name: "approved target", repositoryId: "immutable/id" };
+  const fetch = vi.fn(async (path: string, _init?: RequestInit) =>
+    Response.json(
+      path === "/api/project-adoptions"
+        ? [{ ...candidate, actor: "private" }]
+        : { id: "project-1" },
+    ),
+  );
+  withSession(fetch);
+  expect(await httpApi.collaboration!.approvedProjectAdoptions!()).toEqual([candidate]);
+  await httpApi.collaboration!.adoptProject!(candidate.name, candidate.repositoryId);
+  expect(fetch.mock.calls[0]).toEqual([
+    "/api/project-adoptions",
+    expect.objectContaining({ method: "GET", cache: "no-store" }),
+  ]);
+  expect(fetch.mock.calls[1]).toEqual([
+    "/api/projects",
+    expect.objectContaining({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(candidate),
+    }),
+  ]);
+});
+
+it("rejects malformed approved-adoption responses and empty target identifiers", async () => {
+  for (const value of [
+    { adoptions: [] },
+    [null],
+    [{ name: "repo", repositoryId: "" }],
+    [{ name: "", repositoryId: "id" }],
+  ]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(value)),
+    );
+    await expect(httpApi.collaboration!.approvedProjectAdoptions!()).rejects.toBeInstanceOf(
+      ApiError,
+    );
+  }
+});
+
 it("bounds simultaneous product reads and releases a slot after an interrupted request", async () => {
   let active = 0,
     maximum = 0,
