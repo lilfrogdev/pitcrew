@@ -71,6 +71,7 @@ export class AdmissionError extends Error {
   }
 }
 export interface State {
+  repositoryLifecycle?: "deleting" | "deleted";
   identityBindings?: Record<string, { userId: string; email: string }>;
   collaboration?: import("./collaboration").CollaborationState;
   ownedProjects?: Record<
@@ -180,6 +181,7 @@ export class Coordinator {
     email: string,
     configuration?: Pick<Project, "baseSha" | "configurationRevision">,
     profile?: import("./collaboration").Identity,
+    metadata?: { displayName: string; description: string },
   ) {
     return this.durableUpdate(() => {
       const directory = (this.state.ownedProjects ??= {});
@@ -189,7 +191,8 @@ export class Coordinator {
       const id = this.id();
       const projectState = initialState({
         id,
-        name: sourceName,
+        name: metadata?.displayName ?? sourceName,
+        ...(metadata ? { description: metadata.description, metadataRevision: 0 } : {}),
         repository: `artifact:${sourceName}`,
         // An empty source has no commit. Execution remains gated until an
         // independently verified initial commit supplies a real base SHA.
@@ -223,10 +226,31 @@ export class Coordinator {
     this.durableUpdate(() => {
       const entry = this.state.ownedProjects?.[id];
       if (!entry) throw new AdmissionError("not_found", 404);
+      if (entry.state.repositoryLifecycle && !state.repositoryLifecycle)
+        throw new AdmissionError("not_found", 404);
       entry.state = structuredClone(state);
       if (new TextEncoder().encode(JSON.stringify(this.state)).byteLength > 16 * 1024 * 1024)
         throw new AdmissionError("repository_storage_limit", 413);
     });
+  }
+  updateRepositoryMetadata(displayName: string, description: string, expectedRevision?: number) {
+    return this.durableUpdate(() => {
+      const revision = this.state.project.metadataRevision ?? 0;
+      if (expectedRevision !== undefined && expectedRevision !== revision)
+        throw new AdmissionError("revision_conflict", 409);
+      this.state.project.name = displayName;
+      this.state.project.description = description;
+      this.state.project.metadataRevision = revision + 1;
+      return { ...this.state.project };
+    });
+  }
+  freezeRepository(status: "deleting" | "deleted") {
+    if (this.state.repositoryLifecycle === "deleted") return;
+    return this.durableUpdate(() => {
+      this.state.repositoryLifecycle = status;
+      for (const invite of Object.values(this.state.collaboration?.invitations ?? {}))
+        invite.revokedAt ??= new Date().toISOString();
+    }, true);
   }
   updateCollaboration<T>(operation: (state: State) => T): T {
     return this.durableUpdate(() => operation(this.state));
@@ -827,6 +851,7 @@ export class Coordinator {
     return this.attachments.get(reference);
   }
   private transaction<T>(key: string, body: unknown, operation: () => T): T {
+    if (this.state.repositoryLifecycle) throw new AdmissionError("not_found", 404);
     const serialized = JSON.stringify(body),
       previous = this.state.keys[key];
     if (previous) {
@@ -847,7 +872,8 @@ export class Coordinator {
       throw error;
     }
   }
-  private durableUpdate<T>(operation: () => T): T {
+  private durableUpdate<T>(operation: () => T, lifecycle = false): T {
+    if (this.state.repositoryLifecycle && !lifecycle) throw new AdmissionError("not_found", 404);
     const before = structuredClone(this.state);
     try {
       return this.atomic(() => {
@@ -1625,6 +1651,7 @@ export class Coordinator {
     this.persist(this.state);
   }
   actorAuthorized(actor: string | undefined, threadId: string) {
+    if (this.state.repositoryLifecycle) return false;
     const access = this.state.collaboration;
     return (
       !access ||

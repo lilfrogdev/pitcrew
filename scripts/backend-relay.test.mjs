@@ -78,6 +78,28 @@ async function session(handler) {
     "content-type": "application/json",
   };
 }
+async function nativeManagementHeaders(handler) {
+  const response = await request(handler, "/api/local-session");
+  assert.equal(response.status, 200);
+  return {
+    origin,
+    cookie: `pitcrew-backend-nonce=${response.json.nonce}`,
+    "x-pitcrew-local-nonce": response.json.nonce,
+    "content-type": "application/json",
+  };
+}
+const managedRepository = {
+  projectId: "synthetic-project",
+  name: "Website workspace",
+  repositoryName: "synthetic-site",
+  repositoryId: "immutable-synthetic-id",
+  description: "Synthetic repository description",
+  metadataRevision: 2,
+  role: "owner",
+  status: "present",
+  lifecycle: "registered",
+  deletable: true,
+};
 test("both runtime opt-ins default off without token reads or network calls", async () => {
   for (const options of [{ enabled: false }, { userAccessSession: false }]) {
     const f = fixture(options);
@@ -1380,4 +1402,437 @@ test("a slow upload cannot move its selected bytes to a replacement account", as
   assert.equal(result.status, 409);
   assert.equal(result.json.error, "backend_account_changed");
   assert.equal(cloud.length, 0);
+});
+
+test("native management discovers capabilities and safe physical identity alongside display metadata", async () => {
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-held-session" }),
+    fetchImpl: async (url) =>
+      Response.json(
+        url.endsWith("repository-creations")
+          ? {
+              approval: null,
+              capabilities: { create: true, manage: true, token: "private-provider-value" },
+              creations: [],
+            }
+          : {
+              repositories: [
+                {
+                  ...managedRepository,
+                  token: "private-provider-value",
+                  ownerActor: "private-owner",
+                },
+              ],
+              cursor: null,
+            },
+      ),
+  });
+  assert.deepEqual((await request(f.handler, "/api/repository-creations")).json, {
+    approval: null,
+    capabilities: { create: true, manage: true },
+    creations: [],
+  });
+  const directory = await request(f.handler, "/api/repositories");
+  assert.equal(directory.status, 200);
+  assert.deepEqual(directory.json.repositories[0], managedRepository);
+  assert.ok(!directory.text.includes("private-provider-value"));
+  assert.ok(!directory.text.includes("private-owner"));
+  assert.equal(f.tokens.length, 0);
+});
+
+test("native metadata and deletion accept only explicit routes, strict bodies, nonce and origin", async () => {
+  const forwarded = [];
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-original-session" }),
+    fetchImpl: async (url, init) => {
+      forwarded.push({ url, init });
+      return Response.json(
+        init.method === "PATCH"
+          ? {
+              id: managedRepository.projectId,
+              name: "Edited workspace",
+              repository: "artifact:synthetic-site",
+              baseSha: "0".repeat(40),
+              configurationRevision: "uninitialized-v1",
+              description: "Edited description",
+              metadataRevision: 3,
+              token: "private-provider-value",
+            }
+          : {
+              ...managedRepository,
+              status: "deleting",
+              lifecycle: "deleting",
+              deletable: false,
+              token: "private-provider-value",
+            },
+        { status: init.method === "PATCH" ? 200 : 202 },
+      );
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  const metadataPath = `/api/projects/${managedRepository.projectId}/repository`;
+  const validEdit = {
+    displayName: "Edited workspace",
+    description: "Edited description",
+    expectedRevision: 2,
+  };
+  assert.equal(
+    (await request(f.handler, metadataPath, { method: "PATCH", body: JSON.stringify(validEdit) }))
+      .status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(f.handler, metadataPath, {
+        method: "PATCH",
+        headers: { ...headers, origin: "https://invalid.test" },
+        body: JSON.stringify(validEdit),
+      })
+    ).status,
+    403,
+  );
+  for (const invalid of [
+    { ...validEdit, actor: "account:forged" },
+    { ...validEdit, expectedRevision: -1 },
+    { ...validEdit, displayName: "\u0000secret" },
+    { displayName: "Missing description" },
+    { ...validEdit, description: "x".repeat(1001) },
+  ])
+    assert.equal(
+      (
+        await request(f.handler, metadataPath, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify(invalid),
+        })
+      ).status,
+      400,
+    );
+  const edited = await request(f.handler, metadataPath, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify(validEdit),
+  });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.json.name, "Edited workspace");
+  assert.equal(edited.json.repository, "artifact:synthetic-site");
+  assert.ok(!edited.text.includes("private-provider-value"));
+  const deletePath = metadataPath + "/delete";
+  const deletion = {
+    confirmation: managedRepository.repositoryName,
+    repositoryId: managedRepository.repositoryId,
+  };
+  for (const invalid of [
+    { confirmation: "Website workspace", repositoryId: managedRepository.repositoryId },
+    { ...deletion, owner: "account:forged" },
+    { confirmation: deletion.confirmation },
+  ])
+    assert.equal(
+      (
+        await request(f.handler, deletePath, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(invalid),
+        })
+      ).status,
+      400,
+    );
+  assert.equal(
+    (
+      await request(f.handler, deletePath + "?actor=forged", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(deletion),
+      })
+    ).status,
+    400,
+  );
+  const deleting = await request(f.handler, deletePath, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(deletion),
+  });
+  assert.equal(deleting.status, 202);
+  assert.deepEqual(deleting.json, {
+    ...managedRepository,
+    status: "deleting",
+    lifecycle: "deleting",
+    deletable: false,
+  });
+  assert.ok(!deleting.text.includes("private-provider-value"));
+  assert.equal(forwarded.length, 2);
+  assert.equal(forwarded[0].init.headers.Cookie, "synthetic-original-session");
+  assert.deepEqual(JSON.parse(forwarded[1].init.body), deletion);
+  assert.equal(
+    (
+      await request(f.handler, "/api/repositories/delete", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(deletion),
+      })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await request(f.handler, metadataPath + "/rename", {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify(validEdit),
+      })
+    ).status,
+    404,
+  );
+  const accessMode = fixture({
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-access-session" }),
+  });
+  assert.equal(
+    (
+      await request(accessMode.handler, metadataPath, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify(validEdit),
+      })
+    ).status,
+    404,
+  );
+});
+
+test("native general creation forwards optional bounded metadata without provider credentials", async () => {
+  const forwarded = [];
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-original-session" }),
+    fetchImpl: async (url, init) => {
+      forwarded.push({ url, init });
+      return Response.json({
+        name: "new-user-selected-site",
+        status: "ready",
+        repositoryId: "new-immutable-id",
+        projectId: "new-project-id",
+        token: "private-provider-value",
+      });
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  const input = {
+    name: "new-user-selected-site",
+    credentialConsent: true,
+    displayName: "User selected display name",
+    description: "🙂".repeat(500),
+  };
+  const created = await request(f.handler, "/api/repositories/create", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(input),
+  });
+  assert.equal(created.status, 200);
+  assert.deepEqual(JSON.parse(forwarded[0].init.body), input);
+  assert.ok(!created.text.includes("private-provider-value"));
+  for (const invalid of [
+    { ...input, description: "x".repeat(1001) },
+    { ...input, credentialConsent: false },
+    { ...input, displayName: " " },
+    { ...input, description: "\u0000" },
+    { ...input, ownerActor: "account:forged" },
+  ])
+    assert.equal(
+      (
+        await request(f.handler, "/api/repositories/create", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(invalid),
+        })
+      ).status,
+      400,
+    );
+  assert.equal(forwarded.length, 1);
+});
+
+test("native invitation listing and ID revocation omit tokens and require an exact empty body", async () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  const invitation = {
+    id,
+    scope: "project",
+    projectId: managedRepository.projectId,
+    email: "editor@synthetic.test",
+    role: "editor",
+    invitedBy: "account:synthetic-owner",
+    expiresAt: new Date(Date.now() + 100000).toISOString(),
+  };
+  const forwarded = [];
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-owner-session" }),
+    fetchImpl: async (url, init) => {
+      forwarded.push({ url, init });
+      const value = { ...invitation, digest: "private-digest", token: "private-token" };
+      return Response.json(
+        url.endsWith("/revoke") ? { ...value, revokedAt: "2026-10-08T05:00:00.000Z" } : [value],
+      );
+    },
+  });
+  const path = `/api/projects/${managedRepository.projectId}/invitations`;
+  const listed = await request(f.handler, path);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.json, [invitation]);
+  assert.ok(!listed.text.includes("private-"));
+  const headers = await nativeManagementHeaders(f.handler);
+  const revoke = path + `/${id}/revoke`;
+  assert.equal(
+    (
+      await request(f.handler, revoke, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ token: "forged-link" }),
+      })
+    ).status,
+    400,
+  );
+  const revoked = await request(f.handler, revoke, { method: "POST", headers, body: "{}" });
+  assert.equal(revoked.status, 200);
+  assert.ok(revoked.json.revokedAt);
+  assert.ok(!revoked.text.includes("private-"));
+  assert.equal(
+    (await request(f.handler, path + "/arbitrary/revoke", { method: "POST", headers, body: "{}" }))
+      .status,
+    404,
+  );
+  assert.equal(forwarded.length, 2);
+});
+
+test("every native management mutation retains the account captured before a slow body", async () => {
+  const cases = [
+    [
+      "PATCH",
+      `/api/projects/${managedRepository.projectId}/repository`,
+      { displayName: "Updated", description: "" },
+    ],
+    [
+      "POST",
+      `/api/projects/${managedRepository.projectId}/repository/delete`,
+      {
+        confirmation: managedRepository.repositoryName,
+        repositoryId: managedRepository.repositoryId,
+      },
+    ],
+    [
+      "POST",
+      `/api/projects/${managedRepository.projectId}/invitations`,
+      { email: "editor@synthetic.test", role: "editor" },
+    ],
+    [
+      "POST",
+      `/api/projects/${managedRepository.projectId}/invitations/11111111-2222-4333-8444-555555555555/revoke`,
+      {},
+    ],
+  ];
+  for (const [method, path, input] of cases) {
+    let account = "synthetic-Alice";
+    const forwarded = [];
+    const f = fixture({
+      passwordMode: true,
+      sharedApi: true,
+      sessionHeaders: async () => ({ Cookie: account }),
+      fetchImpl: async (url, init) => {
+        forwarded.push({ url, init });
+        return Response.json(managedRepository);
+      },
+    });
+    const headers = await nativeManagementHeaders(f.handler);
+    const chunks = (async function* () {
+      yield Buffer.from("{");
+      account = "synthetic-Bob";
+      yield Buffer.from(JSON.stringify(input).slice(1));
+    })();
+    const result = await request(f.handler, path, { method, headers, chunks });
+    assert.equal(result.status, 409, path);
+    assert.deepEqual(result.json, { error: "backend_account_changed" });
+    assert.equal(forwarded.length, 0);
+  }
+});
+
+test("native management response identities and lifecycle states cannot change the selected target", async () => {
+  const path = `/api/projects/${managedRepository.projectId}/repository`;
+  for (const unexpected of [
+    { ...managedRepository, projectId: "other-project" },
+    { ...managedRepository, status: "deleted", lifecycle: "registered" },
+    { ...managedRepository, metadataRevision: -1 },
+    { ...managedRepository, description: "x".repeat(1001) },
+  ]) {
+    const f = fixture({
+      passwordMode: true,
+      sharedApi: true,
+      sessionHeaders: async () => ({ Cookie: "synthetic-owner" }),
+      fetchImpl: async () => Response.json(unexpected),
+    });
+    assert.equal((await request(f.handler, path)).status, 503);
+  }
+  for (const unexpected of [
+    {
+      ...managedRepository,
+      repositoryId: "replacement-repository",
+      status: "deleted",
+      lifecycle: "deleted",
+      deletable: false,
+    },
+    {
+      ...managedRepository,
+      repositoryName: "replacement-name",
+      status: "deleted",
+      lifecycle: "deleted",
+      deletable: false,
+    },
+  ]) {
+    const f = fixture({
+      passwordMode: true,
+      sharedApi: true,
+      sessionHeaders: async () => ({ Cookie: "synthetic-owner" }),
+      fetchImpl: async () => Response.json(unexpected),
+    });
+    const headers = await nativeManagementHeaders(f.handler);
+    const result = await request(f.handler, path + "/delete", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        confirmation: managedRepository.repositoryName,
+        repositoryId: managedRepository.repositoryId,
+      }),
+    });
+    assert.equal(result.status, 503);
+    assert.deepEqual(result.json, { error: "repository_backend_unavailable" });
+  }
+});
+
+test("percent-encoded native route aliases retain strict body and response projection", async () => {
+  const forwarded = [];
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-owner" }),
+    fetchImpl: async (url, init) => {
+      forwarded.push({ url, init });
+      return Response.json({ ...managedRepository, token: "never-browser-visible" });
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  const alias = `/api/projects/${managedRepository.projectId}/%72epository`;
+  const status = await request(f.handler, alias);
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.json, managedRepository);
+  assert.ok(!status.text.includes("never-browser-visible"));
+  const invalid = await request(f.handler, alias, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ displayName: "Changed", description: "", actor: "forged-owner" }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(forwarded.length, 1);
 });

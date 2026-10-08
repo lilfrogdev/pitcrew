@@ -102,3 +102,26 @@
   padding: 24px 30px;
   border-bottom: 1px solid var(--border);
 }
+.form textarea {
+  min-width: 0;
+  min-height: 90px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+  font: inherit;
+}
+.management {
+  width: 100%;
+}
+.management > .form {
+  margin: 16px 0 0;
+}
+.management h3 {
+  margin-top: 24px;
+}
+.management button {
+  margin: 4px 8px 4px 0;
+}

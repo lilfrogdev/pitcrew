@@ -13,6 +13,9 @@ import type { ModelSelection, ModelSettings, FrozenRunModels } from "./models.ts
 import type { MessageAttachment, SubmittedAttachment } from "./attachments.ts";
 import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
 export interface Project {
+  /** Local labels; the physical repository identity remains immutable. */
+  description?: string;
+  metadataRevision?: number;
   modelSettings?: ModelSettings;
   id: string;
   name: string;

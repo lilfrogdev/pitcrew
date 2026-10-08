@@ -17,7 +17,7 @@ function fixture() {
       total: 1,
       tokens: [{ id: "initial-id", state: active ? "active" : "revoked" }],
     })),
-    revokeToken: vi.fn(async () => {
+    revokeToken: vi.fn(async (_id: string) => {
       active = false;
       return true;
     }),
@@ -294,7 +294,7 @@ it("persists delete intent, reconciles response loss safely and keeps tombstone 
   });
   expect(f.binding.delete).toHaveBeenCalledTimes(1);
 });
-it("delete reconciliation restores the same existing ID but never admits a replacement", async () => {
+it("delete reconciliation keeps the same existing ID frozen and never admits a replacement", async () => {
   const f = fixture();
   await f.lifecycle.provision("sandbox", "create");
   f.binding.delete.mockRejectedValue(Error("response lost"));
@@ -302,7 +302,7 @@ it("delete reconciliation restores the same existing ID but never admits a repla
   f.repo.info.mockResolvedValueOnce({ id: "replacement" });
   await expect(f.lifecycle.reconcile("sandbox")).rejects.toThrow("deletion_pending");
   expect(f.records.get("sandbox")?.status).toBe("deleting");
-  expect((await f.lifecycle.reconcile("sandbox")).status).toBe("ready");
+  expect((await f.lifecycle.reconcile("sandbox")).status).toBe("deleting");
   expect(f.binding.delete).toHaveBeenCalledTimes(1);
 });
 it("does not claim ownership/deletion permission for a replacement sharing the name", async () => {
@@ -363,4 +363,118 @@ it("binds lifecycle records to their initiating account and denies guessed names
   await expect(f.lifecycle.remove("legacy", "legacy", "account:owner")).rejects.toThrow(
     "not_found",
   );
+});
+
+it("native deletion freezes before provider access, revokes by ID, confirms absence and retires names", async () => {
+  const f = fixture();
+  await f.lifecycle.provision("sandbox", "create", undefined, "account:owner");
+  f.repo.revokeToken.mockClear();
+  let frozen = false;
+  const fresh = vi.fn(async () => {});
+  f.repo.listTokens.mockResolvedValue({
+    total: 2,
+    tokens: [
+      { id: "one-id", state: "active" },
+      { id: "two-id", state: "active" },
+    ],
+  });
+  f.repo.revokeToken.mockImplementation(async () => {
+    expect(frozen).toBe(true);
+    f.repo.listTokens.mockResolvedValue({ total: 0, tokens: [] });
+    return true;
+  });
+  f.binding.delete.mockImplementation(async () => {
+    expect(frozen).toBe(true);
+    f.binding.get.mockRejectedValue(Error("NOT_FOUND"));
+    return true;
+  });
+  const removed = await f.lifecycle.removeOwned(
+    "sandbox",
+    "new-id",
+    "sandbox",
+    "account:owner",
+    async () => {
+      frozen = true;
+    },
+    fresh,
+  );
+  expect(removed.status).toBe("deleted");
+  expect(f.repo.revokeToken.mock.calls.map(([id]) => id)).toEqual(["one-id", "two-id"]);
+  expect(fresh.mock.calls.length).toBeGreaterThan(6);
+  await expect(
+    f.lifecycle.provision("sandbox", "create", undefined, "account:owner"),
+  ).rejects.toThrow("repository_name_retired");
+});
+
+it("native delete acceptance and response loss remain frozen until explicit same-ID recovery", async () => {
+  const f = fixture();
+  await f.lifecycle.provision("sandbox", "create", undefined, "account:owner");
+  f.binding.delete.mockRejectedValueOnce(Error("transport secret"));
+  const fresh = async () => {};
+  expect(
+    (await f.lifecycle.removeOwned("sandbox", "new-id", "sandbox", "account:owner", fresh, fresh))
+      .status,
+  ).toBe("deleting");
+  expect((await f.lifecycle.observeDeletion("sandbox", "new-id", "account:owner")).status).toBe(
+    "deleting",
+  );
+  expect(f.binding.delete).toHaveBeenCalledTimes(1);
+  await expect(
+    f.lifecycle.removeOwned("sandbox", "replacement", "sandbox", "account:owner", fresh, fresh),
+  ).rejects.toThrow("repository_identity_changed");
+  f.binding.delete.mockImplementationOnce(async () => {
+    f.binding.get.mockRejectedValue(Error("NOT_FOUND"));
+    return true;
+  });
+  expect(
+    (await f.lifecycle.removeOwned("sandbox", "new-id", "sandbox", "account:owner", fresh, fresh))
+      .status,
+  ).toBe("deleted");
+  expect(f.binding.delete).toHaveBeenCalledTimes(2);
+});
+
+it("native deletion rejects session loss or source replacement before token and delete admission", async () => {
+  for (const mode of ["session", "replacement"]) {
+    const f = fixture();
+    await f.lifecycle.provision("sandbox", "create", undefined, "account:owner");
+    f.repo.revokeToken.mockClear();
+    const fresh =
+      mode === "session"
+        ? async () => {
+            throw Error("unauthorized");
+          }
+        : async () => {};
+    if (mode === "replacement") f.repo.info.mockResolvedValue({ id: "replacement" });
+    await expect(
+      f.lifecycle.removeOwned(
+        "sandbox",
+        "new-id",
+        "sandbox",
+        "account:owner",
+        async () => {},
+        fresh,
+      ),
+    ).rejects.toThrow(mode === "session" ? "unauthorized" : "repository_identity_changed");
+    expect(f.records.get("sandbox")?.status).toBe("deleting");
+    expect(f.repo.revokeToken).not.toHaveBeenCalled();
+    expect(f.binding.delete).not.toHaveBeenCalled();
+  }
+});
+
+it("token NOT_FOUND and incomplete metadata never establish repository absence", async () => {
+  const f = fixture();
+  await f.lifecycle.provision("sandbox", "create", undefined, "account:owner");
+  f.repo.listTokens.mockRejectedValue(Error("NOT_FOUND"));
+  const fresh = async () => {};
+  expect(
+    (await f.lifecycle.removeOwned("sandbox", "new-id", "sandbox", "account:owner", fresh, fresh))
+      .status,
+  ).toBe("deleting");
+  expect(f.binding.delete).not.toHaveBeenCalled();
+  f.repo.listTokens.mockResolvedValue({ total: 2, tokens: [] });
+  expect(
+    (await f.lifecycle.removeOwned("sandbox", "new-id", "sandbox", "account:owner", fresh, fresh))
+      .status,
+  ).toBe("deleting");
+  expect(f.binding.delete).not.toHaveBeenCalled();
 });

@@ -110,11 +110,15 @@ export function api(
               : reader.read());
             if (result.done) break;
             size += result.value.byteLength;
-            const limit = new URL(c.req.url).pathname.endsWith("/presence")
+            const limit = /^\/api\/projects\/[^/]+\/invitations\/[^/]+\/revoke$/.test(
+              new URL(c.req.url).pathname,
+            )
               ? 512
-              : /^\/api\/threads\/[^/]+\/messages$/.test(new URL(c.req.url).pathname)
-                ? ATTACHMENT_LIMITS.requestBytes
-                : 16384;
+              : new URL(c.req.url).pathname.endsWith("/presence")
+                ? 512
+                : /^\/api\/threads\/[^/]+\/messages$/.test(new URL(c.req.url).pathname)
+                  ? ATTACHMENT_LIMITS.requestBytes
+                  : 16384;
             if (size > limit) {
               await reader.cancel();
               throw new AdmissionError("body_too_large", 413);
@@ -358,6 +362,17 @@ export function api(
   app.get("/api/threads/:threadId/members", (c) =>
     c.json(access?.threadMembers(c.req.param("threadId")) ?? []),
   );
+  app.get("/api/projects/:projectId/invitations", async (c) =>
+    c.json(await collaborate(() => access?.invitations(c.req.param("projectId")) ?? [])),
+  );
+  app.post("/api/projects/:projectId/invitations/:invitationId/revoke", async (c) => {
+    if (Object.keys(c.get("body")).length) throw new AdmissionError("invalid_request");
+    return c.json(
+      await collaborate(() =>
+        access?.revokeById(c.req.param("projectId"), c.req.param("invitationId")),
+      ),
+    );
+  });
   app.post("/api/projects/:projectId/invitations", async (c) => {
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");

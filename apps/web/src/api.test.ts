@@ -586,3 +586,234 @@ it("bounds simultaneous product reads and releases a slot after an interrupted r
   expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(9);
   expect(active).toBe(0);
 });
+
+it("reads self-service capabilities and directory metadata while omitting private fields", async () => {
+  const entry = {
+    projectId: "project",
+    name: "Display",
+    repositoryName: "physical",
+    repositoryId: "immutable",
+    description: "Description",
+    metadataRevision: 2,
+    role: "owner",
+    status: "deleting",
+    lifecycle: "deleting",
+    deletable: true,
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) =>
+      Response.json(
+        path === "/api/repository-creations"
+          ? {
+              approval: null,
+              creations: [],
+              capabilities: { create: true, manage: true, token: "private" },
+            }
+          : { repositories: [{ ...entry, token: "private", actor: "private" }] },
+      ),
+    ),
+  );
+  expect(await httpApi.collaboration!.repositoryCreations!()).toEqual({
+    approval: null,
+    creations: [],
+    capabilities: { create: true, manage: true },
+  });
+  expect(await httpApi.collaboration!.repositories()).toEqual([entry]);
+});
+const repositoryTargetStatus = {
+  projectId: "project/id",
+  name: "A display label with spaces",
+  repositoryName: "physical",
+  repositoryId: "immutable",
+  description: "Description",
+  metadataRevision: 2,
+  role: "owner",
+  status: "deleting",
+  lifecycle: "deleting",
+  deletable: false,
+};
+it("sends create metadata only when supplied and keeps metadata edit and deletion bound to exact paths", async () => {
+  const fetch = vi.fn(async (path: string) =>
+    path === "/api/local-session"
+      ? Response.json({ nonce: null })
+      : Response.json(
+          path.endsWith("/delete")
+            ? { ...repositoryTargetStatus, token: "private" }
+            : path.endsWith("/create")
+              ? { ...createdRepository }
+              : { id: "project" },
+          { status: path.endsWith("/delete") ? 202 : 200 },
+        ),
+  );
+  vi.stubGlobal("fetch", fetch);
+  await httpApi.collaboration!.createRepository!(creationTarget.name, true, {
+    displayName: "Display",
+    description: "Description",
+  });
+  await httpApi.collaboration!.updateRepository!("project/id", {
+    displayName: "New",
+    description: "",
+    expectedRevision: 2,
+  });
+  expect(
+    await httpApi.collaboration!.deleteRepository!("project/id", {
+      confirmation: "physical",
+      repositoryId: "immutable",
+    }),
+  ).toEqual(repositoryTargetStatus);
+  const mutations = (fetch.mock.calls as unknown as [string, RequestInit][]).filter(
+    ([path]) => path !== "/api/local-session",
+  );
+  expect(
+    mutations.map(([path, init]) => [path, init.method, JSON.parse(init.body as string)]),
+  ).toEqual([
+    [
+      "/api/repositories/create",
+      "POST",
+      {
+        name: creationTarget.name,
+        credentialConsent: true,
+        displayName: "Display",
+        description: "Description",
+      },
+    ],
+    [
+      "/api/projects/project%2Fid/repository",
+      "PATCH",
+      { displayName: "New", description: "", expectedRevision: 2 },
+    ],
+    [
+      "/api/projects/project%2Fid/repository/delete",
+      "POST",
+      { confirmation: "physical", repositoryId: "immutable" },
+    ],
+  ]);
+  expect(mutations.every(([, init]) => init.cache === "no-store")).toBe(true);
+});
+it("never repeats destructive repository mutations after local admission or network failure", async () => {
+  for (const fail of [false, true]) {
+    const fetch = vi.fn(async (path: string) => {
+      if (path === "/api/local-session") return Response.json({ nonce: "c".repeat(64) });
+      if (fail) throw Error("secret diagnostic");
+      return Response.json({ error: "secret diagnostic" }, { status: 403 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      httpApi.collaboration!.deleteRepository!("project", {
+        confirmation: "physical",
+        repositoryId: "immutable",
+      }),
+    ).rejects.toEqual(new ApiError(fail ? 0 : 403));
+    expect(fetch.mock.calls.filter(([path]) => path.endsWith("/delete"))).toHaveLength(1);
+  }
+});
+it("reads and revokes safe pending invitation metadata by ID without retrieving the token", async () => {
+  const invitation = {
+    id: "invite/id",
+    email: "recipient@example.test",
+    role: "editor",
+    scope: "project",
+    projectId: "project/id",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  const fetch = vi.fn(async (path: string) =>
+    path === "/api/local-session"
+      ? Response.json({ nonce: null })
+      : Response.json(
+          path.endsWith("/revoke")
+            ? { ...invitation, revokedAt: "2026-01-01", token: "private", digest: "private" }
+            : [{ ...invitation, token: "private", digest: "private" }],
+        ),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect(await httpApi.collaboration!.projectInvitations!("project/id")).toEqual([invitation]);
+  expect(await httpApi.collaboration!.revokeProjectInvitation!("project/id", "invite/id")).toEqual({
+    ...invitation,
+    revokedAt: "2026-01-01",
+  });
+  expect(fetch.mock.calls.at(-1)?.[0]).toBe(
+    "/api/projects/project%2Fid/invitations/invite%2Fid/revoke",
+  );
+});
+it("fails closed for malformed capabilities and immutable directory identifiers", async () => {
+  for (const capabilities of [null, {}, { create: true }, { create: true, manage: "true" }]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ approval: null, creations: [], capabilities })),
+    );
+    await expect(httpApi.collaboration!.repositoryCreations!()).rejects.toEqual(new ApiError(0));
+  }
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        repositories: [
+          {
+            projectId: "project",
+            name: "Display",
+            role: "owner",
+            status: "present",
+            lifecycle: "registered",
+            deletable: true,
+            repositoryId: "",
+          },
+        ],
+      }),
+    ),
+  );
+  await expect(httpApi.collaboration!.repositories()).rejects.toEqual(new ApiError(0));
+});
+
+it("rejects deletion responses whose HTTP completion status conflicts with lifecycle", async () => {
+  for (const [status, httpStatus] of [
+    ["deleting", 200],
+    ["deleted", 202],
+    ["present", 200],
+  ] as const) {
+    withSession(async () =>
+      Response.json(
+        {
+          ...repositoryTargetStatus,
+          status,
+          lifecycle: status === "present" ? "registered" : status,
+        },
+        { status: httpStatus },
+      ),
+    );
+    await expect(
+      httpApi.collaboration!.deleteRepository!("project", {
+        confirmation: "physical",
+        repositoryId: "immutable",
+      }),
+    ).rejects.toEqual(new ApiError(0));
+  }
+});
+
+it("reads full immutable deletion status with display spaces and rejects thin or malformed projections", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ ...repositoryTargetStatus, token: "private" })),
+  );
+  expect(await httpApi.collaboration!.repositoryStatus!("project/id")).toEqual(
+    repositoryTargetStatus,
+  );
+  for (const value of [
+    { name: "physical", status: "deleting" },
+    { ...repositoryTargetStatus, repositoryName: "Display Name" },
+    { ...repositoryTargetStatus, repositoryId: "" },
+    { ...repositoryTargetStatus, projectId: "" },
+    { ...repositoryTargetStatus, name: " " },
+    { ...repositoryTargetStatus, name: "x".repeat(81) },
+    { ...repositoryTargetStatus, lifecycle: "registered" },
+    { ...repositoryTargetStatus, deletable: true },
+  ]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(value)),
+    );
+    await expect(httpApi.collaboration!.repositoryStatus!("project/id")).rejects.toEqual(
+      new ApiError(0),
+    );
+  }
+});

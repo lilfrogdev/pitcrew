@@ -8,6 +8,7 @@ import {
   type SharedRepository,
 } from "./api";
 import styles from "./Repositories.module.css";
+import { RepositoryManagement } from "./RepositoryManagement";
 
 const adoptionKey = (item: ApprovedProjectAdoption) =>
   JSON.stringify([item.name, item.repositoryId]);
@@ -25,6 +26,9 @@ export function AccountRepositories({
     approval: null,
     creations: [],
   });
+  const [newName, setNewName] = useState("");
+  const [newDisplayName, setNewDisplayName] = useState("");
+  const [newDescription, setNewDescription] = useState("");
   const [creationConsent, setCreationConsent] = useState<Record<string, boolean>>({});
   const [creationError, setCreationError] = useState("");
   const [creationReadError, setCreationReadError] = useState("");
@@ -59,9 +63,7 @@ export function AccountRepositories({
     setError(
       repositories.status === "fulfilled"
         ? ""
-        : repositories.reason instanceof Error
-          ? repositories.reason.message
-          : "Could not load repositories.",
+        : "Could not load repositories. Refresh to try again.",
     );
     setApprovals(
       candidates.status === "fulfilled"
@@ -145,8 +147,9 @@ export function AccountRepositories({
     if (recovery) {
       if (!["cleanup_required", "registration_required"].includes(recovery.status)) return;
     } else if (
-      creations.approval?.name !== name ||
-      unknownCreation === name ||
+      (!creations.capabilities?.create && creations.approval?.name !== name) ||
+      (creations.capabilities?.create && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) ||
+      !!unknownCreation ||
       creations.creations.some((item) => item.name === name)
     )
       return;
@@ -156,7 +159,12 @@ export function AccountRepositories({
     setCreationError("");
     setAnnouncement("");
     try {
-      const result = await api.createRepository(name, true);
+      const result = await (creations.capabilities?.create && !recovery
+        ? api.createRepository(name, true, {
+            displayName: newDisplayName.trim() || name,
+            description: newDescription.trim(),
+          })
+        : api.createRepository(name, true));
       if (pending.current !== operation || currentApi.current !== api) return;
       if (
         result.name !== name ||
@@ -165,6 +173,9 @@ export function AccountRepositories({
       )
         throw new ApiError(0);
       setUnknownCreation(null);
+      setNewName("");
+      setNewDisplayName("");
+      setNewDescription("");
       setCreationConsent({});
       setCreations((value) => ({
         ...value,
@@ -181,7 +192,9 @@ export function AccountRepositories({
       setCreationConsent({});
       if (cause instanceof ApiError && [400, 401, 403, 404, 409].includes(cause.status)) {
         setCreationError(
-          "Repository creation approval is unavailable or changed. Refresh, or ask the operator to check this account's approval.",
+          creations.capabilities?.create
+            ? "Could not create this repository. Check the name and refresh repositories before trying again."
+            : "Repository creation approval is unavailable or changed. Refresh, or ask the operator to check this account's approval.",
         );
       } else {
         setUnknownCreation(name);
@@ -204,6 +217,9 @@ export function AccountRepositories({
     setCreationError("");
     setUnknownCreation(null);
     setAnnouncement("");
+    setNewName("");
+    setNewDisplayName("");
+    setNewDescription("");
     void load();
     const online = () => {
       if (!pending.current) void load();
@@ -243,7 +259,20 @@ export function AccountRepositories({
                 <div>
                   <strong>{item.name}</strong>
                   <span>{item.role}</span>
+                  {item.repositoryName && <span>Permanent name: {item.repositoryName}</span>}
+                  {item.description && <p>{item.description}</p>}
+                  {item.status === "deleting" && <span>Deletion pending</span>}
                 </div>
+                {creations.capabilities?.manage && item.role === "owner" && (
+                  <RepositoryManagement
+                    api={api}
+                    item={item}
+                    onChanged={() => {
+                      onReady.current?.();
+                      void load();
+                    }}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -256,8 +285,9 @@ export function AccountRepositories({
               !creations.creations.length &&
               !creationReadError && (
                 <p>
-                  Ask a project owner for an invitation, or ask the operator to approve an existing
-                  repository for this account.
+                  {creations.capabilities?.create
+                    ? "Create your first repository below, or ask a repository owner for an invitation."
+                    : "Ask a project owner for an invitation, or ask the operator to approve an existing repository for this account."}
                 </p>
               )}
           </>
@@ -275,7 +305,91 @@ export function AccountRepositories({
         )}
         {!loading && !creationReadError && !!api.createRepository && (
           <>
-            {creations.approval &&
+            {creations.capabilities?.create && (
+              <form
+                className={styles.form}
+                aria-label="Create repository"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void create(newName);
+                }}
+              >
+                <h2>Create empty repository</h2>
+                <label>
+                  Permanent repository name
+                  <input
+                    value={newName}
+                    required
+                    pattern={"[a-z0-9][a-z0-9\\-]{0,62}"}
+                    maxLength={63}
+                    autoCapitalize="none"
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={busy || !!error || !!creationError}
+                    onChange={(event) => {
+                      setNewName(event.target.value);
+                      setCreationConsent({});
+                    }}
+                  />
+                </label>
+                <p className={styles.note}>
+                  Use 1–63 lowercase letters, numbers or hyphens, starting with a letter or number.
+                  This name is permanent.
+                </p>
+                <label>
+                  Display name (optional)
+                  <input
+                    value={newDisplayName}
+                    maxLength={80}
+                    disabled={busy || !!error || !!creationError}
+                    onChange={(event) => setNewDisplayName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Description (optional)
+                  <textarea
+                    value={newDescription}
+                    maxLength={1000}
+                    disabled={busy || !!error || !!creationError}
+                    onChange={(event) => setNewDescription(event.target.value)}
+                  />
+                </label>
+                <p>
+                  This creates no code, threads, or invitations. Your account owns the repository.
+                </p>
+                <p>
+                  Cloudflare repository storage and operations can incur charges under the account's
+                  plan.
+                </p>
+                <label className={styles.consent}>
+                  <input
+                    type="checkbox"
+                    checked={creationConsent[newName] ?? false}
+                    disabled={busy || !!error || !!creationError}
+                    onChange={(event) => setCreationConsent({ [newName]: event.target.checked })}
+                  />
+                  I consent to storing this empty repository in Cloudflare and to Cloudflare issuing
+                  a temporary Git token that is discarded and revoked before repository access is
+                  enabled.
+                </label>
+                <button
+                  type="submit"
+                  disabled={
+                    busy ||
+                    !!error ||
+                    !!creationError ||
+                    !creationConsent[newName] ||
+                    !/^[a-z0-9][a-z0-9-]{0,62}$/.test(newName) ||
+                    !!unknownCreation ||
+                    creations.creations.some((item) => item.name === newName)
+                  }
+                >
+                  {busy ? "Creating repository…" : "Create empty repository"}
+                </button>
+              </form>
+            )}
+            {!creations.capabilities?.create &&
+              creations.approval &&
               !creations.creations.some((item) => item.name === creations.approval?.name) &&
               unknownCreation !== creations.approval.name && (
                 <section
@@ -319,59 +433,61 @@ export function AccountRepositories({
                   </button>
                 </section>
               )}
-            {creations.creations.map((item) => (
-              <section
-                className={styles.form}
-                key={item.name}
-                aria-label={`Repository creation ${item.name}`}
-              >
-                <h2>{item.name}</h2>
-                <p>
-                  {item.status === "ready"
-                    ? "This repository is ready and registered to this account."
-                    : item.status === "pending"
-                      ? "Creation is pending or its result is unknown. Refresh to check its status, or ask the operator to investigate."
-                      : item.status === "cleanup_required"
-                        ? "The repository needs temporary credential cleanup before access is enabled."
-                        : "The repository needs registration to this account before access is enabled."}
-                </p>
-                {["cleanup_required", "registration_required"].includes(item.status) && (
-                  <>
-                    <label className={styles.consent}>
-                      <input
-                        type="checkbox"
-                        checked={creationConsent[item.name] ?? false}
+            {creations.creations
+              .filter((item) => !creations.capabilities?.create || item.status !== "ready")
+              .map((item) => (
+                <section
+                  className={styles.form}
+                  key={item.name}
+                  aria-label={`Repository creation ${item.name}`}
+                >
+                  <h2>{item.name}</h2>
+                  <p>
+                    {item.status === "ready"
+                      ? "This repository is ready and registered to this account."
+                      : item.status === "pending"
+                        ? "Creation is pending or its result is unknown. Refresh to check its status, or ask the operator to investigate."
+                        : item.status === "cleanup_required"
+                          ? "The repository needs temporary credential cleanup before access is enabled."
+                          : "The repository needs registration to this account before access is enabled."}
+                  </p>
+                  {["cleanup_required", "registration_required"].includes(item.status) && (
+                    <>
+                      <label className={styles.consent}>
+                        <input
+                          type="checkbox"
+                          checked={creationConsent[item.name] ?? false}
+                          disabled={
+                            busy || !!error || !!creationError || unknownCreation === item.name
+                          }
+                          onChange={(event) =>
+                            setCreationConsent((values) => ({
+                              ...values,
+                              [item.name]: event.target.checked,
+                            }))
+                          }
+                        />
+                        I consent to completing credential cleanup and account registration for this
+                        same empty repository. Any Cloudflare-issued temporary Git token must be
+                        discarded and revoked before access is enabled.
+                      </label>
+                      <button
+                        type="button"
                         disabled={
-                          busy || !!error || !!creationError || unknownCreation === item.name
+                          busy ||
+                          !!error ||
+                          !!creationError ||
+                          unknownCreation === item.name ||
+                          !creationConsent[item.name]
                         }
-                        onChange={(event) =>
-                          setCreationConsent((values) => ({
-                            ...values,
-                            [item.name]: event.target.checked,
-                          }))
-                        }
-                      />
-                      I consent to completing credential cleanup and account registration for this
-                      same empty repository. Any Cloudflare-issued temporary Git token must be
-                      discarded and revoked before access is enabled.
-                    </label>
-                    <button
-                      type="button"
-                      disabled={
-                        busy ||
-                        !!error ||
-                        !!creationError ||
-                        unknownCreation === item.name ||
-                        !creationConsent[item.name]
-                      }
-                      onClick={() => void create(item.name, item)}
-                    >
-                      {busy ? "Recovering repository…" : "Recover repository creation"}
-                    </button>
-                  </>
-                )}
-              </section>
-            ))}
+                        onClick={() => void create(item.name, item)}
+                      >
+                        {busy ? "Recovering repository…" : "Recover repository creation"}
+                      </button>
+                    </>
+                  )}
+                </section>
+              ))}
           </>
         )}
         {!loading &&
