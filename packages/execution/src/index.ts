@@ -2,6 +2,7 @@ export * from "./contracts.ts";
 export * from "./coordinator.ts";
 export * from "./cloudflare.ts";
 export * from "./local-git.ts";
+export * from "./local-executor-client.ts";
 export * from "./adapter.ts";
 export * from "./landing.ts";
 export * from "./landing-store.ts";

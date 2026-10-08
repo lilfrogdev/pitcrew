@@ -3,7 +3,7 @@ import { NavigationRail, WorkspacePlaceholder, type WorkspaceSection } from "./N
 import shellStyles from "./NavigationRail.module.css";
 import { Sidebar } from "./Sidebar";
 import { Intake } from "./Intake";
-import { MissionPanel } from "./MissionPanel";
+import { MessageText } from "./MessageText";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Project, Run, Snapshot, Thread, LandingCapabilities } from "./api";
 import "./styles.css";
@@ -35,6 +35,8 @@ const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong. Try again.";
 export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
+  const [planReady, setPlanReady] = useState(false);
+  const [plansRequest, setPlansRequest] = useState(0);
   const [workspaceWidth, setWorkspaceWidth] = useState(380);
   const keyboardFocus = useKeyboardFocus();
   const [section, setSection] = useState<WorkspaceSection>("work");
@@ -83,6 +85,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   } | null>(null);
   const createKey = useRef<{ projectId: string; title: string; key: string } | null>(null);
   const mutation = useRef(false);
+  const pollDelay = useRef(5000);
   const refresh = useCallback(() => {
     setMutationError("");
     setRevision((value) => value + 1);
@@ -215,18 +218,28 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         inFlight = false;
       }
     };
-    void load();
-    // Poll snapshots, never replay writes after an uncertain response.
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void load();
-    }, 5000);
+    let timer = 0;
+    const tick = () => {
+      timer = window.setTimeout(() => {
+        if (cancelled || document.hidden) {
+          if (!cancelled) tick();
+          return;
+        }
+        void load().finally(() => {
+          if (!cancelled) tick();
+        });
+      }, pollDelay.current);
+    };
+    void load().finally(() => {
+      if (!cancelled) tick();
+    });
     const onOnline = () => {
       void load();
     };
     window.addEventListener("online", onOnline);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
       window.removeEventListener("online", onOnline);
     };
   }, [api, threadId, revision]);
@@ -502,6 +515,20 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const project = projects.find((item) => item.id === projectId);
   const thread = threads.find((item) => item.id === threadId);
   const latest = snapshot.runs.at(-1);
+  const crewActivity = [
+    ...(busy
+      ? [{ id: "sending", role: "user", name: "You", text: "Sending" }]
+      : []),
+    ...((snapshot.turns ?? []).some(
+      (turn) => turn.status === "queued" || turn.status === "running",
+    )
+      ? [{ id: "thinking", role: "coordinator", name: "Repository agent", text: "Thinking" }]
+      : []),
+    ...(snapshot.runs.some((run) => run.status === "queued" || run.status === "running")
+      ? [{ id: "working", role: "worker", name: "Change worker", text: "Implementing" }]
+      : []),
+  ];
+  pollDelay.current = crewActivity.length ? 1200 : 5000;
   return (
     <div className={shellStyles.shell} data-keyboard-focus={keyboardFocus}>
       <a className="skip" href={section === "work" ? "#conversation" : "#workspace-content"}>
@@ -576,15 +603,6 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             </div>
             {latest && <span className={`status ${latest.status}`}>{labels[latest.status]}</span>}
           </header>
-          {threadId && projectId && (
-            <MissionPanel
-              api={api}
-              projectId={projectId}
-              threadId={threadId}
-              evidence={snapshot.evidence}
-              executionEnabled={executionEnabled}
-            />
-          )}
           {!demo && projectId && (
             <details className="intake-panel" open={!threadId}>
               <summary>Collect and group reports</summary>
@@ -603,7 +621,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
             className="transcript"
             role="log"
             aria-label="Conversation transcript"
-            aria-busy={loading}
+            aria-busy={loading || crewActivity.length > 0}
           >
             {loading ? (
               <p className="empty">Loading conversation…</p>
@@ -612,7 +630,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                 <h2>A place for every change</h2>
                 <p>Select a project and create a thread to work with your crew.</p>
               </div>
-            ) : !snapshot.messages.length ? (
+            ) : !snapshot.messages.length && !crewActivity.length ? (
               <div className="empty">
                 <h2>Start with the outcome</h2>
                 <p>
@@ -644,7 +662,11 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                         })}
                       </time>
                     </div>
-                    <p>{message.content}</p>
+                    {message.role === "user" ? (
+                      <p>{message.content}</p>
+                    ) : (
+                      <MessageText content={message.content} />
+                    )}
                     {message.attachments?.map((attachment) => (
                       <details className="message-attachment" key={attachment.id}>
                         <summary>
@@ -668,18 +690,31 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                 </article>
               ))
             )}
+            {thread &&
+              crewActivity.map((activity) => (
+                <article className={`message pending ${activity.role}`} key={activity.id}>
+                  <div className="avatar" aria-hidden="true">
+                    {activity.role === "user" ? "Y" : activity.name.slice(0, 1)}
+                  </div>
+                  <div className="message-body">
+                    <div className="message-meta">
+                      <strong>{activity.name}</strong>
+                    </div>
+                    <p className="thinking" role="status">
+                      {activity.text}
+                      <span className="thinking-dots" aria-hidden="true">
+                        <span />
+                        <span />
+                        <span />
+                      </span>
+                    </p>
+                  </div>
+                </article>
+              ))}
           </div>
           {attachmentErrors[threadId] && (
             <p className="composer-error" role="alert">
               {attachmentErrors[threadId]}
-            </p>
-          )}
-          {snapshot.turns?.some(
-            (turn) => turn.status === "queued" || turn.status === "running",
-          ) && (
-            <p className="composer-hint" role="status">
-              Repository agent replies are queued or running. New messages join the conversation
-              queue.
             </p>
           )}
           {snapshot.turns
@@ -693,6 +728,14 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
           {attachmentCompatibilityError && (
             <p className="composer-error" role="alert">
               {attachmentCompatibilityError}
+            </p>
+          )}
+          {planReady && (
+            <p className="plan-cue" role="status">
+              A plan is ready.
+              <button type="button" onClick={() => setPlansRequest((count) => count + 1)}>
+                Open Plans
+              </button>
             </p>
           )}
           <Composer
@@ -755,11 +798,15 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
         )}
         <Workspace
           scope={`${projectId}:${threadId}`}
+          threadId={threadId}
           project={project}
           snapshot={snapshot}
           api={api}
           collapsed={workspaceCollapsed}
           onCollapse={setWorkspaceCollapsed}
+          executionEnabled={executionEnabled}
+          plansRequest={plansRequest}
+          onPlanReady={setPlanReady}
         >
           <div className="evidence" aria-label="Change evidence">
             <div className="evidence-heading">

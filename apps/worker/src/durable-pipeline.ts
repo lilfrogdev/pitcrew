@@ -232,6 +232,12 @@ export class DurableChangePipeline {
         }
       }
     } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "pipeline.blocked",
+          message: error instanceof Error ? error.message : "unknown",
+        }),
+      );
       state.stage = "blocked";
       state.error =
         typeof error === "object" &&

@@ -4,15 +4,18 @@ import {
   IconFiles,
   IconGitCompare,
   IconGitPullRequest,
+  IconListCheck,
   IconLayoutSidebarRightCollapse,
   IconLayoutSidebarRightExpand,
 } from "@tabler/icons-react";
+import { PlanApproval } from "./MissionPanel";
 import type { Api, Project, Snapshot } from "./api";
 import "./Workspace.css";
 import { Select } from "./Select";
 
-type Tab = "browser" | "files" | "diffs" | "review";
+type Tab = "plans" | "browser" | "files" | "diffs" | "review";
 const tabs = [
+  { id: "plans", label: "Plans", Icon: IconListCheck },
   { id: "browser", label: "Browser", Icon: IconWorld },
   { id: "files", label: "Files", Icon: IconFiles },
   { id: "diffs", label: "Diffs", Icon: IconGitCompare },
@@ -34,6 +37,10 @@ export function Workspace({
   children,
   collapsed,
   onCollapse,
+  executionEnabled = false,
+  plansRequest = 0,
+  onPlanReady,
+  threadId = "",
 }: {
   scope: string;
   project?: Project;
@@ -42,6 +49,10 @@ export function Workspace({
   children: ReactNode;
   collapsed: boolean;
   onCollapse: (value: boolean) => void;
+  executionEnabled?: boolean;
+  plansRequest?: number;
+  onPlanReady?: (ready: boolean) => void;
+  threadId?: string;
 }) {
   const [selections, setSelections] = useState<Record<string, Selection>>({});
   const state = selections[scope] ?? { tab: "browser" };
@@ -51,6 +62,15 @@ export function Workspace({
       [scope]: { ...(all[scope] ?? { tab: "browser" }), ...next },
     }));
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const openedPlan = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    openedPlan.current = undefined;
+  }, [scope]);
+  useEffect(() => {
+    if (!plansRequest) return;
+    update({ tab: "plans" });
+    tabRefs.current[0]?.focus();
+  }, [plansRequest]);
   const files = snapshot.messages.flatMap((message) =>
     (message.attachments ?? []).map((attachment) => ({
       ...attachment,
@@ -120,6 +140,26 @@ export function Workspace({
           ))}
         </div>
         <div className="workspace-context">{project?.repository ?? "No repository selected"}</div>
+        <section
+          className="workspace-panel"
+          role="tabpanel"
+          id="workspace-panel-plans"
+          aria-labelledby="workspace-tab-plans"
+          hidden={state.tab !== "plans"}
+          tabIndex={0}
+        >
+          <PlanApproval
+            api={api}
+            threadId={threadId}
+            executionEnabled={executionEnabled}
+            onReady={(revision) => {
+              onPlanReady?.(!!revision);
+              if (!revision || openedPlan.current === revision) return;
+              openedPlan.current = revision;
+              update({ tab: "plans" });
+            }}
+          />
+        </section>
         <section
           className="workspace-panel"
           role="tabpanel"
@@ -290,7 +330,7 @@ export function Workspace({
               type="button"
               onClick={() => {
                 update({ tab: "review" });
-                tabRefs.current[3]?.focus();
+                tabRefs.current[tabs.findIndex((tab) => tab.id === "review")]?.focus();
               }}
             >
               Inspect review evidence

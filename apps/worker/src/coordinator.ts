@@ -1028,6 +1028,7 @@ export class Coordinator {
         thread.modelSelection = structuredClone(chosen);
         this.state.messages.push(message);
         turns.push(turn);
+        this.openChatMission(threadId, message.id, content.trim(), actor);
         this.event("message.created", message.id, { kind: "principal", id: actor });
         this.event("conversation.queued", turn.id);
         return { message: structuredClone(message), turn: structuredClone(turn) };
@@ -1170,7 +1171,59 @@ export class Coordinator {
   }
   threadMission(threadId: string): Mission | undefined {
     this.thread(threadId);
-    return [...(this.state.missions ?? [])].reverse().find((item) => item.threadId === threadId);
+    const items = (this.state.missions ?? []).filter((item) => item.threadId === threadId);
+    const latest = items.at(-1);
+    if (!latest || latest.proposal) return latest;
+    return [...items].reverse().find((item) => item.proposal) ?? latest;
+  }
+  private crewNote(threadId: string, id: string, role: Message["role"], content: string) {
+    if (this.state.messages.some((message) => message.id === id)) return;
+    this.state.messages.push({
+      id,
+      threadId,
+      role,
+      content: content.slice(0, 4000),
+      createdAt: this.now(),
+    });
+    this.event("message.created", id);
+  }
+  private openChatMission(threadId: string, messageId: string, request: string, actor: string) {
+    const open = this.threadActive(threadId);
+    if (open?.status === "clarifying") {
+      const pending = open.questions.filter((item) => !item.answer && /^q\d+$/.test(item.id));
+      if (!pending.length) return;
+      for (const question of pending) question.answer = request;
+      this.event("mission.updated", open.id, { kind: "principal", id: actor });
+      return;
+    }
+    if (open) return;
+    const latest = this.threadMission(threadId);
+    if (latest?.status === "failed" && latest.proposal) return;
+    const mission: Mission = {
+      id: this.id(),
+      projectId: this.state.project.id,
+      threadId,
+      messageId,
+      status: "clarifying",
+      request,
+      questions: [],
+    };
+    (this.state.missions ??= []).push(mission);
+    this.event("mission.updated", mission.id, { kind: "principal", id: actor });
+  }
+  private threadActive(threadId: string): Mission | undefined {
+    return [...(this.state.missions ?? [])].reverse().find(
+      (item) =>
+        item.threadId === threadId &&
+        ["clarifying", "proposed", "approved", "running", "awaiting_review"].includes(item.status),
+    );
+  }
+  private missionForTurn(threadId: string): Mission | undefined {
+    return this.threadActive(threadId) ?? this.failedPlan(threadId);
+  }
+  private failedPlan(threadId: string): Mission | undefined {
+    const latest = [...(this.state.missions ?? [])].reverse().find((item) => item.threadId === threadId);
+    return latest?.status === "failed" && latest.proposal ? latest : undefined;
   }
   private activeMission(): Mission | undefined {
     return this.state.missions?.find((item) =>
@@ -1426,6 +1479,12 @@ export class Coordinator {
       current.changeId = change.id;
       current.runId = run.id;
       current.status = "running";
+      this.crewNote(
+        current.threadId,
+        `note:${run.id}:worker-started`,
+        "worker",
+        "I'm implementing the approved plan in an isolated checkout.",
+      );
       this.event("change.created", change.id, { kind: "principal", id: actor });
       this.event("run.queued", run.id);
       this.event("mission.updated", current.id, { kind: "principal", id: actor });
@@ -1448,19 +1507,33 @@ export class Coordinator {
     const turn = this.conversationTurn(turnId);
     if (turn.status !== "running" || !turn.input)
       throw new AdmissionError("conversation_not_running", 409);
-    const mission = this.activeMission();
-    if (!mission || mission.threadId !== turn.threadId)
+    const mission = this.missionForTurn(turn.threadId);
+    if (
+      !mission?.proposal ||
+      !mission.contract ||
+      mission.approvedRevision !== mission.proposal.revision ||
+      mission.approvedRevision !== mission.contract.digest
+    )
       throw new AdmissionError("mission_approval_required", 409);
-    if (mission.runId) return structuredClone(this.evidence(mission.runId).run);
+    if (mission.runId) {
+      const existing = this.evidence(mission.runId).run;
+      if (["queued", "running"].includes(existing.status)) return structuredClone(existing);
+    }
+    if (mission.status === "failed") {
+      this.durableUpdate(() => {
+        mission.status = "approved";
+        mission.runId = undefined;
+        this.event("mission.updated", mission.id);
+      });
+    }
     return this.activateMission(mission.id, turn.actor);
   }
   askMission(turnId: string, prompts: string[]): Mission {
     const turn = this.conversationTurn(turnId);
-    const mission = this.activeMission();
-    if (!mission || mission.threadId !== turn.threadId)
-      throw new AdmissionError("mission_required", 409);
-    if (mission.status !== "clarifying" || mission.questions.some((item) => item.answer))
-      throw new AdmissionError("mission_state", 409);
+    const mission = this.threadActive(turn.threadId);
+    if (!mission) throw new AdmissionError("mission_required", 409);
+    if (mission.status !== "clarifying") throw new AdmissionError("mission_state", 409);
+    if (mission.questions.some((item) => item.answer)) return structuredClone(mission);
     if (
       !Array.isArray(prompts) ||
       prompts.length < 1 ||
@@ -1482,11 +1555,13 @@ export class Coordinator {
     input: { summary: string; affectedArea: string; criterion: string },
   ): Promise<Mission> {
     const turn = this.conversationTurn(turnId);
-    const mission = this.activeMission();
-    if (!mission || mission.threadId !== turn.threadId)
-      throw new AdmissionError("mission_required", 409);
-    if (mission.status === "clarifying" && mission.questions.some((item) => !item.answer))
-      throw new AdmissionError("questions_pending", 409);
+    const mission = this.threadActive(turn.threadId);
+    if (!mission) throw new AdmissionError("mission_required", 409);
+    if (mission.status === "clarifying" && mission.questions.some((item) => !item.answer)) {
+      const answered = mission.questions.find((item) => item.answer)?.answer;
+      if (!answered) throw new AdmissionError("questions_pending", 409);
+      for (const question of mission.questions) question.answer ??= answered;
+    }
     if (!["clarifying", "proposed", "approved"].includes(mission.status))
       throw new AdmissionError("mission_state", 409);
     const summary = this.requireText(input.summary, "invalid_proposal", 4000);
@@ -1502,6 +1577,19 @@ export class Coordinator {
       mission.status = "proposed";
       this.event("mission.updated", mission.id);
       return structuredClone(mission);
+    });
+  }
+  async ensureChatProposal(turnId: string): Promise<Mission | undefined> {
+    const turn = this.conversationTurn(turnId);
+    const mission = this.threadActive(turn.threadId);
+    if (!mission || mission.status !== "clarifying" || mission.proposal) return;
+    if (mission.questions.some((item) => !item.answer)) return;
+    const request = this.state.messages.find((message) => message.id === turn.messageId)?.content;
+    if (!request?.trim()) return;
+    return this.proposeMission(turnId, {
+      summary: request.trim().slice(0, 4000),
+      affectedArea: "the code named in the request",
+      criterion: request.trim().slice(0, 2000),
     });
   }
   submit(
@@ -1761,6 +1849,12 @@ export class Coordinator {
         (this.state.verification ??= {})[run.id] = structuredClone(result.verification);
       run.status = "awaiting_review";
       this.event("run.awaiting_review", run.id);
+      this.crewNote(
+        run.threadId,
+        `note:${run.id}:worker-result`,
+        "worker",
+        result.summary?.trim() || "Implementation finished and is ready for review.",
+      );
       if (result.review) {
         const review: Review = {
           id: this.id(),
@@ -1771,6 +1865,12 @@ export class Coordinator {
           configurationRevision: run.configurationRevision,
         };
         this.state.reviews.push(review);
+        this.crewNote(
+          run.threadId,
+          `note:${run.id}:reviewer`,
+          "reviewer",
+          `${review.decision === "approve" ? "Approved." : "Changes requested."} ${review.summary}`,
+        );
         this.event("review.created", review.id);
       }
       this.syncMission(run.id, "awaiting_review");
@@ -1806,6 +1906,14 @@ export class Coordinator {
     this.durableUpdate(() => {
       run.status = reconcile ? "waiting_user" : "failed";
       run.error = reconcile ? "reconciliation_required" : "execution_failed";
+      this.crewNote(
+        run.threadId,
+        `note:${run.id}:worker-failed`,
+        "worker",
+        reconcile
+          ? "Implementation paused and needs another look before it can continue."
+          : "The change worker stopped before it finished. No review was started.",
+      );
       this.event("run.failed", run.id);
       this.syncMission(run.id, "failed");
     });

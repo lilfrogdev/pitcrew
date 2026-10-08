@@ -108,7 +108,7 @@ export async function applyChange(
   });
   const result = await harness.wait(`change:${input.runId}`, { signal });
   if (result.status !== "done") throw Error("change_unanswered");
-  const candidate = await transport.inspect(workspace);
+  const candidate = await includeSystemContract(transport, workspace);
   if (
     !candidate.clean ||
     candidate.sha === workspace.baseSha ||
@@ -116,6 +116,53 @@ export async function applyChange(
   )
     throw Error("invalid_candidate");
   return { candidateSha: candidate.sha, summary: (result.text ?? "").slice(0, 4096) };
+}
+async function includeSystemContract(transport: WorkspaceTransport, workspace: Workspace) {
+  const inspected = await transport.inspect(workspace);
+  if (inspected.clean) return inspected;
+  const status = await transport.run(workspace, {
+    commandId: "contract-status",
+    argv: ["git", "status", "--porcelain", "--untracked-files=all"],
+    timeoutMs: 10_000,
+    maxOutputBytes: 4096,
+  });
+  const lines = status.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const onlyContract =
+    status.status === "completed" &&
+    status.exitCode === 0 &&
+    lines.length > 0 &&
+    lines.every((line) => line.slice(3) === ".agent_context/ASSERTIONS.json");
+  if (!onlyContract) return inspected;
+  const add = await transport.run(workspace, {
+    commandId: "contract-add",
+    argv: ["git", "add", "--", ".agent_context/ASSERTIONS.json"],
+    timeoutMs: 10_000,
+    maxOutputBytes: 4096,
+  });
+  const commit = await transport.run(workspace, {
+    commandId: "contract-commit",
+    argv: ["git", "commit", "--message", "Pin contract"],
+    timeoutMs: 10_000,
+    maxOutputBytes: 4096,
+  });
+  if (
+    add.status !== "completed" ||
+    add.exitCode !== 0 ||
+    commit.status !== "completed" ||
+    commit.exitCode !== 0
+  )
+    return inspected;
+  return transport.inspect(workspace);
+}
+function reviewJson(text: string): { decision: string; summary: string; gaps?: string[] } {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = (fenced ? fenced[1] : trimmed).trim();
+  try {
+    return JSON.parse(body) as { decision: string; summary: string; gaps?: string[] };
+  } catch {
+    throw Error("invalid_review");
+  }
 }
 export interface ReviewBrief {
   credentialActor?: string;
@@ -172,22 +219,16 @@ export async function reviewCandidate(
   const result = await harness.wait(`review:${workspace.runId}`, { signal });
   if (result.status !== "done" || !result.text || result.text.length > 8192)
     throw Error("review_unanswered");
-  const parsed = JSON.parse(result.text) as { decision: string; summary: string; gaps?: string[] };
+  const parsed = reviewJson(result.text);
   let gaps: string[] | undefined;
   if (brief?.verification) {
-    if (
-      !Array.isArray(parsed.gaps) ||
-      parsed.gaps.length > 32 ||
-      parsed.gaps.some(
-        (id) =>
-          typeof id !== "string" ||
-          !brief.verification!.plan.profile.checks.some((check) => check.id === id),
-      )
-    )
+    const reported = Array.isArray(parsed.gaps) ? parsed.gaps : [];
+    const known = new Set(brief.verification.plan.profile.checks.map((check) => check.id));
+    if (reported.length > 32 || reported.some((id) => typeof id !== "string"))
       throw Error("invalid_review");
     gaps = [
       ...new Set([
-        ...parsed.gaps,
+        ...reported.filter((id) => known.has(id)),
         ...(await verificationGaps(brief.verification.plan, brief.verification.outcomes)),
       ]),
     ];

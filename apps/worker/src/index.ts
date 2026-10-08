@@ -106,6 +106,7 @@ export class RepositoryAgent extends Agent<Env> {
   private conversationsEnabled() {
     return (
       this.env.EXECUTION_MODE === "fake" ||
+      (this.env.EXECUTION_MODE === "local" && !!this.env.OPENROUTER_API_KEY) ||
       (this.env.EXECUTION_MODE === "cloud" &&
         this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
         this.env.CLOUD_CONVERSATION_ENABLED === "true")
@@ -412,6 +413,7 @@ export class RepositoryAgent extends Agent<Env> {
         try {
           if (
             firstAdmission &&
+            this.env.EXECUTION_MODE !== "local" &&
             requiresUserOpenRouter(this.env) &&
             !(await userCredential(this.env, input.credentialActor).configured(
               input.credentialActor!,
@@ -436,11 +438,17 @@ export class RepositoryAgent extends Agent<Env> {
           await worker.start(input);
           const receipt = await worker.result(id);
           if (receipt.status === "completed") {
+            const mission = core.threadMission(turn.threadId);
+            if (mission?.status === "clarifying" && !mission.proposal)
+              await core.ensureChatProposal(id);
             core.completeConversation(id, receipt.text);
             return;
           }
           if (receipt.status === "failed") {
-            core.completeConversation(id, undefined, receipt.error);
+            const mission = core.threadMission(turn.threadId);
+            if (mission?.status === "proposed" && mission.proposal?.summary)
+              core.completeConversation(id, mission.proposal.summary);
+            else core.completeConversation(id, undefined, receipt.error);
             return;
           }
         } catch {
@@ -575,7 +583,10 @@ export class RepositoryAgent extends Agent<Env> {
     if (Number(request.headers.get("content-length") ?? 0) > bodyLimit)
       return Response.json({ error: "body_too_large" }, { status: 413 });
     const coordinator = this.getCoordinator();
-    let providerReady = this.env.EXECUTION_MODE === "fake" || !requiresUserOpenRouter(this.env);
+    let providerReady =
+      this.env.EXECUTION_MODE === "fake" ||
+      (this.env.EXECUTION_MODE === "local" && !!this.env.OPENROUTER_API_KEY) ||
+      !requiresUserOpenRouter(this.env);
     if (!providerReady && credentialStorageAvailable(this.env)) {
       try {
         providerReady = await userCredential(this.env, identity.actor).configured(identity.actor);
@@ -600,9 +611,15 @@ export class RepositoryAgent extends Agent<Env> {
       this.env.CONVERSATION &&
         providerReady &&
         this.conversationsEnabled() &&
-        (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
+        (this.env.EXECUTION_MODE === "fake" ||
+          this.env.EXECUTION_MODE === "local" ||
+          !!this.env.MODEL_CONFIGURATION)
         ? {
-            catalog: resolveCatalog(userModelEnv(this.env, identity.actor)),
+            catalog: resolveCatalog(
+              this.env.EXECUTION_MODE === "local"
+                ? this.env
+                : userModelEnv(this.env, identity.actor),
+            ),
             dispatch: (id) => this.conversationJobs.enqueue(id, { turnId: id }),
           }
         : undefined,

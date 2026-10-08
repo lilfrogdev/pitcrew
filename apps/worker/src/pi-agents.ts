@@ -24,9 +24,7 @@ import type {
 import {
   CloudflareArtifacts,
   CloudflareSandbox,
-  LocalBaselineFork,
-  LocalGitWorkspace,
-  resolveLocalPaths,
+  LocalExecutorClient,
   ExecutionCoordinator,
   type Workspace,
   type OperationRecord,
@@ -67,6 +65,7 @@ export interface PiEnv extends CredentialEnv {
   OPENROUTER_API_KEY?: string;
   LOCAL_FIXTURE_DIR?: string;
   LOCAL_WORKSPACE_ROOT?: string;
+  LOCAL_EXECUTOR_URL?: string;
   AI?: Ai;
   ARTIFACTS?: Artifacts;
   SANDBOX_IMAGE?: string;
@@ -158,13 +157,12 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
             (admission?.role === "reviewer" ? admitted?.reviewer : admitted?.implementer) ??
             task?.input?.runModels?.implementer ??
             task?.brief?.runModels?.reviewer;
+          const credentialActor =
+            admission?.credentialActor ??
+            task?.input?.credentialActor ??
+            task?.brief?.credentialActor;
           const { models, model, selection } = configureSelectedModels(
-            userModelEnv(
-              env,
-              admission?.credentialActor ??
-                task?.input?.credentialActor ??
-                task?.brief?.credentialActor,
-            ),
+            env.EXECUTION_MODE === "local" ? env : userModelEnv(env, credentialActor),
             selected,
             admitted?.catalogRevision ?? task?.brief?.runModels?.catalogRevision,
           );
@@ -357,13 +355,12 @@ export class ChangeAgent extends TaskAgent {
       },
     );
   }
-  private localPaths() {
-    if (!this.env.LOCAL_FIXTURE_DIR || !this.env.LOCAL_WORKSPACE_ROOT)
-      throw Error("execution_not_configured");
-    return resolveLocalPaths(this.env.LOCAL_FIXTURE_DIR, this.env.LOCAL_WORKSPACE_ROOT);
+  private localExecutor() {
+    if (!this.env.LOCAL_EXECUTOR_URL) throw Error("execution_not_configured");
+    return new LocalExecutorClient(this.env.LOCAL_EXECUTOR_URL);
   }
   protected transport() {
-    if (this.env.EXECUTION_MODE === "local") return new LocalGitWorkspace(this.localPaths().root);
+    if (this.env.EXECUTION_MODE === "local") return this.localExecutor();
     if (!this.env.ARTIFACTS || !this.ctx.container || !this.env.SANDBOX_IMAGE)
       throw Error("execution_not_configured");
     return new CloudflareSandbox(
@@ -676,10 +673,7 @@ export class ChangeAgent extends TaskAgent {
     };
     const forks =
       this.env.EXECUTION_MODE === "local"
-        ? new LocalBaselineFork(
-            this.localPaths().fixture,
-            new LocalGitWorkspace(this.localPaths().root),
-          )
+        ? this.localExecutor()
         : new CloudflareArtifacts(this.env.ARTIFACTS!);
     const coordinator = new ExecutionCoordinator(forks, transport, journal);
     return { coordinator, transport };
@@ -884,15 +878,17 @@ export class ReviewAgent extends TaskAgent {
       ],
     });
   }
+  private localExecutor() {
+    if (!this.env.LOCAL_EXECUTOR_URL) throw Error("execution_not_configured");
+    return new LocalExecutorClient(this.env.LOCAL_EXECUTOR_URL);
+  }
   private installLocalReviewTools() {
     const Read = Type.Object({
       path: Type.String({ maxLength: 1024 }),
       revision: Type.Union([Type.Literal("base"), Type.Literal("candidate")]),
     });
     const git = (workspace: Workspace, commandId: string, argv: string[]) =>
-      new LocalGitWorkspace(
-        resolveLocalPaths(this.env.LOCAL_FIXTURE_DIR!, this.env.LOCAL_WORKSPACE_ROOT!).root,
-      ).run(workspace, {
+      this.localExecutor().run(workspace, {
         commandId,
         argv,
         timeoutMs: 5000,

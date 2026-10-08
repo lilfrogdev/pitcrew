@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Mission, RunEvidence } from "@pitcrew/protocol";
 import type { Api } from "./api";
+import { MessageText } from "./MessageText";
 
 export function MissionPanel({
   api,
@@ -232,6 +233,110 @@ export function MissionPanel({
           )}
         </div>
       )}
+    </section>
+  );
+}
+
+export function PlanApproval({
+  api,
+  threadId,
+  executionEnabled,
+  onReady,
+}: {
+  api: Api;
+  threadId: string;
+  executionEnabled: boolean;
+  onReady?: (revision: string | null) => void;
+}) {
+  const [mission, setMission] = useState<Mission | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      if (!threadId) return;
+      void api.missions
+        .current(threadId)
+        .then((next) => {
+          if (cancelled) return;
+          setMission(next);
+          setError("");
+          onReadyRef.current?.(
+            next?.status === "proposed" ? (next.proposal?.revision ?? null) : null,
+          );
+        })
+        .catch((cause: unknown) => {
+          if (!cancelled)
+            setError(cause instanceof Error ? cause.message : "Could not load the plan.");
+        });
+    };
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [api, threadId]);
+  if (!threadId || !mission?.proposal)
+    return (
+      <div className="workspace-empty">
+        <h2>Plans</h2>
+        <p>When the repository agent proposes a plan, read it here and approve it.</p>
+      </div>
+    );
+  const proposal = mission.proposal;
+  const waiting = mission.status === "proposed";
+  const statusLabel =
+    mission.status === "failed"
+      ? "This plan was approved. The run stopped before it finished."
+      : mission.status === "running"
+        ? "Approved. The change worker is using this plan."
+        : waiting
+          ? "Plan ready"
+          : "Approved";
+  const checks = proposal.checks
+    .map((check) => ("command" in check && check.command ? check.command.argv.join(" ") : check.id))
+    .filter(Boolean);
+  return (
+    <section className="plan-approval" aria-label="Approve plan">
+      <div className="plan-approval-head">
+        <div>
+          <p className="eyebrow">{statusLabel}</p>
+          <p className="plan-meta">{proposal.affectedArea}</p>
+        </div>
+        {waiting && (
+        <button
+          type="button"
+          disabled={busy || !executionEnabled}
+          onClick={() => {
+            setBusy(true);
+            setError("");
+            void api.missions
+              .approve(mission.id, proposal.revision, crypto.randomUUID())
+              .then(() => api.missions.start(mission.id, crypto.randomUUID()))
+              .then((started) => setMission(started.mission))
+              .catch((cause: unknown) =>
+                setError(cause instanceof Error ? cause.message : "The plan could not be approved."),
+              )
+              .finally(() => setBusy(false));
+          }}
+        >
+          {busy ? "Starting…" : "Approve this plan"}
+        </button>
+        )}
+      </div>
+      {checks.length > 0 && <p className="plan-meta">Checks: {checks.join(" · ")}</p>}
+      <div className="plan-approval-body">
+        <MessageText content={proposal.summary} />
+      </div>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      {!executionEnabled && <p role="status">Runs are disabled by the server.</p>}
     </section>
   );
 }

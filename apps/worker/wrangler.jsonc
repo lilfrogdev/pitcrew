@@ -85,10 +85,11 @@
         "LANDING_MODE": "fixture",
         "LOCAL_FIXTURE_DIR": "fixtures/baseline",
         "LOCAL_WORKSPACE_ROOT": ".wrangler/local-workspaces",
+        "LOCAL_EXECUTOR_URL": "http://127.0.0.1:8791",
         "ARTIFACT_REPOSITORY": "pitcrew-baseline",
         "CONFIGURATION_REVISION": "local-agent-v1",
         "PROJECT_BASE_SHA": "aeb3fcc59a29905910e225d6379ab12ed32f8e09",
-        "MODEL_CONFIGURATION": "{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"qwen/qwen3.8-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}",
+        "MODEL_CONFIGURATION": "{\"provider\":\"byok\",\"providerId\":\"openrouter\",\"model\":\"deepseek/deepseek-v4-flash\",\"secretBinding\":\"OPENROUTER_API_KEY\"}",
       },
       "durable_objects": {
         "bindings": [

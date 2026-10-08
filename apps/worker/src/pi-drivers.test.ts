@@ -212,6 +212,15 @@ describe("independent durable Pi drivers", () => {
           async inspect() {
             return { sha: candidate, clean: false };
           },
+          async run() {
+            return {
+              status: "completed" as const,
+              exitCode: 0,
+              stdout: " M src/greet.js\n",
+              stderr: "",
+              truncated: false,
+            };
+          },
         },
         workspace,
         input,
@@ -309,6 +318,15 @@ describe("independent durable Pi drivers", () => {
         blocks[0].text!.indexOf("historical.webp"),
       );
     }
+  });
+  it("accepts a review wrapped in a json fence", async () => {
+    const review = await reviewCandidate(
+      prompt('```json\n{"decision":"approve","summary":"checked"}\n```'),
+      workspace,
+      evidence,
+    );
+    expect(review.decision).toBe("approve");
+    expect(review.summary).toBe("checked");
   });
   it("rejects stale review context and failing or truncated test approval", async () => {
     await expect(
@@ -452,15 +470,41 @@ it("gives acceptance to the worker and restricts independent verification review
   expect(review.decision).toBe("request_changes");
   expect(review.verificationGaps).toEqual(["behavior"]);
   expect(outcomes[0].status).toBe("failed");
-  await expect(
-    reviewCandidate(
-      prompt(JSON.stringify({ decision: "approve", summary: "Override failed checks" })),
-      workspace,
-      evidence,
-      undefined,
-      { messages: input.messages, implementationSummary: "done", verification: { plan, outcomes } },
-    ),
-  ).rejects.toThrow("invalid_review");
+  const override = await reviewCandidate(
+    prompt(JSON.stringify({ decision: "approve", summary: "Override failed checks" })),
+    workspace,
+    evidence,
+    undefined,
+    { messages: input.messages, implementationSummary: "done", verification: { plan, outcomes } },
+  );
+  expect(override.decision).toBe("request_changes");
+  expect(override.verificationGaps).toEqual(["behavior"]);
+  const passed = pendingOutcomes(plan).map((outcome) => ({
+    ...outcome,
+    status: "passed" as const,
+    artifactId: workspace.artifactId,
+    runId: workspace.runId,
+    result: {
+      status: "completed" as const,
+      exitCode: 0,
+      stdout: "passed",
+      stderr: "",
+      truncated: false,
+    },
+  }));
+  const invented = await reviewCandidate(
+    prompt(JSON.stringify({ gaps: ["commit-existence"], summary: "The change matches the request" })),
+    workspace,
+    evidence,
+    undefined,
+    {
+      messages: input.messages,
+      implementationSummary: "done",
+      verification: { plan, outcomes: passed },
+    },
+  );
+  expect(invented.decision).toBe("approve");
+  expect(invented.verificationGaps).toEqual([]);
 });
 
 it("never treats interrupted child/reviewer receipts as terminal success", async () => {

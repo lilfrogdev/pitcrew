@@ -90,6 +90,67 @@ describe("mission approval", () => {
     );
   });
 
+  it("lets one chat reply answer every open question so the plan can be recorded", async () => {
+    const f = fixture();
+    const first = f.core.queueTurn(f.thread.id, "Change greet", "one", "alice", catalog);
+    f.core.beginConversation(first.turn.id);
+    f.core.askMission(first.turn.id, [
+      "What should the tests assert?",
+      "Which files change?",
+      "Anything else?",
+    ]);
+    const followUp = f.core.queueTurn(
+      f.thread.id,
+      'greet() returns exactly "hello, pitcrew".',
+      "two",
+      "alice",
+      catalog,
+    );
+    expect(f.core.askMission(followUp.turn.id, ["Ask again"]).questions).toHaveLength(3);
+    const proposed = await f.core.proposeMission(first.turn.id, {
+      summary: "Change greet",
+      affectedArea: "src",
+      criterion: 'greet() returns exactly "hello, pitcrew".',
+    });
+    expect(proposed.status).toBe("proposed");
+    expect(proposed.questions.every((question) => question.answer)).toBe(true);
+  });
+
+  it("records a plan from the user request when the agent replies without one", async () => {
+    const f = fixture();
+    const turn = f.core.queueTurn(
+      f.thread.id,
+      'Change greet so it returns "hello, pitcrew".',
+      "chat",
+      "alice",
+      catalog,
+    );
+    f.core.beginConversation(turn.turn.id);
+    const proposed = await f.core.ensureChatProposal(turn.turn.id);
+    expect(proposed?.status).toBe("proposed");
+    expect(proposed?.proposal?.summary).toContain("hello, pitcrew");
+    expect(await f.core.ensureChatProposal(turn.turn.id)).toBeUndefined();
+  });
+
+  it("gives a new thread its own mission while another thread is still clarifying", async () => {
+    const f = fixture();
+    const first = f.core.createThread("First", "first");
+    const second = f.core.createThread("Second", "second");
+    const older = f.core.queueTurn(first.id, "Older request", "old", "alice", catalog);
+    f.core.beginConversation(older.turn.id);
+    f.core.askMission(older.turn.id, ["What should the tests assert?"]);
+    const next = f.core.queueTurn(second.id, "Change greet to hello, pitcrew", "new", "alice", catalog);
+    f.core.beginConversation(next.turn.id);
+    const proposed = await f.core.proposeMission(next.turn.id, {
+      summary: "Change greet",
+      affectedArea: "src",
+      criterion: 'greet() returns exactly "hello, pitcrew".',
+    });
+    expect(proposed.threadId).toBe(second.id);
+    expect(proposed.status).toBe("proposed");
+    expect(f.core.threadMission(first.id)?.status).toBe("clarifying");
+  });
+
   it("refuses conversation delegation until the exact revision is approved", async () => {
     const f = fixture();
     const mission = f.core.createMission(f.thread.id, "Implement the button", "create", "alice");
@@ -111,7 +172,19 @@ describe("mission approval", () => {
     const run = await f.core.delegateApprovedMission(turn.turn.id);
     expect(run.status).toBe("queued");
     expect(await f.core.delegateApprovedMission(turn.turn.id)).toMatchObject({ id: run.id });
-    expect(f.core.state.runs).toHaveLength(1);
+    f.core.fail(run.id);
+    f.core.completeConversation(turn.turn.id, "The run stopped.");
+    const retry = f.core.queueTurn(f.thread.id, "Can we retry?", "retry", "alice", catalog);
+    f.core.beginConversation(retry.turn.id);
+    const again = await f.core.delegateApprovedMission(retry.turn.id);
+    expect(again.id).not.toBe(run.id);
+    expect(again.status).toBe("queued");
+    expect(f.core.state.missions?.filter((item) => item.threadId === f.thread.id)).toHaveLength(1);
+    expect(f.core.state.runs).toHaveLength(2);
+    f.core.fail(again.id);
+    f.core.completeConversation(retry.turn.id, "Stopped again.");
+    f.core.queueTurn(f.thread.id, "Something else", "other", "alice", catalog);
+    expect(f.core.threadMission(f.thread.id)?.proposal?.revision).toBe(proposed.proposal!.revision);
   });
 });
 

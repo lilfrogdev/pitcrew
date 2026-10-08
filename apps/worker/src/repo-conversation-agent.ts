@@ -38,7 +38,7 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
           this.assertConversationAllowed();
           const input = this.input();
           const configured = configureSelectedModels(
-            userModelEnv(env, input.credentialActor),
+            env.EXECUTION_MODE === "local" ? env : userModelEnv(env, input.credentialActor),
             input.models.repoAgent,
             input.models.catalogRevision,
           );
@@ -146,6 +146,7 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
   protected conversationAllowed() {
     return (
       this.env.EXECUTION_MODE === "fake" ||
+      (this.env.EXECUTION_MODE === "local" && !!this.env.OPENROUTER_API_KEY) ||
       (this.env.EXECUTION_MODE === "cloud" &&
         this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
         this.env.CLOUD_CONVERSATION_ENABLED === "true")

@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { chdir } from "node:process";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LocalBaselineFork, LocalGitWorkspace, committedBaselineSha } from "../src/index.ts";
+import {
+  LocalBaselineFork,
+  LocalGitWorkspace,
+  committedBaselineSha,
+  resolveLocalPaths,
+} from "../src/index.ts";
 import {
   assertMaterializedContract,
   contractDocument,
@@ -90,5 +97,44 @@ test("local baseline checkout commits once, runs tests, and rejects a tampered c
     assert.equal(contractDocument(snapshot).includes(sha), true);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a checkout inside another git repo keeps its own baseline commit", async () => {
+  const sha = await committedBaselineSha(fixture);
+  const parent = await mkdtemp(resolve(tmpdir(), "pitcrew-parent-"));
+  try {
+    await new Promise((resolvePromise, reject) => {
+      execFile("git", ["init", "-b", "main"], { cwd: parent }, (error) =>
+        error ? reject(error) : resolvePromise(),
+      );
+    });
+    await writeFile(resolve(parent, "dirty.txt"), "dirty");
+    const workspaces = new LocalGitWorkspace(resolve(parent, "workspaces"));
+    const forks = new LocalBaselineFork(fixture, workspaces);
+    const workspace = {
+      runId: "run",
+      projectId: "pitcrew",
+      repository: "pitcrew-baseline",
+      baseSha: sha,
+      configurationRevision: "local-agent-v1",
+      workerId: "worker",
+      artifactId: "nested",
+    };
+    await forks.fork("pitcrew-baseline", workspace.artifactId, sha);
+    assert.deepEqual(await workspaces.inspect(workspace), { sha, clean: true });
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("fixture path resolves from the module file when the process directory is elsewhere", () => {
+  const previous = process.cwd();
+  chdir(tmpdir());
+  try {
+    const paths = resolveLocalPaths("fixtures/baseline", ".wrangler/local-workspaces");
+    assert.equal(paths.fixture.endsWith(`${sep}fixtures${sep}baseline`), true);
+  } finally {
+    chdir(previous);
   }
 });

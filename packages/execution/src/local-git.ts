@@ -21,26 +21,41 @@ const identity = {
   GIT_COMMITTER_DATE: "2026-10-06T00:00:00Z",
 };
 
+function stackDirectories(): string[] {
+  const stack = new Error().stack ?? "";
+  const directories: string[] = [];
+  for (const match of stack.matchAll(/file:\/\/(\/[^)\s]+)/g)) {
+    directories.push(dirname(match[1].replace(/:\d+:\d+$/, "")));
+  }
+  return directories;
+}
+
 export function resolveLocalPaths(fixtureDir: string, workspaceRoot: string) {
-  let dir = process.cwd();
-  for (let i = 0; i < 6; i += 1) {
-    const fixture = resolve(dir, fixtureDir);
-    if (existsSync(resolve(fixture, "package.json")))
-      return { fixture, root: resolve(dir, workspaceRoot) };
-    const parent = resolve(dir, "..");
-    if (parent === dir) break;
-    dir = parent;
+  const seen = new Set<string>();
+  for (const start of [process.cwd(), ...stackDirectories()]) {
+    let dir = start;
+    for (let i = 0; i < 12; i += 1) {
+      if (seen.has(dir)) break;
+      seen.add(dir);
+      const fixture = resolve(dir, fixtureDir);
+      if (existsSync(resolve(fixture, "package.json")))
+        return { fixture, root: resolve(dir, workspaceRoot) };
+      const parent = resolve(dir, "..");
+      if (parent === dir) break;
+      dir = parent;
+    }
   }
   throw new Error("execution_not_configured");
 }
 
-function commandEnv(): NodeJS.ProcessEnv {
+function commandEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     PATH: process.env.PATH ?? "",
     HOME: process.env.HOME ?? "",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     ...identity,
+    ...extra,
   };
 }
 
@@ -67,11 +82,12 @@ function runProcess(
   timeoutMs: number,
   maxOutputBytes: number,
   signal?: AbortSignal,
+  extra: NodeJS.ProcessEnv = {},
 ): Promise<CommandResult> {
   return new Promise((done) => {
     const child = spawn(argv[0], argv.slice(1), {
       cwd,
-      env: commandEnv(),
+      env: commandEnv(extra),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -159,12 +175,14 @@ export class LocalGitWorkspace implements WorkspaceTransport {
     if (networkCommand(command.argv)) throw new ExecutionError("NETWORK_COMMAND");
     if (signal?.aborted)
       return { exitCode: null, stdout: "", stderr: "", truncated: false, status: "stopped" };
+    const directory = this.directory(workspace);
     return runProcess(
-      this.directory(workspace),
+      directory,
       command.argv,
       command.timeoutMs,
       command.maxOutputBytes,
       signal,
+      command.argv[0] === "git" ? gitEnv(directory) : {},
     );
   }
 
@@ -217,8 +235,13 @@ export class LocalGitWorkspace implements WorkspaceTransport {
   async stop(_workspace: Workspace): Promise<void> {}
 
   private git(workspace: Workspace, args: string[]): Promise<CommandResult> {
-    return runProcess(this.directory(workspace), ["git", ...args], 10_000, 65_536);
+    const directory = this.directory(workspace);
+    return runProcess(directory, ["git", ...args], 10_000, 65_536, undefined, gitEnv(directory));
   }
+}
+
+function gitEnv(directory: string): NodeJS.ProcessEnv {
+  return { GIT_DIR: resolve(directory, ".git"), GIT_WORK_TREE: directory };
 }
 
 async function hasDirectory(path: string): Promise<boolean> {

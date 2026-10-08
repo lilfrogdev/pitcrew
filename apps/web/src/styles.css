@@ -392,12 +392,65 @@ textarea {
   font-size: 12px;
   color: var(--muted);
 }
-.message p {
+.message p,
+.message-copy li {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.65;
   color: var(--text);
   font-size: 14px;
+}
+.message-copy ul {
+  margin: 8px 0 8px 1.15em;
+  padding: 0;
+}
+.message-copy li {
+  margin: 4px 0;
+}
+.message.pending p {
+  color: var(--muted);
+}
+.thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.thinking-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: thinking 1.2s infinite ease-in-out;
+}
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes thinking {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-dots span {
+    animation: none;
+    opacity: 1;
+  }
+}
+.message-copy code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--hover);
+  padding: 1px 5px;
+  border-radius: 4px;
 }
 .composer {
   margin: 0 30px 24px;
@@ -779,6 +832,50 @@ pre {
   color: var(--error);
   font-size: 12px;
   margin-top: 10px;
+}
+.plan-cue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 30px 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.plan-approval {
+  padding: 4px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-approval-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.plan-approval-head .eyebrow,
+.plan-meta {
+  margin: 0;
+}
+.plan-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+.plan-approval-head button {
+  flex: none;
+  background: var(--text);
+  color: var(--surface);
+  border-color: transparent;
+}
+.plan-approval-body {
+  overflow: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+.plan-approval-body p,
+.plan-approval-body li {
+  margin: 0 0 8px;
 }
 .empty {
   color: var(--muted);

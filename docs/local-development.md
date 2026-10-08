@@ -43,19 +43,27 @@ deploying or starting a Cloudflare container:
 ```sh
 printf 'OPENROUTER_API_KEY=sk-or-v1-...\n' > apps/worker/.dev.vars
 pnpm build:web
+node --experimental-transform-types scripts/local-executor.mjs
+```
+
+Leave that executor running. In a second terminal, from the repository root:
+
+```sh
 WRANGLER_SEND_METRICS=false pnpm exec wrangler dev --local --env local-agent --config apps/worker/wrangler.jsonc --ip 127.0.0.1 --port 8787
 ```
 
-Run that command from the repository root. `.dev.vars` is ignored by Git. Do not put the key in
+The Worker cannot read the fixture or spawn `git`. `scripts/local-executor.mjs` does that on
+`127.0.0.1:8791` and the Worker calls it. `.dev.vars` is ignored by Git. Do not put the key in
 a `VITE_` variable. In another terminal:
 
 ```sh
 VITE_PITCREW_DEMO=false pnpm -C apps/web dev --port 5173 --strictPort
 ```
 
-Open <http://127.0.0.1:5173>, describe a feature, answer the question, approve that revision,
-and start implementation. The checkout is created under `.wrangler/local-workspaces`. The model
-is OpenRouter `qwen/qwen3.8-flash`. This mode does not fork Artifacts or reserve cloud budget.
+Open <http://127.0.0.1:8787>. Create a conversation and describe the change in the chat.
+The repository agent replies in the thread. When a plan is ready, choose **Approve this plan**.
+Worker and reviewer lines appear in the same transcript. The checkout is created under
+`.wrangler/local-workspaces`. The model is OpenRouter `deepseek/deepseek-v4-flash`. This mode does not fork Artifacts or reserve cloud budget.
 Restarting the Worker resumes the same run; it does not create a second checkout or a second
 model call for a stage that already finished. The `development` environment remains fake.
 
