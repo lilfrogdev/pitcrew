@@ -350,6 +350,8 @@ const safeText = (value, limit, multiline = false) =>
   // eslint-disable-next-line no-control-regex -- Plain labels reject controls; descriptions permit LF and tab.
   !(multiline ? /[\x00-\x08\x0b-\x1f\x7f]/ : /[\x00-\x1f\x7f]/).test(value);
 const resourceId = /^[A-Za-z0-9:_-]{1,128}$/;
+const validLogicalName = (value) =>
+  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(value.trim());
 function normalizeNativeManagement(path, method, value) {
   const keys = Object.keys(value);
   if (path === "/api/repositories/create") {
@@ -363,8 +365,7 @@ function normalizeNativeManagement(path, method, value) {
       keys.every((key) =>
         ["name", "credentialConsent", "displayName", "description"].includes(key),
       ) &&
-      namePattern.test(value.name ?? "") &&
-      typeof value.name === "string" &&
+      validLogicalName(value.name) &&
       value.credentialConsent === true &&
       (value.displayName === undefined ||
         (safeText(value.displayName, 80) && value.displayName.trim().length > 0)) &&
@@ -374,7 +375,10 @@ function normalizeNativeManagement(path, method, value) {
   if (nativeProjectRepository.test(path)) {
     if (method === "PATCH")
       return (
-        keys.every((key) => ["displayName", "description", "expectedRevision"].includes(key)) &&
+        keys.every((key) =>
+          ["displayName", "description", "expectedRevision", "logicalName"].includes(key),
+        ) &&
+        (value.logicalName === undefined || validLogicalName(value.logicalName)) &&
         safeText(value.displayName, 80) &&
         value.displayName.trim().length > 0 &&
         safeText(value.description, 1000, true) &&
@@ -470,6 +474,7 @@ function nativeRepositoryProjection(item) {
     !resourceId.test(item.projectId ?? "") ||
     !resourceId.test(item.repositoryId ?? "") ||
     !namePattern.test(item.repositoryName ?? "") ||
+    (item.logicalName !== undefined && !namePattern.test(item.logicalName)) ||
     !safeText(item.name, 80) ||
     !item.name.trim().length ||
     !safeText(item.description ?? "", 1000, true) ||
@@ -488,6 +493,7 @@ function nativeRepositoryProjection(item) {
     projectId: item.projectId,
     name: item.name,
     repositoryName: item.repositoryName,
+    ...(item.logicalName !== undefined ? { logicalName: item.logicalName } : {}),
     repositoryId: item.repositoryId,
     description: item.description ?? "",
     metadataRevision: item.metadataRevision ?? 0,
@@ -534,6 +540,7 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
       !resourceId.test(value.id ?? "") ||
       value.id !== projectId ||
       !safeText(value.name, 80) ||
+      (value.logicalName !== undefined && !namePattern.test(value.logicalName)) ||
       !value.name.trim().length ||
       typeof value.repository !== "string" ||
       !namePattern.test(value.repository.replace(/^artifact:/, "")) ||
@@ -548,6 +555,7 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
     return {
       id: value.id,
       name: value.name,
+      ...(value.logicalName !== undefined ? { logicalName: value.logicalName } : {}),
       repository: value.repository,
       baseSha: value.baseSha,
       configurationRevision: value.configurationRevision,
@@ -566,6 +574,9 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
         !item ||
         typeof item.name !== "string" ||
         !namePattern.test(item.name) ||
+        (item.logicalName !== undefined &&
+          (!namePattern.test(item.logicalName) || item.logicalName !== item.name)) ||
+        (item.repositoryName !== undefined && !namePattern.test(item.repositoryName)) ||
         ![
           "pending",
           "cleanup_required",
@@ -581,6 +592,8 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
         throw Error();
       return {
         name: item.name,
+        ...(item.logicalName !== undefined ? { logicalName: item.logicalName } : {}),
+        ...(item.repositoryName !== undefined ? { repositoryName: item.repositoryName } : {}),
         status: item.status,
         ...(item.repositoryId !== undefined ? { repositoryId: item.repositoryId } : {}),
         ...(item.status === "ready" ? { projectId: item.projectId } : {}),
@@ -694,6 +707,7 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
             (!resourceId.test(item.projectId ?? "") ||
               !["owner", "editor"].includes(item.role) ||
               (item.repositoryName !== undefined && !namePattern.test(item.repositoryName)) ||
+              (item.logicalName !== undefined && !namePattern.test(item.logicalName)) ||
               (item.repositoryId !== undefined && !resourceId.test(item.repositoryId)) ||
               (item.description !== undefined && !safeText(item.description, 1000, true)) ||
               (item.metadataRevision !== undefined &&
@@ -713,6 +727,9 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
                 status: item.lifecycle === "deleting" ? "deleting" : "present",
                 ...(passwordMode && item.repositoryName !== undefined
                   ? { repositoryName: item.repositoryName }
+                  : {}),
+                ...(passwordMode && item.logicalName !== undefined
+                  ? { logicalName: item.logicalName }
                   : {}),
                 ...(passwordMode && item.repositoryId !== undefined
                   ? { repositoryId: item.repositoryId }

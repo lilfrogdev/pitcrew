@@ -9,6 +9,7 @@ import {
   RepositoryLifecycle,
   lifecycleRequest,
   type LifecycleRecord,
+  logicalRepositoryName,
 } from "./repository-lifecycle";
 import {
   approvedRepositoryCreation,
@@ -304,6 +305,9 @@ export class RepositoryAgent extends Agent<Env> {
       name: core.state.project.name,
       description: core.state.project.description ?? "",
       metadataRevision: core.state.project.metadataRevision ?? 0,
+      ...(entry
+        ? { logicalName: core.state.project.logicalName ?? logicalRepositoryName(entry.sourceName) }
+        : {}),
       ...(entry ? { repositoryName: entry.sourceName, repositoryId: entry.sourceId } : {}),
       role,
       status,
@@ -367,6 +371,13 @@ export class RepositoryAgent extends Agent<Env> {
           Object.values(this.getCoordinator().state.ownedProjects ?? {}).some(
             (entry) => entry.sourceName === name,
           ),
+        () =>
+          Object.values(this.getCoordinator().state.ownedProjects ?? {}).map((entry) => ({
+            ownerActor: entry.ownerActor,
+            name: entry.sourceName,
+            logicalName: entry.state.project.logicalName ?? logicalRepositoryName(entry.sourceName),
+            deleted: entry.state.repositoryLifecycle === "deleted",
+          })),
       );
     }
     return this.repositoryLifecycle;
@@ -1551,8 +1562,17 @@ export class RepositoryAgent extends Agent<Env> {
             "displayName",
             "description",
             "expectedRevision",
+            "logicalName",
           ]);
           const metadata = repositoryMetadata(body.displayName, body.description);
+          let logicalName: string | undefined;
+          if (body.logicalName !== undefined) {
+            try {
+              logicalName = logicalRepositoryName(body.logicalName);
+            } catch {
+              throw new RepositoryCreationError("invalid_name", 400);
+            }
+          }
           if (
             body.expectedRevision !== undefined &&
             (typeof body.expectedRevision !== "number" ||
@@ -1560,16 +1580,40 @@ export class RepositoryAgent extends Agent<Env> {
               body.expectedRevision < 0)
           )
             throw new RepositoryCreationError("invalid_repository_metadata", 400);
-          return await this.visualizationAuthority.run(async () => {
-            await authorize();
-            return Response.json(
-              core!.updateRepositoryMetadata(
-                metadata.displayName,
-                metadata.description,
-                body.expectedRevision as number | undefined,
-              ),
+          const target = owner();
+          const expectedSourceName = target.sourceName,
+            expectedSourceId = target.sourceId;
+          const update = async (reservation?: () => void) =>
+            this.visualizationAuthority.run(async () => {
+              const current = await authorize();
+              if (
+                current.sourceName !== expectedSourceName ||
+                current.sourceId !== expectedSourceId
+              )
+                throw new RepositoryCreationError("repository_identity_changed", 409);
+              return this.ctx.storage.transactionSync(() => {
+                reservation?.();
+                return Response.json(
+                  core!.updateRepositoryMetadata(
+                    metadata.displayName,
+                    metadata.description,
+                    body.expectedRevision as number | undefined,
+                    logicalName,
+                  ),
+                );
+              });
+            });
+          if (logicalName !== undefined) {
+            const entry = owner();
+            return await lifecycle.renameLogical(
+              entry.sourceName,
+              entry.sourceId,
+              identity.actor,
+              logicalName,
+              update,
             );
-          });
+          }
+          return await update();
         }
         if (request.method === "POST" && management[2]) {
           const body = await readRepositoryBody(request, ["confirmation", "repositoryId"], 2048);
@@ -1637,9 +1681,12 @@ export class RepositoryAgent extends Agent<Env> {
           return creationError(new RepositoryCreationError(error.message, error.status));
         if (
           error instanceof Error &&
-          ["repository_identity_changed", "repository_protected", "lifecycle_limit"].includes(
-            error.message,
-          )
+          [
+            "repository_identity_changed",
+            "repository_protected",
+            "repository_exists",
+            "lifecycle_limit",
+          ].includes(error.message)
         )
           return creationError(new RepositoryCreationError(error.message, 409));
         return creationError(error);
@@ -1655,6 +1702,7 @@ export class RepositoryAgent extends Agent<Env> {
               (entry) =>
                 entry.sourceId === record.id &&
                 entry.sourceName === record.name &&
+                (!record.projectId || entry.state.project.id === record.projectId) &&
                 entry.ownerActor === identity.actor &&
                 !entry.state.repositoryLifecycle,
             )?.state.project
@@ -1686,8 +1734,13 @@ export class RepositoryAgent extends Agent<Env> {
       if ((!target && !broad()) || !lifecycle)
         return Response.json({ error: "not_found" }, { status: 404 });
       try {
-        const { name, displayName, description } = await readRepositoryCreation(request, broad());
-        if (!broad() && name !== target?.name) throw new RepositoryCreationError("not_found", 404);
+        const broadRequest = broad();
+        const { name, displayName, description } = await readRepositoryCreation(
+          request,
+          broadRequest,
+        );
+        if (!broadRequest && name !== target?.name)
+          throw new RepositoryCreationError("not_found", 404);
         const grant = await this.visualizationAuthority.run(() =>
           visualizationGrant(auth!, request),
         );
@@ -1699,30 +1752,34 @@ export class RepositoryAgent extends Agent<Env> {
           } catch {
             throw new RepositoryCreationError("unauthorized", 401);
           }
-          if (!broad() && approved()?.name !== name)
+          if (broadRequest ? !broad() : approved()?.name !== name)
             throw new RepositoryCreationError("not_found", 404);
         };
         const task = (async () => {
           await this.visualizationAuthority.run(fresh);
-          const previous = lifecycle
-            .ownedCreations(identity.actor)
-            .find((record) => record.name === name);
+          const previous = broadRequest
+            ? lifecycle.logicalCreation(identity.actor, name)
+            : lifecycle.ownedCreations(identity.actor).find((record) => record.name === name);
+          const admit = (commit: () => void) =>
+            this.visualizationAuthority.run(async () => {
+              await fresh();
+              if (Object.keys(root.state.ownedProjects ?? {}).length >= 20 && !previous)
+                throw new RepositoryCreationError("capacity", 429);
+              this.ctx.storage.transactionSync(commit);
+            });
           let record =
             previous?.status === "cleanup_required"
-              ? await lifecycle.reconcile(name, identity.actor)
-              : await lifecycle.provision(
-                  name,
-                  "create",
-                  undefined,
-                  identity.actor,
-                  () =>
-                    this.visualizationAuthority.run(async () => {
-                      await fresh();
-                      if (Object.keys(root.state.ownedProjects ?? {}).length >= 20)
-                        throw new RepositoryCreationError("capacity", 429);
-                    }),
-                  broad() ? { displayName, description } : undefined,
-                );
+              ? await lifecycle.reconcile(previous.name, identity.actor)
+              : broadRequest
+                ? await lifecycle.provisionLogical(
+                    name,
+                    identity.actor,
+                    { displayName, description },
+                    admit,
+                  )
+                : await lifecycle.provision(name, "create", undefined, identity.actor, () =>
+                    admit(() => {}),
+                  );
           if (record.status !== "ready") return creationProjection(record);
           if (
             !record.id ||
@@ -1732,12 +1789,17 @@ export class RepositoryAgent extends Agent<Env> {
             throw new RepositoryCreationError("repository_identity_changed", 409);
           const existing = projectFor(record);
           if (existing) {
-            await this.visualizationAuthority.run(fresh);
-            return creationProjection(record, existing.id);
+            return this.visualizationAuthority.run(async () => {
+              await fresh();
+              const current = lifecycle.ownedRecord(record.name, identity.actor);
+              if (!current || current.id !== record.id || current.status !== "ready")
+                throw new RepositoryCreationError("repository_identity_changed", 409);
+              return creationProjection(current, existing.id);
+            });
           }
           // Token cleanup continues after revocation, but ownership never does.
           try {
-            using repo = await this.env.ARTIFACTS!.get(name);
+            using repo = await this.env.ARTIFACTS!.get(record.name);
             const info = await repo.info();
             if (info.id !== record.id)
               throw new RepositoryCreationError("repository_identity_changed", 409);
@@ -1750,7 +1812,7 @@ export class RepositoryAgent extends Agent<Env> {
               await fresh();
               const saved = lifecycle
                 .ownedCreations(identity.actor)
-                .find((item) => item.name === name);
+                .find((item) => item.name === record.name);
               if (!saved || saved.id !== record.id || saved.status !== "ready")
                 throw new RepositoryCreationError("repository_identity_changed", 409);
               record = saved;
@@ -1758,7 +1820,7 @@ export class RepositoryAgent extends Agent<Env> {
               if (registered) return creationProjection(record, registered.id);
               if (
                 Object.values(root.state.ownedProjects ?? {}).some(
-                  (entry) => entry.sourceId === record.id || entry.sourceName === name,
+                  (entry) => entry.sourceId === record.id || entry.sourceName === record.name,
                 )
               )
                 throw new RepositoryCreationError("repository_identity_changed", 409);
@@ -1768,8 +1830,13 @@ export class RepositoryAgent extends Agent<Env> {
                 if (!current || `account:${current.id}` !== grant.actor)
                   throw new RepositoryCreationError("unauthorized", 401);
                 await fresh();
+                lifecycle.assertLogicalNameAvailable(
+                  grant.actor,
+                  record.logicalName ?? logicalRepositoryName(record.name),
+                  record.name,
+                );
                 const project = root.addOwnedProject(
-                  name,
+                  record.name,
                   record.id!,
                   grant.actor,
                   grant.email,
@@ -1787,8 +1854,13 @@ export class RepositoryAgent extends Agent<Env> {
                     avatar: current.image,
                   },
                   record.displayName !== undefined
-                    ? { displayName: record.displayName, description: record.description ?? "" }
+                    ? {
+                        displayName: record.displayName,
+                        description: record.description ?? "",
+                        logicalName: record.logicalName,
+                      }
                     : undefined,
+                  record.projectId,
                 );
                 return creationProjection(record, project.id);
               } catch (error) {
@@ -1809,9 +1881,9 @@ export class RepositoryAgent extends Agent<Env> {
           task,
           new Promise<ReturnType<typeof creationProjection>>((resolve) => {
             timer = setTimeout(() => {
-              const saved = lifecycle
-                .ownedCreations(identity.actor)
-                .find((item) => item.name === name);
+              const saved = broadRequest
+                ? lifecycle.logicalCreation(identity.actor, name)
+                : lifecycle.ownedCreations(identity.actor).find((item) => item.name === name);
               resolve(
                 saved
                   ? creationProjection(saved, projectFor(saved)?.id)
@@ -1939,6 +2011,13 @@ export class RepositoryAgent extends Agent<Env> {
               return Response.json({ error: "not_found" }, { status: 404 });
             if (registered(target))
               return Response.json({ error: "repository_already_registered" }, { status: 409 });
+            if (this.getLifecycle()?.ownedRecord(target.name, identity.actor)?.projectId)
+              throw new AdmissionError("repository_already_registered", 409);
+            this.getLifecycle()?.assertLogicalNameAvailable(
+              identity.actor,
+              logicalRepositoryName(target.name),
+              target.name,
+            );
             const project = root.addOwnedProject(
               target.name,
               target.repositoryId,
@@ -2106,6 +2185,11 @@ export class RepositoryAgent extends Agent<Env> {
           if (info.id !== record.id) throw Error("repository_identity_changed");
           const [head] = await repo.log({ ref: info.defaultBranch, limit: 1 });
           if (head && !/^[a-f0-9]{40}$/.test(head.hash)) throw Error("invalid_head");
+          this.getLifecycle()?.assertLogicalNameAvailable(
+            identity.actor,
+            record.logicalName ?? logicalRepositoryName(record.name),
+            record.name,
+          );
           root.addOwnedProject(
             record.name,
             info.id,
