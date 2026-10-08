@@ -122,10 +122,11 @@ export function createFixture() {
       if (path === "/api/repositories/create") {
         if (state.scenario === "create-failure")
           return json(res, { diagnostic: "private-provider-diagnostic" }, 503);
+        const suffix = state.creations.length ? `-${state.creations.length + 1}` : "";
         const item = {
           ...owner,
-          projectId: "qa-created",
-          repositoryId: "qa-created-id",
+          projectId: `qa-created${suffix}`,
+          repositoryId: `qa-created-id${suffix}`,
           repositoryName: body.name,
           name: body.displayName,
           description: body.description,
@@ -166,6 +167,11 @@ export function createFixture() {
         item.status = state.deletes === 1 ? "deleting" : "deleted";
         item.lifecycle = item.status;
         item.deletable = false;
+        const creation = state.creations.find(
+          (record) =>
+            record.name === item.repositoryName && record.repositoryId === item.repositoryId,
+        );
+        if (creation) creation.status = item.status;
         return json(res, item, item.status === "deleting" ? 202 : 200);
       }
       if (tail === "repository")

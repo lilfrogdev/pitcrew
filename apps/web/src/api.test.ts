@@ -817,3 +817,61 @@ it("reads full immutable deletion status with display spaces and rejects thin or
     );
   }
 });
+
+it("keeps creation capabilities and safe deletion tombstones without requiring obsolete project IDs", async () => {
+  const tombstones = [
+    { name: "retiring-repo", repositoryId: "retiring-immutable", status: "deleting" },
+    { name: "retired-repo", repositoryId: "retired-immutable", status: "deleted" },
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        approval: null,
+        capabilities: { create: true, manage: true },
+        creations: tombstones.map((item) => ({
+          ...item,
+          token: "private",
+          providerDiagnostic: "private",
+        })),
+      }),
+    ),
+  );
+  expect(await httpApi.collaboration!.repositoryCreations!()).toEqual({
+    approval: null,
+    capabilities: { create: true, manage: true },
+    creations: tombstones,
+  });
+  for (const tombstone of [
+    { name: "retired-repo", status: "deleted" },
+    { name: "retiring-repo", repositoryId: "", status: "deleting" },
+    { name: "retired-repo", repositoryId: "retired-immutable", projectId: "", status: "deleted" },
+    { name: "invalid physical name", repositoryId: "retired-immutable", status: "deleted" },
+  ]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          approval: null,
+          capabilities: { create: true, manage: true },
+          creations: [tombstone],
+        }),
+      ),
+    );
+    await expect(httpApi.collaboration!.repositoryCreations!()).rejects.toEqual(new ApiError(0));
+  }
+});
+it.each(["deleting", "deleted"])(
+  "rejects %s as an unexpected create POST result instead of announcing a new repository",
+  async (status) => {
+    withSession(async () =>
+      Response.json(
+        { ...creationTarget, repositoryId: "immutable-retired", status },
+        { status: 202 },
+      ),
+    );
+    await expect(
+      httpApi.collaboration!.createRepository!(creationTarget.name, true),
+    ).rejects.toEqual(new ApiError(0));
+  },
+);

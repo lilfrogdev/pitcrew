@@ -155,11 +155,8 @@ export function RepositoryManagement({
         setDeletionUnknown(false);
         setDeleting(result.status === "deleting");
         setRecoveryConfirmed(false);
-        if (result.status === "deleted") onChanged();
-        else
-          setNotice(
-            "Deletion is still pending. Refresh deletion status before recovering this same repository.",
-          );
+        // Accepted deletion freezes Work immediately, even while physical removal is pending.
+        onChanged();
       } catch (cause) {
         if (alive(version)) {
           setDeletionUnknown(true);

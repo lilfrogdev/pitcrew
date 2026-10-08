@@ -447,9 +447,13 @@ export function AccountRepositories({
                       ? "This repository is ready and registered to this account."
                       : item.status === "pending"
                         ? "Creation is pending or its result is unknown. Refresh to check its status, or ask the operator to investigate."
-                        : item.status === "cleanup_required"
-                          ? "The repository needs temporary credential cleanup before access is enabled."
-                          : "The repository needs registration to this account before access is enabled."}
+                        : item.status === "deleting"
+                          ? "This repository is being deleted. Use its management controls to refresh deletion status. Its permanent name cannot be reused."
+                          : item.status === "deleted"
+                            ? "This repository was deleted. Its permanent name is retired and cannot be reused."
+                            : item.status === "cleanup_required"
+                              ? "The repository needs temporary credential cleanup before access is enabled."
+                              : "The repository needs registration to this account before access is enabled."}
                   </p>
                   {["cleanup_required", "registration_required"].includes(item.status) && (
                     <>

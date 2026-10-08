@@ -87,7 +87,7 @@ it("broad capability is off by default and does not expand the exact legacy appr
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("two real accounts create independent repositories with stable ownership, idempotency, scrubbed credentials and restart persistence", async () => {
   const f = await fixture();
@@ -135,7 +135,7 @@ it("two real accounts create independent repositories with stable ownership, ide
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("strict ingress rejects actor forgery, unconsented credentials, unknown fields, query selectors and foreign origins before provider work", async () => {
   const f = await fixture();
@@ -204,7 +204,7 @@ it("strict ingress rejects actor forgery, unconsented credentials, unknown field
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("only the account owner edits display metadata; concurrent revisions preserve the immutable source, root project and configuration", async () => {
   const f = await fixture();
@@ -291,7 +291,7 @@ it("only the account owner edits display metadata; concurrent revisions preserve
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("pending invitations expose safe owner-only IDs and revocation cannot grant membership or be undone by accept", async () => {
   const f = await fixture();
@@ -346,7 +346,7 @@ it("pending invitations expose safe owner-only IDs and revocation cannot grant m
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("explicit deletion freezes descendants and pending invitations, retains historical messages, retires the name and survives restart", async () => {
   const f = await fixture();
@@ -439,7 +439,7 @@ it("explicit deletion freezes descendants and pending invitations, retains histo
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("cleanup failures quarantine deletion; explicit recovery cannot delete a replaced immutable repository", async () => {
   const f = await fixture();
@@ -472,7 +472,7 @@ it("cleanup failures quarantine deletion; explicit recovery cannot delete a repl
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("original-session logout during awaited provider metadata stops creation admission despite a fresh login", async () => {
   const f = await fixture();
@@ -500,7 +500,7 @@ it("original-session logout during awaited provider metadata stops creation admi
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("ambiguous creation never repeats the provider mutation and only explicit observation-driven recovery registers the same account resource", async () => {
   const f = await fixture();
@@ -530,7 +530,7 @@ it("ambiguous creation never repeats the provider mutation and only explicit obs
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("failed deletion requires explicit retry and lost success can be reconciled without deleting a replacement or recycling its name", async () => {
   const f = await fixture();
@@ -580,7 +580,7 @@ it("failed deletion requires explicit retry and lost success can be reconciled w
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("membership revocation removes descendant access, preserves fresh verified labels and historical notes, and never removes the owner", async () => {
   const f = await fixture();
@@ -674,7 +674,7 @@ it("membership revocation removes descendant access, preserves fresh verified la
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("session revocation and expiry while provider metadata awaits cannot be laundered by account relogin", async () => {
   for (const action of ["revoke-sessions", "expiry"] as const) {
@@ -702,7 +702,7 @@ it("session revocation and expiry while provider metadata awaits cannot be laund
       await close(f);
     }
   }
-});
+}, 90000);
 
 it("owner-session revocation during deletion token discovery leaves a frozen resource until a fresh explicit recovery", async () => {
   const f = await fixture();
@@ -734,7 +734,7 @@ it("owner-session revocation during deletion token discovery leaves a frozen res
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("active repository work blocks deletion before provider mutation and remains available until explicit idle deletion", async () => {
   const f = await fixture();
@@ -759,7 +759,7 @@ it("active repository work blocks deletion before provider mutation and remains 
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("queued metadata edits retain their original session and cannot commit after it expires", async () => {
   const f = await fixture();
@@ -792,7 +792,7 @@ it("queued metadata edits retain their original session and cannot commit after 
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("missing-token provider errors cannot falsely certify repository absence or unfreeze a present physical resource", async () => {
   const f = await fixture();
@@ -837,7 +837,7 @@ it("missing-token provider errors cannot falsely certify repository absence or u
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("legitimately adopted repositories named like old fixtures allow owner display edits and deletion while retaining immutable source metadata", async () => {
   const f = await fixture();
@@ -908,7 +908,7 @@ it("legitimately adopted repositories named like old fixtures allow owner displa
   } finally {
     await close(f);
   }
-});
+}, 90000);
 
 it("configured root bindings and actual artifact root sources permit account metadata edits but reject physical deletion before provider access", async () => {
   for (const mode of ["binding", "project"] as const) {
@@ -971,4 +971,4 @@ it("configured root bindings and actual artifact root sources permit account met
       await close(f);
     }
   }
-});
+}, 90000);

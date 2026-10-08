@@ -31,9 +31,12 @@ typed permanent deletion, HTTP 202 pending observation, explicit same-resource
 recovery, mismatched-ID observation, generic failures, unknown mutation results,
 capability gate-off, late private responses after account switch/unmount, mobile
 overflow, keyboard activation, and accessible action names.
+Native creation records transition through `ready`, `deleting`, and `deleted`.
+Directory discovery at both deletion stages must preserve unrelated management
+and creation; a tombstoned physical name remains unavailable for reuse.
 
 Evidence is written to the requested directory: `results.json`,
-`accessible-names.json`, and four desktop/mobile PNG screenshots. Failure evidence
+`accessible-names.json`, and five desktop/mobile PNG screenshots. Failure evidence
 is written as `failure.json` and `failure.png` when applicable. A successful run
 verifies the UI and real client contract against the synthetic transport; it does
 not verify Codex in-app browser behavior, real authentication, live provider

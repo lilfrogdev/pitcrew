@@ -140,7 +140,7 @@ try {
       throw Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result.value;
   };
-  const text = () => evaluate("document.body.innerText");
+  const text = () => evaluate("document.body?.innerText ?? ''");
   const wait = async (fn, message) => {
     for (let i = 0; i < 120; i++) {
       if (await fn()) return;
@@ -207,6 +207,12 @@ try {
   const open = async (name = "Owner display") => {
     await click("Manage repository", name);
     await includes("Repository settings");
+  };
+  const observePendingDeletion = async (name = "Owner display") => {
+    // A confirmed 202 refreshes directory/Work and collapses management.
+    await includes("Deletion pending");
+    await open(name);
+    await includes("Repository deletion is pending.");
   };
   const screenshot = async (name) => {
     await evaluate("window.scrollTo(0,0)");
@@ -354,7 +360,7 @@ try {
   assert.equal(await disabled("Permanently delete repository", "Owner display"), true);
   await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
   await click("Permanently delete repository", "Owner display");
-  await includes("Repository deletion is pending.");
+  await observePendingDeletion();
   await delay(350);
   assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 1);
   assert.equal(await disabled("Recover repository deletion", "Owner display"), true);
@@ -379,6 +385,71 @@ try {
   pass(
     "Typed permanent delete, 202 observation and explicit same-resource recovery",
     "No automatic POST retry; GET preceded fresh typed confirmation and second explicit POST; deleted row removed.",
+  );
+  await navigate();
+  await fill("Permanent repository name", "qa-lifecycle-slug");
+  await fill("Display name (optional)", "Lifecycle display");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("Lifecycle display");
+  assert.equal((await state()).creations[0].status, "ready");
+  await open("Lifecycle display");
+  await click("Review deletion", "Lifecycle display");
+  await fill(
+    "Type the permanent repository name to confirm",
+    "qa-lifecycle-slug",
+    "Lifecycle display",
+  );
+  await click("Permanently delete repository", "Lifecycle display");
+  await includes("Deletion pending");
+  assert.equal((await state()).creations[0].status, "deleting");
+  await click("Refresh");
+  await includes("Deletion pending");
+  assert.equal(String(await text()).includes("Could not check repository creation status"), false);
+  assert.equal(
+    await evaluate("Boolean(document.querySelector('form[aria-label=\"Create repository\"]'))"),
+    true,
+  );
+  assert.equal(await evaluate("document.querySelectorAll('button[aria-expanded]').length"), 3);
+  await open("Lifecycle display");
+  await click("Refresh deletion status", "Lifecycle display");
+  await includes("Confirm the permanent name to recover");
+  await fill(
+    "Type the permanent repository name to confirm",
+    "qa-lifecycle-slug",
+    "Lifecycle display",
+  );
+  await click("Recover repository deletion", "Lifecycle display");
+  await wait(
+    async () => !String(await text()).includes("Lifecycle display"),
+    "created repository tombstone removed from directory",
+  );
+  assert.equal((await state()).creations[0].status, "deleted");
+  await wait(
+    () => evaluate("Boolean(document.querySelector('form[aria-label=\"Create repository\"]'))"),
+    "create capability remains after deleted creation discovery",
+  );
+  assert.equal(String(await text()).includes("Could not check repository creation status"), false);
+  await open();
+  await fill("Display name", "Owner after tombstone", "Owner display");
+  await click("Save repository details", "Owner display");
+  await includes("Owner after tombstone");
+  await fill("Permanent repository name", "qa-lifecycle-slug");
+  await checkbox();
+  assert.equal(await disabled("Create empty repository"), true);
+  await fill("Permanent repository name", "qa-after-tombstone");
+  await fill("Display name (optional)", "Created after tombstone");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("Created after tombstone");
+  assert.deepEqual(
+    (await state()).creations.map((record) => record.status),
+    ["deleted", "ready"],
+  );
+  await screenshot("05-lifecycle-tombstone-directory");
+  pass(
+    "Native creation discovery survives deleting and deleted lifecycle records",
+    "Created resource record transitions ready→deleting on HTTP 202→deleted on HTTP 200. Directory refresh preserves create/manage capabilities, unrelated owner metadata remains editable, deleted physical name cannot be reused, and a different repository can be created after the tombstone.",
   );
   await navigate("edit-conflict");
   await open();
@@ -405,7 +476,7 @@ try {
   await click("Review deletion", "Owner display");
   await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
   await click("Permanently delete repository", "Owner display");
-  await includes("Repository deletion is pending.");
+  await observePendingDeletion();
   await click("Refresh deletion status", "Owner display");
   await includes("Could not check deletion status.");
   await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");

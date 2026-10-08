@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 import { AccountRepositories } from "./AccountRepositories";
 import {
   ApiError,
+  httpApi,
   type CollaborationApi,
   type CreatedInvitation,
   type SharedRepository,
@@ -33,8 +34,9 @@ const invitation = {
   expiresAt: "2099-01-01T00:00:00Z",
 };
 function managementApi() {
+  const repositories = vi.fn().mockResolvedValue([repository]);
   return {
-    repositories: vi.fn().mockResolvedValue([repository]),
+    repositories,
     repositoryCreations: vi.fn().mockResolvedValue({
       approval: null,
       creations: [],
@@ -45,11 +47,15 @@ function managementApi() {
       id: repository.projectId,
       repository: `artifact:${repository.repositoryName}`,
     }),
-    deleteRepository: vi.fn().mockResolvedValue({
-      ...repository,
-      status: "deleting",
-      lifecycle: "deleting",
-      deletable: false,
+    deleteRepository: vi.fn().mockImplementation(async () => {
+      const deleting = {
+        ...repository,
+        status: "deleting",
+        lifecycle: "deleting",
+        deletable: false,
+      };
+      repositories.mockResolvedValue([deleting]);
+      return deleting;
     }),
     repositoryStatus: vi.fn().mockResolvedValue({
       ...repository,
@@ -139,7 +145,7 @@ it("requires the exact permanent name for deletion, and only recovers after a GE
   const { user } = await open(api);
   await user.click(screen.getByRole("button", { name: "Review deletion" }));
   expect(screen.getByText(/permanently removes.*stored files and history/)).toBeTruthy();
-  const confirmation = screen.getByLabelText("Type the permanent repository name to confirm");
+  let confirmation = screen.getByLabelText("Type the permanent repository name to confirm");
   await user.type(confirmation, repository.name);
   expect(screen.getByRole("button", { name: "Permanently delete repository" })).toHaveProperty(
     "disabled",
@@ -150,7 +156,9 @@ it("requires the exact permanent name for deletion, and only recovers after a GE
   const deletion = screen.getByRole("button", { name: "Permanently delete repository" });
   fireEvent.click(deletion);
   fireEvent.click(deletion);
+  await user.click(await screen.findByRole("button", { name: "Manage repository" }));
   await screen.findByRole("button", { name: "Recover repository deletion" });
+  confirmation = screen.getByLabelText("Type the permanent repository name to confirm");
   expect(api.deleteRepository).toHaveBeenCalledExactlyOnceWith(repository.projectId, {
     confirmation: repository.repositoryName,
     repositoryId: repository.repositoryId,
@@ -374,3 +382,76 @@ it.each(["projectId", "repositoryName", "repositoryId"])(
     expect(api.deleteRepository).toHaveBeenCalledOnce();
   },
 );
+
+it("keeps live directory management and new creation usable after another repository is deleted, while refusing retired names", async () => {
+  const fetch = vi.fn(async (path: string) => {
+    if (path === "/api/repositories") return Response.json({ repositories: [repository] });
+    if (path === "/api/repository-creations")
+      return Response.json({
+        approval: null,
+        capabilities: { create: true, manage: true },
+        creations: [
+          { name: "retiring-repo", repositoryId: "retiring-id", status: "deleting" },
+          { name: "retired-repo", repositoryId: "retired-id", status: "deleted" },
+        ],
+      });
+    if (
+      path === "/api/project-adoptions" ||
+      path.endsWith("/members") ||
+      path.endsWith("/invitations")
+    )
+      return Response.json([]);
+    throw Error("Unexpected synthetic request");
+  });
+  vi.stubGlobal("fetch", fetch);
+  const user = userEvent.setup();
+  render(<AccountRepositories api={httpApi.collaboration!} />);
+  await screen.findByText(/This repository was deleted.*permanent name is retired/);
+  expect(screen.getByText(/This repository is being deleted/)).toBeTruthy();
+  expect(screen.queryByText(/Could not check repository creation status/)).toBeNull();
+  expect(screen.queryByText(/needs registration to this account/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Recover repository creation" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Manage repository" }));
+  expect(await screen.findByRole("button", { name: "Save repository details" })).toHaveProperty(
+    "disabled",
+    false,
+  );
+  const form = screen.getByRole("form", { name: "Create repository" });
+  const name = within(form).getByLabelText("Permanent repository name");
+  for (const retiredName of ["retired-repo", "retiring-repo"]) {
+    await user.clear(name);
+    await user.type(name, retiredName);
+    await user.click(within(form).getByRole("checkbox"));
+    expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
+  }
+  await user.clear(name);
+  await user.type(name, "different-new-repo");
+  await user.click(within(form).getByRole("checkbox"));
+  expect(within(form).getByRole("button")).toHaveProperty("disabled", false);
+  expect(fetch.mock.calls.some(([path]) => path.endsWith("/create"))).toBe(false);
+});
+
+it("refreshes Work and the directory as soon as a validated deletion is accepted, while leaving recovery explicit", async () => {
+  const api = managementApi();
+  const onAdopted = vi.fn();
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} onAdopted={onAdopted} />);
+  await user.click(await screen.findByRole("button", { name: "Manage repository" }));
+  await user.click(screen.getByRole("button", { name: "Review deletion" }));
+  await user.type(
+    screen.getByLabelText("Type the permanent repository name to confirm"),
+    repository.repositoryName!,
+  );
+  await user.click(screen.getByRole("button", { name: "Permanently delete repository" }));
+  await screen.findByText("Deletion pending");
+  expect(onAdopted).toHaveBeenCalledOnce();
+  expect(api.repositories).toHaveBeenCalledTimes(2);
+  expect(api.deleteRepository).toHaveBeenCalledOnce();
+  await user.click(screen.getByRole("button", { name: "Manage repository" }));
+  expect(screen.queryByRole("button", { name: "Save repository details" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Recover repository deletion" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  expect(screen.getByRole("button", { name: "Refresh deletion status" })).toBeTruthy();
+});

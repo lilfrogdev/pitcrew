@@ -82,7 +82,13 @@ export type ApprovedProjectAdoption = {
 export type RepositoryCreation = {
   name: string;
   repositoryId?: string;
-  status: "pending" | "cleanup_required" | "registration_required" | "ready";
+  status:
+    | "pending"
+    | "cleanup_required"
+    | "registration_required"
+    | "ready"
+    | "deleting"
+    | "deleted";
   projectId?: string;
 };
 export type RepositoryCreations = {
@@ -378,13 +384,10 @@ async function repositoryMutation(
   try {
     const value: unknown = await response.json();
     const status =
-      value && typeof value === "object"
-        ? (value as Record<string, unknown>).status
-        : undefined;
+      value && typeof value === "object" ? (value as Record<string, unknown>).status : undefined;
     if (
       path.endsWith("/repository/delete") &&
-      response.status !==
-        (status === "deleted" ? 200 : status === "deleting" ? 202 : -1)
+      response.status !== (status === "deleted" ? 200 : status === "deleting" ? 202 : -1)
     )
       throw new ApiError(0);
     return value;
@@ -398,12 +401,21 @@ function repositoryCreation(value: unknown): RepositoryCreation {
   const item = value as Record<string, unknown>;
   const identifier = (value: unknown) => typeof value === "string" && value.length > 0;
   if (
-    !identifier(item.name) ||
+    typeof item.name !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{0,62}$/.test(item.name) ||
     typeof item.status !== "string" ||
-    !["pending", "cleanup_required", "registration_required", "ready"].includes(item.status) ||
+    ![
+      "pending",
+      "cleanup_required",
+      "registration_required",
+      "ready",
+      "deleting",
+      "deleted",
+    ].includes(item.status) ||
     (item.repositoryId !== undefined && !identifier(item.repositoryId)) ||
     (item.projectId !== undefined && !identifier(item.projectId)) ||
-    (item.status === "ready" && (!identifier(item.repositoryId) || !identifier(item.projectId)))
+    (item.status === "ready" && (!identifier(item.repositoryId) || !identifier(item.projectId))) ||
+    (["deleting", "deleted"].includes(item.status) && !identifier(item.repositoryId))
   )
     throw new ApiError(0);
   // Keep only public identifiers and lifecycle state; provider diagnostics and credentials stay out.
@@ -436,7 +448,11 @@ async function createAccountRepository(
   } catch {
     throw new ApiError(0);
   }
-  if (result.name !== name || response.status !== (result.status === "ready" ? 200 : 202))
+  if (
+    result.name !== name ||
+    ["deleting", "deleted"].includes(result.status) ||
+    response.status !== (result.status === "ready" ? 200 : 202)
+  )
     throw new ApiError(0);
   return result;
 }
