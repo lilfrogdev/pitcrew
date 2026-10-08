@@ -376,11 +376,15 @@ async function repositoryMutation(
     throw new ApiError(response.status);
   }
   try {
-    const value = await response.json();
+    const value: unknown = await response.json();
+    const status =
+      value && typeof value === "object"
+        ? (value as Record<string, unknown>).status
+        : undefined;
     if (
       path.endsWith("/repository/delete") &&
       response.status !==
-        (value?.status === "deleted" ? 200 : value?.status === "deleting" ? 202 : -1)
+        (status === "deleted" ? 200 : status === "deleting" ? 202 : -1)
     )
       throw new ApiError(0);
     return value;
