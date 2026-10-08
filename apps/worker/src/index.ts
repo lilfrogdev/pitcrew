@@ -10,6 +10,13 @@ import {
   lifecycleRequest,
   type LifecycleRecord,
 } from "./repository-lifecycle";
+import {
+  approvedRepositoryCreation,
+  readRepositoryCreation,
+  creationProjection,
+  creationError,
+  RepositoryCreationError,
+} from "./account-repository-creation";
 import { SourceReader } from "./source-reader";
 import { readRepositoryState, writeRepositoryState } from "./repository-state";
 import { sameKnowledgeContext } from "./knowledge";
@@ -111,6 +118,8 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   ADOPT_REPOSITORY_NAME?: string;
   ADOPT_REPOSITORY_ID?: string;
   ADOPT_ACCOUNT_ACTOR?: string;
+  CREATE_ACCOUNT_ACTOR?: string;
+  CREATE_REPOSITORY_NAME?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   protected readonly visualizationAuthority = new VisualizationAuthorityGate();
@@ -281,6 +290,11 @@ export class RepositoryAgent extends Agent<Env> {
       this.env.ENVIRONMENT !== "production"
     )
       return;
+    return this.getLifecycle();
+  }
+  /** Internal store reuse does not enable the generic lifecycle HTTP surface. */
+  private getLifecycle() {
+    if (!this.env.ARTIFACTS || this.env.ENVIRONMENT !== "production") return;
     if (!this.repositoryLifecycle) {
       const sql = this.ctx.storage.sql;
       sql.exec(
@@ -1420,6 +1434,181 @@ export class RepositoryAgent extends Agent<Env> {
         username: "username" in identity ? identity.username : undefined,
         avatar: "avatar" in identity ? identity.avatar : undefined,
       });
+    if (passwordMode && ["/api/repository-creations", "/api/repositories/create"].includes(path)) {
+      const approved = () => approvedRepositoryCreation(this.env, identity.actor);
+      const lifecycle = this.getLifecycle();
+      const projectFor = (record: LifecycleRecord) =>
+        record.id && record.status === "ready" && record.ownerActor === identity.actor
+          ? Object.values(root.state.ownedProjects ?? {}).find(
+              (entry) =>
+                entry.sourceId === record.id &&
+                entry.sourceName === record.name &&
+                entry.ownerActor === identity.actor,
+            )?.state.project
+          : undefined;
+      if (request.method === "GET" && path === "/api/repository-creations") {
+        return this.visualizationAuthority.run(async () => {
+          const grant = await visualizationGrant(auth!, request);
+          if (grant?.actor !== identity.actor)
+            return Response.json({ error: "unauthorized" }, { status: 401 });
+          const records = lifecycle?.ownedCreations(identity.actor) ?? [];
+          const target = approved();
+          return Response.json({
+            approval:
+              target && !records.some((record) => record.name === target.name && projectFor(record))
+                ? target
+                : null,
+            creations: records.map((record) => creationProjection(record, projectFor(record)?.id)),
+          });
+        });
+      }
+      if (request.method !== "POST" || path !== "/api/repositories/create")
+        return Response.json({ error: "not_found" }, { status: 404 });
+      const target = approved();
+      if (!target || !lifecycle) return Response.json({ error: "not_found" }, { status: 404 });
+      try {
+        const name = await readRepositoryCreation(request);
+        if (name !== target.name) throw new RepositoryCreationError("not_found", 404);
+        const grant = await this.visualizationAuthority.run(() =>
+          visualizationGrant(auth!, request),
+        );
+        if (!grant || grant.actor !== identity.actor)
+          throw new RepositoryCreationError("unauthorized", 401);
+        const fresh = async () => {
+          try {
+            await requireVisualizationSession(this.env.AUTH_DB!, grant);
+          } catch {
+            throw new RepositoryCreationError("unauthorized", 401);
+          }
+          if (approved()?.name !== name) throw new RepositoryCreationError("not_found", 404);
+        };
+        const task = (async () => {
+          await this.visualizationAuthority.run(fresh);
+          const previous = lifecycle
+            .ownedCreations(identity.actor)
+            .find((record) => record.name === name);
+          let record =
+            previous?.status === "cleanup_required"
+              ? await lifecycle.reconcile(name, identity.actor)
+              : await lifecycle.provision(name, "create", undefined, identity.actor, () =>
+                  this.visualizationAuthority.run(async () => {
+                    await fresh();
+                    if (Object.keys(root.state.ownedProjects ?? {}).length >= 20)
+                      throw new RepositoryCreationError("capacity", 429);
+                  }),
+                );
+          if (record.status !== "ready") return creationProjection(record);
+          if (
+            !record.id ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(record.id) ||
+            record.ownerActor !== identity.actor
+          )
+            throw new RepositoryCreationError("repository_identity_changed", 409);
+          const existing = projectFor(record);
+          if (existing) {
+            await this.visualizationAuthority.run(fresh);
+            return creationProjection(record, existing.id);
+          }
+          // Token cleanup continues after revocation, but ownership never does.
+          try {
+            using repo = await this.env.ARTIFACTS!.get(name);
+            const info = await repo.info();
+            if (info.id !== record.id)
+              throw new RepositoryCreationError("repository_identity_changed", 409);
+            // The binding returns an empty history for an unresolved empty ref.
+            const [head] = await repo.log({ ref: info.defaultBranch, limit: 1 });
+            if (head && !/^[a-f0-9]{40}$/.test(head.hash)) throw Error("invalid_head");
+            if ((await repo.info()).id !== record.id)
+              throw new RepositoryCreationError("repository_identity_changed", 409);
+            return await this.visualizationAuthority.run(async () => {
+              await fresh();
+              const saved = lifecycle
+                .ownedCreations(identity.actor)
+                .find((item) => item.name === name);
+              if (!saved || saved.id !== record.id || saved.status !== "ready")
+                throw new RepositoryCreationError("repository_identity_changed", 409);
+              record = saved;
+              const registered = projectFor(record);
+              if (registered) return creationProjection(record, registered.id);
+              if (
+                Object.values(root.state.ownedProjects ?? {}).some(
+                  (entry) => entry.sourceId === record.id || entry.sourceName === name,
+                )
+              )
+                throw new RepositoryCreationError("repository_identity_changed", 409);
+              try {
+                // Use the current verified profile, never a typed owner or email.
+                const current = await authUser(auth!, request);
+                if (!current || `account:${current.id}` !== grant.actor)
+                  throw new RepositoryCreationError("unauthorized", 401);
+                await fresh();
+                const project = root.addOwnedProject(
+                  name,
+                  record.id!,
+                  grant.actor,
+                  grant.email,
+                  head
+                    ? {
+                        baseSha: head.hash,
+                        configurationRevision: this.env.CONFIGURATION_REVISION ?? "unconfigured-v1",
+                      }
+                    : undefined,
+                  {
+                    actor: grant.actor,
+                    email: grant.email,
+                    displayName: current.name,
+                    username: current.username,
+                    avatar: current.image,
+                  },
+                );
+                return creationProjection(record, project.id);
+              } catch (error) {
+                if (error instanceof AdmissionError) return creationProjection(record);
+                throw error;
+              }
+            });
+          } catch (error) {
+            if (error instanceof RepositoryCreationError) throw error;
+            // The exact created resource remains recorded. Metadata/registration
+            // failure is recoverable, never permission to provision another one.
+            return creationProjection(record);
+          }
+        })();
+        this.ctx.waitUntil(task.catch(() => {}));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const result = await Promise.race([
+          task,
+          new Promise<ReturnType<typeof creationProjection>>((resolve) => {
+            timer = setTimeout(() => {
+              const saved = lifecycle
+                .ownedCreations(identity.actor)
+                .find((item) => item.name === name);
+              resolve(
+                saved
+                  ? creationProjection(saved, projectFor(saved)?.id)
+                  : { name, status: "pending" },
+              );
+            }, 5000);
+          }),
+        ]).finally(() => clearTimeout(timer));
+        return Response.json(result, { status: result.status === "ready" ? 200 : 202 });
+      } catch (error) {
+        const safe = [
+          "repository_exists",
+          "repository_name_retired",
+          "deletion_pending",
+          "namespace_limit",
+          "lifecycle_limit",
+          "repository_protected",
+          "not_found",
+        ];
+        if (error instanceof Error && safe.includes(error.message))
+          return creationError(
+            new RepositoryCreationError(error.message, error.message === "not_found" ? 404 : 409),
+          );
+        return creationError(error);
+      }
+    }
     // Native accounts never acquire a legacy/root membership. An operator may
     // approve one exact stable account and immutable existing source instead.
     if (passwordMode && ["/api/project-adoptions", "/api/projects"].includes(path)) {

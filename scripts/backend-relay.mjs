@@ -46,6 +46,7 @@ const safeErrors = new Set([
   "repository_exists",
   "repository_protected",
   "invalid_name",
+  "invalid_repository_creation",
   "invalid_public_url",
   "reconciliation_unavailable",
   "invalid_cursor",
@@ -93,6 +94,7 @@ function sharedRoute(path, method, passwordMode = false) {
       "account",
       "projects",
       "project-adoptions",
+      "repository-creations",
       "capabilities",
       `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
       `threads/${id}/source/(?:tree|file|diff)`,
@@ -120,6 +122,7 @@ function sharedRoute(path, method, passwordMode = false) {
   if (passwordMode)
     routes.POST = [
       "projects",
+      "repositories/create",
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
       `threads/${id}/(?:messages|invitations|presence)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
@@ -345,7 +348,47 @@ async function boundedJson(response, limit = 262144) {
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
-function cleanResponse(path, value) {
+function cleanResponse(path, value, passwordMode = false) {
+  if (
+    path === "/api/repository-creations" ||
+    (passwordMode && path === "/api/repositories/create")
+  ) {
+    const projectId = /^[A-Za-z0-9_-]{1,128}$/;
+    const creation = (item) => {
+      if (
+        !item ||
+        typeof item.name !== "string" ||
+        !namePattern.test(item.name) ||
+        !["pending", "cleanup_required", "registration_required", "ready"].includes(item.status) ||
+        (item.repositoryId !== undefined && !projectId.test(item.repositoryId)) ||
+        (item.status === "ready" &&
+          (!projectId.test(item.repositoryId ?? "") || !projectId.test(item.projectId ?? "")))
+      )
+        throw Error();
+      return {
+        name: item.name,
+        status: item.status,
+        ...(item.repositoryId !== undefined ? { repositoryId: item.repositoryId } : {}),
+        ...(item.status === "ready" ? { projectId: item.projectId } : {}),
+        ...(item.issue === "repository_exists" ? { issue: item.issue } : {}),
+      };
+    };
+    if (path === "/api/repositories/create") return creation(value);
+    if (
+      !value ||
+      !Array.isArray(value.creations) ||
+      value.creations.length > 200 ||
+      !(
+        value.approval === null ||
+        (typeof value.approval?.name === "string" && namePattern.test(value.approval.name))
+      )
+    )
+      throw Error();
+    return {
+      approval: value.approval ? { name: value.approval.name } : null,
+      creations: value.creations.map(creation),
+    };
+  }
   if (path === "/api/provider-connection/openrouter/models") {
     if (!Array.isArray(value?.models) || value.models.length > 33) throw Error();
     if (!value.models.length) return { models: [], executionEnabled: false };
@@ -595,6 +638,11 @@ export function createBackendRelayMiddleware({
         (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname)));
     const uploadCancel = shared && req.method === "DELETE" && /\/uploads\//.test(url.pathname);
     const uploadWrite = shared && req.method === "PUT" && /\/uploads\//.test(url.pathname);
+    const creationWrite =
+      passwordMode &&
+      shared &&
+      req.method === "POST" &&
+      url.pathname === "/api/repositories/create";
     const presenceWrite = shared && write && url.pathname.endsWith("/presence");
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
@@ -648,8 +696,8 @@ export function createBackendRelayMiddleware({
         )
       )
         return reply(res, 403, { error: "backend_session_required" });
-      if (uploadWrite) {
-        // Bind file selection to the account present before reading its bytes.
+      if (uploadWrite || creationWrite) {
+        // Bind mutation consent to the account present before reading its bytes.
         // Another tab may replace this local vault while the stream is pending.
         uploadAccess = passwordMode ? "" : await token();
         const captured = sessionHeaders ? await sessionHeaders(req, uploadAccess) : {};
@@ -669,7 +717,9 @@ export function createBackendRelayMiddleware({
                     : shared && url.pathname.endsWith("/messages")
                       ? 2097152
                       : shared
-                        ? 16384
+                        ? url.pathname === "/api/repositories/create"
+                          ? 2048
+                          : 16384
                         : 8192,
                 uploadWrite,
               );
@@ -693,6 +743,8 @@ export function createBackendRelayMiddleware({
             )
           )
             throw Error();
+        } else if (passwordMode && url.pathname === "/api/repositories/create") {
+          if (!normalizeMutation(url.pathname, content)) throw Error();
         } else if (shared && url.pathname.endsWith("/presence")) {
           if (
             Object.keys(content).sort().join(",") !== "active,clientId,sequence" ||
@@ -721,7 +773,7 @@ export function createBackendRelayMiddleware({
       const authHeaders = sessionHeaders ? await sessionHeaders(req, access) : {};
       if ((passwordMode || sharedApi) && !authHeaders.Cookie)
         return reply(res, 401, { error: "unauthorized" });
-      if (uploadWrite && authHeaders.Cookie !== uploadAccountCookie)
+      if ((uploadWrite || creationWrite) && authHeaders.Cookie !== uploadAccountCookie)
         return reply(res, 409, { error: "backend_account_changed" });
       // Rebuild headers. Never forward browser Cookie/Authorization/identity, nonce or hints.
       const response = await fetchImpl(
@@ -734,7 +786,7 @@ export function createBackendRelayMiddleware({
             Accept: "application/json",
             ...(!passwordMode ? { "Cf-Access-Token": access } : {}),
             ...(authHeaders.Cookie
-              ? { Cookie: uploadWrite ? uploadAccountCookie : authHeaders.Cookie }
+              ? { Cookie: uploadWrite || creationWrite ? uploadAccountCookie : authHeaders.Cookie }
               : {}),
             ...(write
               ? {
@@ -831,11 +883,12 @@ export function createBackendRelayMiddleware({
       return reply(
         res,
         response.status,
-        shared
+        shared && !["/api/repository-creations", "/api/repositories/create"].includes(url.pathname)
           ? value
           : cleanResponse(
               url.pathname,
               passwordMode && provider ? { ...value, executionEnabled: false } : value,
+              passwordMode,
             ),
         shared && /^\d{1,15}$/.test(nextSequence ?? "") ? { "X-Next-Sequence": nextSequence } : {},
       );

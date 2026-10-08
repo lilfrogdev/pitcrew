@@ -38,6 +38,12 @@ export class RepositoryLifecycle {
     private store: LifecycleStore,
     private referenced: (name: string) => boolean,
   ) {}
+  /** Native discovery never lists namespace-wide or another account's records. */
+  ownedCreations(ownerActor: string) {
+    return this.store
+      .list()
+      .filter((record) => record.operation === "create" && record.ownerActor === ownerActor);
+  }
   // DO storage is durable; serialize requests through cleanup and destructive checks.
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation);
@@ -82,8 +88,13 @@ export class RepositoryLifecycle {
       // or token issuance can reference it. The initial issuance is the only token expected. Multiple tokens require
       // owner investigation; do not revoke unrelated credentials.
       if (tokens.total > 1 || tokens.tokens.length !== tokens.total) throw Error();
-      for (const token of tokens.tokens)
+      // get(name) is not assumed to pin identity across metadata awaits. A
+      // replacement must never borrow this intent's permission to revoke tokens.
+      if ((await repo.info()).id !== record.id) throw Error();
+      for (const token of tokens.tokens) {
+        if ((await repo.info()).id !== record.id) throw Error();
         if (token.state === "active" && !(await repo.revokeToken(token.id))) throw Error();
+      }
       const check = await repo.listTokens();
       if (
         check.total > 1 ||
@@ -91,6 +102,7 @@ export class RepositoryLifecycle {
         check.tokens.some((token) => token.state === "active")
       )
         throw Error();
+      if ((await repo.info()).id !== record.id) throw Error();
       record = { ...record, status: "ready" };
     } catch {
       record = { ...record, status: "cleanup_required" };
@@ -98,7 +110,13 @@ export class RepositoryLifecycle {
     this.store.put(record);
     return record;
   }
-  provision(name: string, operation: "create" | "import", source?: string, ownerActor?: string) {
+  provision(
+    name: string,
+    operation: "create" | "import",
+    source?: string,
+    ownerActor?: string,
+    beforeCreate?: () => Promise<void>,
+  ) {
     return this.exclusive(async () => {
       const existing = this.store.get(name);
       if (existing && existing.ownerActor !== ownerActor) throw Error("not_found");
@@ -120,6 +138,9 @@ export class RepositoryLifecycle {
         if (!cursor) break;
       }
       if (cursor) throw Error("namespace_limit");
+      // Session/approval may be revoked while collision metadata is awaited.
+      // Fence before the durable pending intent and the one external create.
+      await beforeCreate?.();
       const record: LifecycleRecord = {
         name,
         operation,

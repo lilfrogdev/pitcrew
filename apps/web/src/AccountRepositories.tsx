@@ -3,6 +3,8 @@ import {
   ApiError,
   type ApprovedProjectAdoption,
   type CollaborationApi,
+  type RepositoryCreation,
+  type RepositoryCreations,
   type SharedRepository,
 } from "./api";
 import styles from "./Repositories.module.css";
@@ -19,6 +21,14 @@ export function AccountRepositories({
 }) {
   const [items, setItems] = useState<SharedRepository[]>([]);
   const [approvals, setApprovals] = useState<ApprovedProjectAdoption[]>([]);
+  const [creations, setCreations] = useState<RepositoryCreations>({
+    approval: null,
+    creations: [],
+  });
+  const [creationConsent, setCreationConsent] = useState<Record<string, boolean>>({});
+  const [creationError, setCreationError] = useState("");
+  const [creationReadError, setCreationReadError] = useState("");
+  const [unknownCreation, setUnknownCreation] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -29,15 +39,22 @@ export function AccountRepositories({
   const generation = useRef(0);
   const pending = useRef<object | null>(null);
   const adopted = useRef(new Set<string>());
+  const readyCreations = useRef(new Set<string>());
+  const onReady = useRef(onAdopted);
+  onReady.current = onAdopted;
+  const currentApi = useRef(api);
+  currentApi.current = api;
   const load = useCallback(async () => {
     const current = ++generation.current;
     setLoading(true);
     setConfirmed({});
-    const [repositories, candidates] = await Promise.allSettled([
+    setCreationConsent({});
+    const [repositories, candidates, managed] = await Promise.allSettled([
       api.repositories(),
       api.approvedProjectAdoptions?.() ?? Promise.resolve([]),
+      api.repositoryCreations?.() ?? Promise.resolve({ approval: null, creations: [] }),
     ]);
-    if (current !== generation.current) return;
+    if (current !== generation.current || currentApi.current !== api) return;
     setItems(repositories.status === "fulfilled" ? repositories.value : []);
     setError(
       repositories.status === "fulfilled"
@@ -56,6 +73,28 @@ export function AccountRepositories({
         ? ""
         : "Could not check repository approvals. Refresh to try again.",
     );
+    setCreations(
+      managed.status === "fulfilled" ? managed.value : { approval: null, creations: [] },
+    );
+    setCreationReadError(
+      managed.status === "fulfilled"
+        ? ""
+        : "Could not check repository creation status. Refresh to try again.",
+    );
+    if (managed.status === "fulfilled") {
+      setUnknownCreation((name) =>
+        managed.value.creations.some((item) => item.name === name) ? null : name,
+      );
+      const newlyReady = managed.value.creations.filter(
+        (item) =>
+          item.status === "ready" &&
+          item.projectId &&
+          item.repositoryId &&
+          !readyCreations.current.has(item.projectId),
+      );
+      for (const item of newlyReady) readyCreations.current.add(item.projectId!);
+      if (newlyReady.length) onReady.current?.();
+    }
     setLoading(false);
   }, [api]);
   const adopt = async (item: ApprovedProjectAdoption) => {
@@ -67,7 +106,8 @@ export function AccountRepositories({
     setAnnouncement("");
     try {
       await api.adoptProject(item.name, item.repositoryId);
-      // Work stays mounted when this directory closes, so its project list still needs refreshing.
+      if (currentApi.current !== api) return;
+      // Existing adoption refreshes Work even when navigation closes this directory.
       onAdopted?.();
       if (pending.current !== operation) return;
       adopted.current.add(adoptionKey(item));
@@ -77,7 +117,7 @@ export function AccountRepositories({
       setAnnouncement(`${item.name} was added to your repositories.`);
       await load();
     } catch (cause) {
-      if (pending.current !== operation) return;
+      if (pending.current !== operation || currentApi.current !== api) return;
       setAdoptionError(
         cause instanceof ApiError && [401, 403].includes(cause.status)
           ? "Repository approval is unavailable for this account. Ask the operator to check your approval, then refresh."
@@ -93,10 +133,76 @@ export function AccountRepositories({
       }
     }
   };
+  const create = async (name: string, recovery?: RepositoryCreation) => {
+    if (
+      pending.current ||
+      loading ||
+      creationError ||
+      !creationConsent[name] ||
+      !api.createRepository
+    )
+      return;
+    if (recovery) {
+      if (!["cleanup_required", "registration_required"].includes(recovery.status)) return;
+    } else if (
+      creations.approval?.name !== name ||
+      unknownCreation === name ||
+      creations.creations.some((item) => item.name === name)
+    )
+      return;
+    const operation = {};
+    pending.current = operation;
+    setBusy(true);
+    setCreationError("");
+    setAnnouncement("");
+    try {
+      const result = await api.createRepository(name, true);
+      if (pending.current !== operation || currentApi.current !== api) return;
+      if (
+        result.name !== name ||
+        (recovery?.repositoryId && result.repositoryId !== recovery.repositoryId) ||
+        (result.status === "ready" && (!result.projectId || !result.repositoryId))
+      )
+        throw new ApiError(0);
+      setUnknownCreation(null);
+      setCreationConsent({});
+      setCreations((value) => ({
+        ...value,
+        creations: [...value.creations.filter((item) => item.name !== name), result],
+      }));
+      if (result.status === "ready") {
+        readyCreations.current.add(result.projectId!);
+        onReady.current?.();
+        setAnnouncement(`${name} is ready in your repositories.`);
+        await load();
+      }
+    } catch (cause) {
+      if (pending.current !== operation || currentApi.current !== api) return;
+      setCreationConsent({});
+      if (cause instanceof ApiError && [400, 401, 403, 404, 409].includes(cause.status)) {
+        setCreationError(
+          "Repository creation approval is unavailable or changed. Refresh, or ask the operator to check this account's approval.",
+        );
+      } else {
+        setUnknownCreation(name);
+        setCreationError(
+          "The creation result is unknown. Refresh to check its status, or ask the operator to investigate before retrying.",
+        );
+      }
+    } finally {
+      if (pending.current === operation) {
+        pending.current = null;
+        setBusy(false);
+      }
+    }
+  };
   useEffect(() => {
     adopted.current.clear();
+    readyCreations.current.clear();
     setBusy(false);
     setAdoptionError("");
+    setCreationError("");
+    setUnknownCreation(null);
     setAnnouncement("");
     void load();
     const online = () => {
@@ -119,6 +225,7 @@ export function AccountRepositories({
           type="button"
           onClick={() => {
             setAdoptionError("");
+            setCreationError("");
             void load();
           }}
           disabled={loading || busy}
@@ -143,17 +250,130 @@ export function AccountRepositories({
         ) : (
           <>
             <p>No repositories belong to this account yet.</p>
-            {!approvals.length && !approvalError && (
-              <p>
-                Ask a project owner for an invitation, or ask the operator to approve an existing
-                repository for this account.
-              </p>
-            )}
+            {!approvals.length &&
+              !approvalError &&
+              !creations.approval &&
+              !creations.creations.length &&
+              !creationReadError && (
+                <p>
+                  Ask a project owner for an invitation, or ask the operator to approve an existing
+                  repository for this account.
+                </p>
+              )}
           </>
         )}
         {!loading && approvalError && <p role="alert">{approvalError}</p>}
+        {!loading && creationReadError && <p role="alert">{creationReadError}</p>}
+        {creationError && <p role="alert">{creationError}</p>}
         {adoptionError && <p role="alert">{adoptionError}</p>}
         {announcement && <p role="status">{announcement}</p>}
+        {!loading && unknownCreation && !creationError && (
+          <p role="status">
+            The creation result for {unknownCreation} is unknown. Refresh to check its status, or
+            ask the operator to investigate.
+          </p>
+        )}
+        {!loading && !creationReadError && !!api.createRepository && (
+          <>
+            {creations.approval &&
+              !creations.creations.some((item) => item.name === creations.approval?.name) &&
+              unknownCreation !== creations.approval.name && (
+                <section
+                  className={styles.form}
+                  aria-label={`Approved empty repository ${creations.approval.name}`}
+                >
+                  <h2>Create approved empty repository</h2>
+                  <p>
+                    The operator approved {creations.approval.name} for this account. Your account
+                    will own this empty repository.
+                  </p>
+                  <p>This creates no code, threads, or invitations.</p>
+                  <p>
+                    Cloudflare repository storage and operations can incur charges under the
+                    account's plan.
+                  </p>
+                  <label className={styles.consent}>
+                    <input
+                      type="checkbox"
+                      checked={creationConsent[creations.approval.name] ?? false}
+                      disabled={busy || !!error || !!creationError}
+                      onChange={(event) =>
+                        setCreationConsent({ [creations.approval!.name]: event.target.checked })
+                      }
+                    />
+                    I consent to storing this empty repository in Cloudflare and to Cloudflare
+                    issuing a temporary Git token that is discarded and revoked before repository
+                    access is enabled.
+                  </label>
+                  <button
+                    type="button"
+                    disabled={
+                      busy ||
+                      !!error ||
+                      !!creationError ||
+                      !creationConsent[creations.approval.name]
+                    }
+                    onClick={() => void create(creations.approval!.name)}
+                  >
+                    {busy ? "Creating repository…" : "Create empty repository"}
+                  </button>
+                </section>
+              )}
+            {creations.creations.map((item) => (
+              <section
+                className={styles.form}
+                key={item.name}
+                aria-label={`Repository creation ${item.name}`}
+              >
+                <h2>{item.name}</h2>
+                <p>
+                  {item.status === "ready"
+                    ? "This repository is ready and registered to this account."
+                    : item.status === "pending"
+                      ? "Creation is pending or its result is unknown. Refresh to check its status, or ask the operator to investigate."
+                      : item.status === "cleanup_required"
+                        ? "The repository needs temporary credential cleanup before access is enabled."
+                        : "The repository needs registration to this account before access is enabled."}
+                </p>
+                {["cleanup_required", "registration_required"].includes(item.status) && (
+                  <>
+                    <label className={styles.consent}>
+                      <input
+                        type="checkbox"
+                        checked={creationConsent[item.name] ?? false}
+                        disabled={
+                          busy || !!error || !!creationError || unknownCreation === item.name
+                        }
+                        onChange={(event) =>
+                          setCreationConsent((values) => ({
+                            ...values,
+                            [item.name]: event.target.checked,
+                          }))
+                        }
+                      />
+                      I consent to completing credential cleanup and account registration for this
+                      same empty repository. Any Cloudflare-issued temporary Git token must be
+                      discarded and revoked before access is enabled.
+                    </label>
+                    <button
+                      type="button"
+                      disabled={
+                        busy ||
+                        !!error ||
+                        !!creationError ||
+                        unknownCreation === item.name ||
+                        !creationConsent[item.name]
+                      }
+                      onClick={() => void create(item.name, item)}
+                    >
+                      {busy ? "Recovering repository…" : "Recover repository creation"}
+                    </button>
+                  </>
+                )}
+              </section>
+            ))}
+          </>
+        )}
         {!loading &&
           !error &&
           !!api.adoptProject &&

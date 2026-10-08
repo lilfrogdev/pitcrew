@@ -1345,7 +1345,11 @@ export function App({
       )}
       {section === "repositories" &&
         (api.collaboration ? (
-          <AccountRepositories api={api.collaboration} onAdopted={refresh} />
+          <AccountRepositories
+            key={viewer?.id ?? "local"}
+            api={api.collaboration}
+            onAdopted={refresh}
+          />
         ) : (
           <Repositories api={api.repositories} />
         ))}

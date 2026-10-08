@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { AccountRepositories } from "./AccountRepositories";
-import { ApiError, type CollaborationApi } from "./api";
+import { ApiError, type CollaborationApi, type RepositoryCreation } from "./api";
 afterEach(cleanup);
 it("shows only account-scoped repositories and an honest empty state", async () => {
   const repositories = vi
@@ -44,7 +44,7 @@ const repository = {
   status: "present",
   lifecycle: "registered",
   deletable: false,
-};
+} as const;
 
 it("shows only the exact approved target, requires confirmation, and refreshes both directories after adoption", async () => {
   const repositories = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([repository]);
@@ -162,4 +162,254 @@ it("does not submit an adoption when the approval list is empty", async () => {
   expect(screen.queryByRole("checkbox")).toBeNull();
   expect(screen.queryByRole("button", { name: "Add approved repository" })).toBeNull();
   expect(adoptProject).not.toHaveBeenCalled();
+});
+
+const approvedName = "account-approved-empty";
+const readyCreation: RepositoryCreation = {
+  name: approvedName,
+  repositoryId: "immutable-empty-1",
+  projectId: "empty-project-1",
+  status: "ready",
+};
+function creationApi(creations: RepositoryCreation[] = []) {
+  return {
+    repositories: vi.fn().mockResolvedValue([]),
+    repositoryCreations: vi.fn().mockResolvedValue({ approval: { name: approvedName }, creations }),
+    createRepository: vi.fn().mockResolvedValue(readyCreation),
+  } as unknown as CollaborationApi;
+}
+
+it("creates only the discovered approved empty repository after credential consent and refreshes directories only when ready", async () => {
+  const api = creationApi();
+  vi.mocked(api.repositories)
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([
+      { ...repository, projectId: readyCreation.projectId!, name: approvedName },
+    ]);
+  vi.mocked(api.repositoryCreations!)
+    .mockResolvedValueOnce({ approval: { name: approvedName }, creations: [] })
+    .mockResolvedValueOnce({ approval: null, creations: [readyCreation] });
+  let resolve!: (result: RepositoryCreation) => void;
+  vi.mocked(api.createRepository!).mockReturnValue(
+    new Promise((complete) => {
+      resolve = complete;
+    }),
+  );
+  const onAdopted = vi.fn();
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} onAdopted={onAdopted} />);
+  const button = await screen.findByRole("button", { name: "Create empty repository" });
+  expect(button).toHaveProperty("disabled", true);
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(screen.getByText(/creates no code, threads, or invitations/i)).toBeTruthy();
+  await user.click(button);
+  expect(api.createRepository).not.toHaveBeenCalled();
+  await user.click(
+    screen.getByRole("checkbox", { name: /I consent to storing this empty repository/ }),
+  );
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(api.createRepository).toHaveBeenCalledExactlyOnceWith(approvedName, true);
+  expect(screen.getByRole("button", { name: "Refresh" })).toHaveProperty("disabled", true);
+  expect(onAdopted).not.toHaveBeenCalled();
+  await act(async () => resolve(readyCreation));
+  expect(await screen.findByText("owner")).toBeTruthy();
+  expect(onAdopted).toHaveBeenCalledOnce();
+  expect(api.repositories).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+});
+
+it("keeps pending creation visible without resubmitting and refreshes Work only after registration is confirmed", async () => {
+  const api = creationApi();
+  vi.mocked(api.createRepository!).mockResolvedValue({ name: approvedName, status: "pending" });
+  vi.mocked(api.repositoryCreations!)
+    .mockResolvedValueOnce({ approval: { name: approvedName }, creations: [] })
+    .mockResolvedValueOnce({ approval: { name: approvedName }, creations: [readyCreation] });
+  const onAdopted = vi.fn();
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} onAdopted={onAdopted} />);
+  await screen.findByRole("button", { name: "Create empty repository" });
+  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+  expect(await screen.findByText(/Creation is pending or its result is unknown/)).toBeTruthy();
+  expect(onAdopted).not.toHaveBeenCalled();
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Recover repository creation" })).toBeNull();
+  expect(api.repositoryCreations).toHaveBeenCalledOnce();
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await screen.findByText(/ready and registered to this account/);
+  expect(onAdopted).toHaveBeenCalledOnce();
+  expect(api.createRepository).toHaveBeenCalledOnce();
+});
+
+it.each(["cleanup_required", "registration_required"] as const)(
+  "recovers only the exact managed %s record with renewed consent",
+  async (status) => {
+    const api = creationApi([
+      { name: approvedName, repositoryId: readyCreation.repositoryId, status },
+    ]);
+    const user = userEvent.setup();
+    render(<AccountRepositories api={api} />);
+    const button = await screen.findByRole("button", { name: "Recover repository creation" });
+    expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+    expect(button).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(button);
+    await waitFor(() =>
+      expect(api.createRepository).toHaveBeenCalledExactlyOnceWith(approvedName, true),
+    );
+  },
+);
+
+it("keeps an unknown creation outcome blocked until discovery finds its managed record, and never displays error details", async () => {
+  const api = creationApi();
+  vi.mocked(api.createRepository!).mockRejectedValue(new Error("secret provider diagnostic"));
+  const onAdopted = vi.fn();
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} onAdopted={onAdopted} />);
+  await screen.findByRole("button", { name: "Create empty repository" });
+  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    expect.stringContaining("creation result is unknown"),
+  );
+  expect(screen.queryByText(/secret provider/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await screen.findByText(/creation result for account-approved-empty is unknown/);
+  expect(api.createRepository).toHaveBeenCalledOnce();
+  expect(onAdopted).not.toHaveBeenCalled();
+});
+
+it("keeps creation discovery failure separate from registered repositories and clears consent after refresh", async () => {
+  const api = creationApi();
+  vi.mocked(api.repositories).mockResolvedValue([repository]);
+  vi.mocked(api.repositoryCreations!)
+    .mockRejectedValueOnce(new ApiError(0))
+    .mockResolvedValue({ approval: { name: approvedName }, creations: [] });
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} />);
+  await screen.findByText("owner");
+  expect(screen.getByRole("alert").textContent).toContain(
+    "Could not check repository creation status",
+  );
+  expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await screen.findByRole("checkbox");
+  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Create empty repository" })).toHaveProperty(
+      "disabled",
+      true,
+    ),
+  );
+});
+
+it.each(["unmount", "account change", "API change"])(
+  "ignores creation completion after %s",
+  async (change) => {
+    const api = creationApi();
+    let resolve!: (result: RepositoryCreation) => void;
+    vi.mocked(api.createRepository!).mockReturnValue(
+      new Promise((complete) => {
+        resolve = complete;
+      }),
+    );
+    const onAdopted = vi.fn();
+    const user = userEvent.setup();
+    const view = render(
+      <AccountRepositories key="first-account" api={api} onAdopted={onAdopted} />,
+    );
+    await screen.findByRole("checkbox");
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+    if (change === "unmount") view.unmount();
+    else {
+      view.rerender(
+        <AccountRepositories
+          key={change === "account change" ? "second-account" : "first-account"}
+          api={creationApi()}
+          onAdopted={onAdopted}
+        />,
+      );
+      await screen.findByRole("button", { name: "Create empty repository" });
+    }
+    await act(async () => resolve(readyCreation));
+    await waitFor(() => expect(api.createRepository).toHaveBeenCalledOnce());
+    expect(onAdopted).not.toHaveBeenCalled();
+    expect(api.repositories).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/is ready in your repositories/)).toBeNull();
+  },
+);
+
+it("offers no creation form when this account has no approval", async () => {
+  const api = creationApi();
+  vi.mocked(api.repositoryCreations!).mockResolvedValue({ approval: null, creations: [] });
+  render(<AccountRepositories api={api} />);
+  await screen.findByText("No repositories belong to this account yet.");
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(api.createRepository).not.toHaveBeenCalled();
+});
+
+it("ignores late approval discovery from the previous account", async () => {
+  const oldApi = creationApi();
+  let resolve!: (result: { approval: { name: string }; creations: RepositoryCreation[] }) => void;
+  vi.mocked(oldApi.repositoryCreations!).mockReturnValue(
+    new Promise((complete) => {
+      resolve = complete;
+    }),
+  );
+  const newApi = creationApi();
+  vi.mocked(newApi.repositoryCreations!).mockResolvedValue({ approval: null, creations: [] });
+  const onAdopted = vi.fn();
+  const view = render(<AccountRepositories key="old" api={oldApi} onAdopted={onAdopted} />);
+  view.rerender(<AccountRepositories key="new" api={newApi} onAdopted={onAdopted} />);
+  await screen.findByText("No repositories belong to this account yet.");
+  await act(async () => resolve({ approval: { name: approvedName }, creations: [readyCreation] }));
+  expect(screen.queryByText(approvedName)).toBeNull();
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(onAdopted).not.toHaveBeenCalled();
+});
+
+it("requires a fresh approval read after creation rejection before allowing renewed consent", async () => {
+  const api = creationApi();
+  vi.mocked(api.createRepository!)
+    .mockRejectedValueOnce(new ApiError(403))
+    .mockResolvedValueOnce(readyCreation);
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} />);
+  await screen.findByRole("checkbox");
+  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("checkbox")).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Create empty repository" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(screen.getByRole("checkbox")).toHaveProperty("disabled", false));
+  expect(screen.getByRole("checkbox")).toHaveProperty("checked", false);
+  expect(api.createRepository).toHaveBeenCalledOnce();
+});
+
+it("quarantines a recovery result that changes the managed immutable repository ID", async () => {
+  const api = creationApi([
+    { name: approvedName, repositoryId: "original-immutable-id", status: "cleanup_required" },
+  ]);
+  const onAdopted = vi.fn();
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} onAdopted={onAdopted} />);
+  await screen.findByRole("checkbox");
+  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByRole("button", { name: "Recover repository creation" }));
+  await screen.findByRole("alert");
+  expect(onAdopted).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Recover repository creation" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  expect(screen.queryByText(/ready and registered/)).toBeNull();
 });

@@ -839,7 +839,6 @@ test("password relay blocks cloud mutation surfaces and missing accounts before 
   const f = fixture({ passwordMode: true, sharedApi: true, sessionHeaders: async () => ({}) });
   assert.equal((await request(f.handler, "/api/projects")).status, 401);
   for (const path of [
-    "/api/repositories/create",
     "/api/repositories/import",
     "/api/repositories/reconcile",
     "/api/repositories/delete",
@@ -920,6 +919,142 @@ test("password project adoption requires the local nonce and held account cookie
   });
   assert.equal(anonymous.status, 401);
   assert.equal(loggedOut.calls.length + loggedOut.tokens.length, 0);
+});
+
+test("native creation forwards only bounded consent with held account authority and projects metadata without service tokens", async () => {
+  const record = {
+    name: "approved-new-repo",
+    repositoryId: "immutable-id",
+    projectId: "project-id",
+    status: "ready",
+  };
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "held-original-account-session" }),
+    fetchImpl: async (url, init) => {
+      f.calls.push({ url, init });
+      const privateRecord = {
+        ...record,
+        token: "synthetic-token-must-not-escape",
+        ownerActor: "internal-account",
+      };
+      return Response.json(
+        url.endsWith("repository-creations")
+          ? {
+              approval: { name: record.name, email: "internal@example.test" },
+              creations: [privateRecord],
+              token: "synthetic-private",
+            }
+          : privateRecord,
+      );
+    },
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const headers = {
+    origin,
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    "content-type": "application/json",
+    "x-pitcrew-local-nonce": local.json.nonce,
+  };
+  const discovery = await request(f.handler, "/api/repository-creations", { headers });
+  assert.deepEqual(discovery.json, { approval: { name: record.name }, creations: [record] });
+  const body = JSON.stringify({ name: record.name, credentialConsent: true });
+  assert.equal(
+    (
+      await request(f.handler, "/api/repositories/create", {
+        method: "POST",
+        headers: { ...headers, "x-pitcrew-local-nonce": "forged" },
+        body,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(f.handler, "/api/repositories/create", {
+        method: "POST",
+        headers: { ...headers, origin: "https://evil.test" },
+        body,
+      })
+    ).status,
+    403,
+  );
+  for (const payload of [
+    { name: record.name },
+    { name: record.name, credentialConsent: false },
+    { name: record.name, credentialConsent: true, actor: "account:forged" },
+  ])
+    assert.equal(
+      (
+        await request(f.handler, "/api/repositories/create", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        })
+      ).status,
+      400,
+    );
+  assert.equal(
+    (
+      await request(f.handler, "/api/repositories/create", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          name: record.name,
+          credentialConsent: true,
+          padding: "x".repeat(2100),
+        }),
+      })
+    ).status,
+    413,
+  );
+  assert.equal(f.calls.length, 1);
+  const created = await request(f.handler, "/api/repositories/create", {
+    method: "POST",
+    headers,
+    body,
+  });
+  assert.deepEqual(created.json, record);
+  assert.equal(f.calls[1].url, BACKEND_ACCESS.origin + "/app/api/repositories/create");
+  assert.equal(f.calls[1].init.body, body);
+  assert.deepEqual(f.calls[1].init.headers, {
+    Accept: "application/json",
+    Cookie: "held-original-account-session",
+    Origin: BACKEND_ACCESS.origin,
+    "Content-Type": "application/json",
+  });
+  assert.equal(f.tokens.length, 0);
+  assert.ok(!created.text.includes("synthetic-token"));
+});
+
+test("native creation cannot change the consented account while reading a slow body", async () => {
+  let account = "original-account";
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: account }),
+  });
+  const local = await request(f.handler, "/api/local-session");
+  const headers = {
+    origin,
+    cookie: local.headers["Set-Cookie"].split(";", 1)[0],
+    "content-type": "application/json",
+    "x-pitcrew-local-nonce": local.json.nonce,
+  };
+  const chunks = (async function* () {
+    yield Buffer.from('{"name":"approved-new-repo",');
+    account = "replacement-account";
+    yield Buffer.from('"credentialConsent":true}');
+  })();
+  const response = await request(f.handler, "/api/repositories/create", {
+    method: "POST",
+    headers,
+    chunks,
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(response.json, { error: "backend_account_changed" });
+  assert.equal(f.calls.length + f.tokens.length, 0);
 });
 
 test("visualization relay allows only bounded scoped JSON reads and retains server-held session authority", async () => {
