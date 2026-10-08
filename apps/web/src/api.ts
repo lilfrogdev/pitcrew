@@ -75,6 +75,16 @@ export type ApprovedProjectAdoption = {
   name: string;
   repositoryId: string;
 };
+export type RepositoryCreation = {
+  name: string;
+  repositoryId?: string;
+  status: "pending" | "cleanup_required" | "registration_required" | "ready";
+  projectId?: string;
+};
+export type RepositoryCreations = {
+  approval: { name: string } | null;
+  creations: RepositoryCreation[];
+};
 export type Invitation = {
   id: string;
   email: string;
@@ -93,6 +103,8 @@ export interface CollaborationApi {
   repositories(): Promise<SharedRepository[]>;
   approvedProjectAdoptions?(): Promise<ApprovedProjectAdoption[]>;
   adoptProject?(name: string, repositoryId: string): Promise<Project>;
+  repositoryCreations?(): Promise<RepositoryCreations>;
+  createRepository?(name: string, credentialConsent: true): Promise<RepositoryCreation>;
   projectMembers(projectId: string): Promise<Member[]>;
   threadMembers(threadId: string): Promise<Member[]>;
   inviteProject(projectId: string, email: string): Promise<CreatedInvitation>;
@@ -194,6 +206,7 @@ export async function mutationHeaders(): Promise<Record<string, string>> {
   };
 }
 export async function apiFetch(path: string, body?: unknown): Promise<Response> {
+  const repositoryCreation = path === "/repositories/create";
   const send = async () => {
     const headers = body ? await mutationHeaders() : undefined;
     const perform = () =>
@@ -201,9 +214,12 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
         method: body ? "POST" : "GET",
         // Reads include edge admission, cached-token/JWKS checks and the relay's
         // own upstream deadline. Don't free a client slot before that work ends.
-        signal: AbortSignal.timeout(body ? 10000 : 45000),
+        signal: AbortSignal.timeout(body && !repositoryCreation ? 10000 : 45000),
         headers,
-        ...(path.includes("/source/") || path === "/project-adoptions"
+        ...(path.includes("/source/") ||
+        path === "/project-adoptions" ||
+        path === "/repository-creations" ||
+        repositoryCreation
           ? { cache: "no-store" as const }
           : {}),
         body: body ? JSON.stringify(body) : undefined,
@@ -214,8 +230,55 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
   const first = await send();
   // A rejected local admission has no side effects. Another tab may have
   // established the session cookie while our initial bootstrap was in flight.
-  if (first.local && first.response.status === 403) return (await send()).response;
+  if (!repositoryCreation && first.local && first.response.status === 403)
+    return (await send()).response;
   return first.response;
+}
+function repositoryCreation(value: unknown): RepositoryCreation {
+  if (!value || typeof value !== "object") throw new ApiError(0);
+  const item = value as Record<string, unknown>;
+  const identifier = (value: unknown) => typeof value === "string" && value.length > 0;
+  if (
+    !identifier(item.name) ||
+    typeof item.status !== "string" ||
+    !["pending", "cleanup_required", "registration_required", "ready"].includes(item.status) ||
+    (item.repositoryId !== undefined && !identifier(item.repositoryId)) ||
+    (item.projectId !== undefined && !identifier(item.projectId)) ||
+    (item.status === "ready" && (!identifier(item.repositoryId) || !identifier(item.projectId)))
+  )
+    throw new ApiError(0);
+  // Keep only public identifiers and lifecycle state; provider diagnostics and credentials stay out.
+  return {
+    name: item.name as string,
+    status: item.status as RepositoryCreation["status"],
+    ...(item.repositoryId === undefined ? {} : { repositoryId: item.repositoryId as string }),
+    ...(item.projectId === undefined ? {} : { projectId: item.projectId as string }),
+  };
+}
+async function createAccountRepository(
+  name: string,
+  credentialConsent: true,
+): Promise<RepositoryCreation> {
+  if (typeof name !== "string" || !name || credentialConsent !== true) throw new ApiError(0);
+  let response: Response;
+  try {
+    response = await apiFetch("/repositories/create", { name, credentialConsent });
+  } catch (cause) {
+    throw cause instanceof ApiError ? cause : new ApiError(0);
+  }
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(response.status);
+  }
+  let result: RepositoryCreation;
+  try {
+    result = repositoryCreation(await response.json());
+  } catch {
+    throw new ApiError(0);
+  }
+  if (result.name !== name || response.status !== (result.status === "ready" ? 200 : 202))
+    throw new ApiError(0);
+  return result;
 }
 async function request<T>(path: string, body?: unknown): Promise<T> {
   let response: Response;
@@ -333,6 +396,30 @@ export const httpApi: Api = {
   },
   collaboration: {
     account: () => request("/account"),
+    repositoryCreations: async () => {
+      const value = await request<unknown>("/repository-creations");
+      if (!value || typeof value !== "object") throw new ApiError(0);
+      const envelope = value as Record<string, unknown>;
+      const approval = envelope.approval;
+      if (
+        (approval !== null &&
+          (!approval ||
+            typeof approval !== "object" ||
+            !("name" in approval) ||
+            typeof approval.name !== "string" ||
+            !approval.name)) ||
+        !Array.isArray(envelope.creations)
+      )
+        throw new ApiError(0);
+      const creations = envelope.creations.map(repositoryCreation);
+      if (new Set(creations.map((item) => item.name)).size !== creations.length)
+        throw new ApiError(0);
+      return {
+        approval: approval === null ? null : { name: (approval as { name: string }).name },
+        creations,
+      };
+    },
+    createRepository: createAccountRepository,
     approvedProjectAdoptions: async () => {
       const value = await request<unknown>("/project-adoptions");
       if (

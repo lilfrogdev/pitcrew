@@ -442,6 +442,125 @@ it("rejects malformed approved-adoption responses and empty target identifiers",
   }
 });
 
+const creationTarget = { name: "account-approved-empty" };
+const createdRepository = {
+  ...creationTarget,
+  repositoryId: "immutable-empty-id",
+  projectId: "registered-project-id",
+  status: "ready",
+};
+it("reads account creation approval without caching and projects only public lifecycle metadata", async () => {
+  const fetch = vi.fn(async () =>
+    Response.json({
+      approval: { ...creationTarget, actor: "private-actor" },
+      creations: [{ ...createdRepository, token: "secret", issue: "provider secret diagnostic" }],
+    }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect(await httpApi.collaboration!.repositoryCreations!()).toEqual({
+    approval: creationTarget,
+    creations: [createdRepository],
+  });
+  expect(fetch).toHaveBeenCalledExactlyOnceWith(
+    "/api/repository-creations",
+    expect.objectContaining({ method: "GET", cache: "no-store" }),
+  );
+});
+
+it("uses existing account session admission and submits only the approved name with explicit consent", async () => {
+  const timeout = vi.spyOn(AbortSignal, "timeout");
+  const fetch = vi.fn(async (path: string, _init?: RequestInit) =>
+    path === "/api/local-session"
+      ? Response.json({ nonce: "a".repeat(64) })
+      : Response.json({ ...createdRepository, token: "secret" }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect(await httpApi.collaboration!.createRepository!(creationTarget.name, true)).toEqual(
+    createdRepository,
+  );
+  expect(fetch.mock.calls[1]).toEqual([
+    "/api/repositories/create",
+    expect.objectContaining({
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Pitcrew-Local-Nonce": "a".repeat(64) },
+      body: JSON.stringify({ name: creationTarget.name, credentialConsent: true }),
+    }),
+  ]);
+  expect(timeout).toHaveBeenCalledWith(45000);
+  timeout.mockRestore();
+});
+
+it.each(["pending", "cleanup_required", "registration_required"])(
+  "returns safe %s metadata for accepted but incomplete creation",
+  async (status) => {
+    withSession(async () => Response.json({ ...creationTarget, status }, { status: 202 }));
+    expect(await httpApi.collaboration!.createRepository!(creationTarget.name, true)).toEqual({
+      ...creationTarget,
+      status,
+    });
+  },
+);
+
+it("never repeats an account creation POST after admission rejection or unknown network outcome", async () => {
+  for (const fail of [false, true]) {
+    const fetch = vi.fn(async (path: string) => {
+      if (path === "/api/local-session") return Response.json({ nonce: "b".repeat(64) });
+      if (fail) throw Error("private network detail");
+      return Response.json({ error: "secret server diagnostic" }, { status: 403 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      httpApi.collaboration!.createRepository!(creationTarget.name, true),
+    ).rejects.toEqual(new ApiError(fail ? 0 : 403));
+    expect(fetch.mock.calls.filter(([path]) => path === "/api/repositories/create")).toHaveLength(
+      1,
+    );
+  }
+});
+
+it("fails closed for malformed creation discovery including missing readiness identifiers and duplicate names", async () => {
+  for (const value of [
+    {},
+    { approval: {}, creations: [] },
+    { approval: { name: "" }, creations: [] },
+    { approval: null, creations: [null] },
+    { approval: null, creations: [{ ...creationTarget, status: "ready" }] },
+    { approval: null, creations: [{ ...creationTarget, status: "other" }] },
+    { approval: null, creations: [{ ...createdRepository, status: ["ready"] }] },
+    { approval: null, creations: [createdRepository, createdRepository] },
+  ]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(value)),
+    );
+    await expect(httpApi.collaboration!.repositoryCreations!()).rejects.toEqual(new ApiError(0));
+  }
+});
+
+it("rejects creation responses with another target, missing registration, or incorrect completion status", async () => {
+  for (const [value, status] of [
+    [{ ...createdRepository, name: "another-repository" }, 200],
+    [{ ...creationTarget, status: "ready" }, 200],
+    [createdRepository, 202],
+    [{ ...creationTarget, status: "pending" }, 200],
+  ] as const) {
+    withSession(async () => Response.json(value, { status }));
+    await expect(
+      httpApi.collaboration!.createRepository!(creationTarget.name, true),
+    ).rejects.toEqual(new ApiError(0));
+  }
+});
+
+it("rejects missing credential consent before requesting the account session", async () => {
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  await expect(
+    httpApi.collaboration!.createRepository!(creationTarget.name, false as unknown as true),
+  ).rejects.toEqual(new ApiError(0));
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 it("bounds simultaneous product reads and releases a slot after an interrupted request", async () => {
   let active = 0,
     maximum = 0,
