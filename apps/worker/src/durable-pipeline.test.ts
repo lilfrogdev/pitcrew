@@ -417,3 +417,37 @@ it("propagates ownership read failures before dispatch instead of treating them 
   expect(f.calls).toEqual([]);
   expect(f.store.read()!.stage).toBe("prepare");
 });
+
+it("turns a reproducible exploratory failure into a review block without overriding a passing advisory probe", async () => {
+  const f = fixture();
+  const runner = new DurableChangePipeline(f.store);
+  runner.start(input);
+  const probe = {
+    id: "p",
+    threadId: "t",
+    runId: input.runId,
+    purpose: "empty string",
+    command: ["node", "--test"],
+    candidateSha: candidate,
+    exitCode: 1,
+    stdout: "",
+    stderr: "failed",
+    truncated: false,
+    reproducible: true,
+    blocking: true,
+  };
+  const ports = { ...f.ports, explore: async () => [probe] };
+  for (let i = 0; i < 7; i++) await runner.advance(ports);
+  expect(f.store.read()!.stage).toBe("done");
+  expect(f.store.read()!.result!.review!.decision).toBe("request_changes");
+  expect(f.store.read()!.result!.review!.summary).toContain("empty string");
+  const g = fixture();
+  const second = new DurableChangePipeline(g.store);
+  second.start(input);
+  for (let i = 0; i < 7; i++)
+    await second.advance({
+      ...g.ports,
+      explore: async () => [{ ...probe, exitCode: 0, blocking: false, reproducible: true }],
+    });
+  expect(g.store.read()!.result!.review!.decision).toBe("approve");
+});

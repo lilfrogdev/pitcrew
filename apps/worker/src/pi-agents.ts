@@ -16,9 +16,12 @@ import { PiHarness } from "agents/harness/pi";
 import { createRegistry, defineTool, Harness } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 import type {
+  CrewRole,
   ExecutionInput,
   KnowledgeAck,
   KnowledgeReport,
+  Message,
+  ProbeEvidence,
   WorkerKnowledgeContext,
 } from "@pitcrew/protocol";
 import {
@@ -40,6 +43,7 @@ import {
   type ReviewBrief,
 } from "./pi-drivers";
 import { DurableChangePipeline, type PipelineState } from "./durable-pipeline";
+import { runDisposableProbe } from "./probes";
 import { DurableJobs } from "./durable-jobs";
 import { KnowledgeOutbox, type KnowledgeDelivery } from "./knowledge-outbox";
 import { knowledgeReporting, candidateKnowledgeSource } from "./knowledge-reporting";
@@ -70,6 +74,7 @@ export interface PiEnv extends CredentialEnv {
   ARTIFACTS?: Artifacts;
   SANDBOX_IMAGE?: string;
   REVIEW: DurableObjectNamespace<ReviewAgent>;
+  TEST?: DurableObjectNamespace<TestAgent>;
   REPOSITORY: DurableObjectNamespace<RepositoryAgent>;
 }
 interface Context {
@@ -631,8 +636,15 @@ export class ChangeAgent extends TaskAgent {
               },
             );
           },
+          ...(this.env.EXECUTION_MODE === "local"
+            ? {
+                explore: async (workspace: Workspace, evidence: TestEvidence) =>
+                  this.explore(workspace, evidence),
+              }
+            : {}),
           stop: (workspace) => this.stopOwners(workspace),
         });
+        await this.publishTrace(saved.stage, this.pipeline.status());
         const state = this.pipeline.status();
         return state &&
           ((state.cleanupPending && !state.cleanupParked) ||
@@ -642,6 +654,110 @@ export class ChangeAgent extends TaskAgent {
       },
     );
     this.lifecycle.use(this.jobs);
+  }
+  private async explore(workspace: Workspace, evidence: TestEvidence) {
+    this.assertTaskActive();
+    if (!this.env.TEST) return [];
+    const tester = await getAgentByName(this.env.TEST, `test:${workspace.runId}`);
+    const probes = await tester.evaluate(workspace);
+    const threadId = this.pipeline.status()?.input.threadId;
+    return probes.map((probe) => ({
+      ...probe,
+      threadId: threadId ?? probe.threadId,
+      candidateSha: evidence.candidateSha,
+    }));
+  }
+  private async publishTrace(before: PipelineState["stage"], state: PipelineState | undefined) {
+    if (!state || before === state.stage) return;
+    const order = ["prepare", "change", "publish", "test", "explore", "review", "stop", "done"] as const;
+    const parent =
+      before === "prepare" ? "assign" : order[order.indexOf(before as (typeof order)[number]) - 1];
+    const copy: Record<string, { role: CrewRole; title: string; text: string; message: Message["role"] }> = {
+      prepare: {
+        role: "coordinator",
+        title: "Coordinator",
+        text: "Coordinator assigned the approved plan to the change worker.",
+        message: "coordinator",
+      },
+      change: {
+        role: "implementer",
+        title: "Change worker",
+        text: "Change worker finished the candidate and handed it to the test runner.",
+        message: "worker",
+      },
+      publish: {
+        role: "implementer",
+        title: "Change worker",
+        text: "Change worker published the candidate commit.",
+        message: "worker",
+      },
+      test: {
+        role: "test_runner",
+        title: "Test runner",
+        text: "Test runner finished the pinned checks and sent the evidence to the test agent.",
+        message: "worker",
+      },
+      explore: {
+        role: "test_agent",
+        title: "Test agent",
+        text: "Test agent finished exploratory probes in a disposable checkout and sent them to the reviewer.",
+        message: "reviewer",
+      },
+      review: {
+        role: "reviewer",
+        title: "Reviewer",
+        text: state.review
+          ? `${state.review.decision === "approve" ? "Approved." : "Changes requested."} ${state.review.summary}`
+          : "Reviewer finished.",
+        message: "reviewer",
+      },
+      stop: {
+        role: "coordinator",
+        title: "Coordinator",
+        text: "Coordinator recorded the run result.",
+        message: "coordinator",
+      },
+      done: {
+        role: "coordinator",
+        title: "Coordinator",
+        text: "Coordinator recorded the run result.",
+        message: "coordinator",
+      },
+      blocked: {
+        role: "coordinator",
+        title: "Coordinator",
+        text: "Coordinator stopped the run before it finished.",
+        message: "coordinator",
+      },
+    };
+    const item = copy[before] ?? copy.blocked;
+    const repository = this.env.REPOSITORY.get(
+      this.env.REPOSITORY.idFromName("pitcrew"),
+    ) as DurableObjectStub<RepositoryAgent>;
+    await repository.recordStage({
+      threadId: state.input.threadId,
+      runId: state.input.runId,
+      role: item.role,
+      stage: before,
+      status: state.stage === "blocked" ? "failed" : "passed",
+      title: item.title,
+      summary: item.text,
+      parentStage: parent,
+      edgeLabel: item.title,
+      candidateSha: state.change?.candidateSha,
+      ...(["review", "stop", "done"].includes(before)
+        ? {}
+        : {
+            note: {
+              id: `note:${state.input.runId}:${before}`,
+              role: item.message,
+              crew: item.role,
+              content: item.text,
+            },
+          }),
+    });
+    if (before === "explore" && state.probes?.length)
+      await repository.recordProbes(state.input.threadId, state.input.runId, state.probes);
   }
   private coordinator() {
     const transport = this.transport();
@@ -987,5 +1103,14 @@ export class ReviewAgent extends TaskAgent {
       if (signal.aborted) return undefined;
       throw error;
     }
+  }
+}
+
+/** Runs bounded probes in a disposable copy of the candidate. It cannot commit. */
+export class TestAgent extends Agent<PiEnv> {
+  async evaluate(workspace: Workspace): Promise<ProbeEvidence[]> {
+    if (!this.env.LOCAL_EXECUTOR_URL) return [];
+    const client = new LocalExecutorClient(this.env.LOCAL_EXECUTOR_URL);
+    return [await runDisposableProbe(workspace, client)];
   }
 }

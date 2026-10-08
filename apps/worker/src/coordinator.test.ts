@@ -118,8 +118,10 @@ describe("durable coordinator", () => {
     expect(saved).toEqual(before);
     fail = false;
     core.complete(run.id, result);
-    expect(core.state.events.slice(-2).map((event) => event.type)).toEqual([
+    expect(core.state.events.slice(-4).map((event) => event.type)).toEqual([
       "run.awaiting_review",
+      "message.created",
+      "message.created",
       "review.created",
     ]);
     expect(core.state.events.map((event) => event.sequence)).toEqual(

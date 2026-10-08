@@ -5,17 +5,20 @@ import {
   IconGitCompare,
   IconGitPullRequest,
   IconListCheck,
+  IconRoute,
   IconLayoutSidebarRightCollapse,
   IconLayoutSidebarRightExpand,
 } from "@tabler/icons-react";
 import { PlanApproval } from "./MissionPanel";
+import { FlowBoard } from "./flow/FlowBoard";
 import type { Api, Project, Snapshot } from "./api";
 import "./Workspace.css";
 import { Select } from "./Select";
 
-type Tab = "plans" | "browser" | "files" | "diffs" | "review";
+type Tab = "plans" | "flow" | "browser" | "files" | "diffs" | "review";
 const tabs = [
   { id: "plans", label: "Plans", Icon: IconListCheck },
+  { id: "flow", label: "Flow", Icon: IconRoute },
   { id: "browser", label: "Browser", Icon: IconWorld },
   { id: "files", label: "Files", Icon: IconFiles },
   { id: "diffs", label: "Diffs", Icon: IconGitCompare },
@@ -63,9 +66,17 @@ export function Workspace({
     }));
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const openedPlan = useRef<string | undefined>(undefined);
+  const openedRun = useRef<string | undefined>(undefined);
   useEffect(() => {
     openedPlan.current = undefined;
+    openedRun.current = undefined;
   }, [scope]);
+  useEffect(() => {
+    const active = snapshot.runs.find((run) => run.status === "queued" || run.status === "running");
+    if (!active || openedRun.current === active.id) return;
+    openedRun.current = active.id;
+    update({ tab: "flow" });
+  }, [snapshot.runs]);
   useEffect(() => {
     if (!plansRequest) return;
     update({ tab: "plans" });
@@ -159,6 +170,16 @@ export function Workspace({
               update({ tab: "plans" });
             }}
           />
+        </section>
+        <section
+          className="workspace-panel"
+          role="tabpanel"
+          id="workspace-panel-flow"
+          aria-labelledby="workspace-tab-flow"
+          hidden={state.tab !== "flow"}
+          tabIndex={0}
+        >
+          {state.tab === "flow" && <FlowBoard api={api} threadId={threadId} />}
         </section>
         <section
           className="workspace-panel"

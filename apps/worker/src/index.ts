@@ -14,6 +14,8 @@ import { readRepositoryState, writeRepositoryState } from "./repository-state";
 import { sameKnowledgeContext } from "./knowledge";
 import { RepoConversationAgent } from "./repo-conversation-agent";
 export { RepoConversationAgent };
+import { PlanAgent } from "./plan-agent";
+export { PlanAgent };
 import { resolveCatalog, validateFrozenModels, requiresUserOpenRouter } from "./model-selection";
 import { providerModelsRequest } from "./provider-models";
 import { attachmentStore, type AttachmentStore } from "./attachment-store";
@@ -28,8 +30,8 @@ import { fixtureLandingApi, assertConfigurationIdle, type LandingApi } from "./l
 import { cloudInitialState } from "./cloud-configuration";
 import { principal, protectedFetch, type AccessEnv } from "./access";
 import { Agent, getAgentByName } from "agents";
-import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
-export { ChangeAgent, ReviewAgent };
+import { ChangeAgent, ReviewAgent, TestAgent, type PiEnv } from "./pi-agents";
+export { ChangeAgent, ReviewAgent, TestAgent };
 import { DurableJobs } from "./durable-jobs";
 import {
   InfrastructureAdmission,
@@ -46,6 +48,7 @@ interface Env extends PiEnv, AccessEnv {
   OPENROUTER_API_KEY?: string;
   CHANGE: DurableObjectNamespace<ChangeAgent>;
   CONVERSATION?: DurableObjectNamespace<RepoConversationAgent>;
+  PLAN?: DurableObjectNamespace<PlanAgent>;
   ARTIFACT_REPOSITORY?: string;
   REPOSITORY: DurableObjectNamespace<RepositoryAgent>;
   ENVIRONMENT: string;
@@ -181,6 +184,20 @@ export class RepositoryAgent extends Agent<Env> {
     input: { summary: string; affectedArea: string; criterion: string },
   ) {
     return this.getCoordinator().proposeMission(turnId, input);
+  }
+  planFromTurn(turnId: string) {
+    return this.getCoordinator().ensureChatProposal(turnId);
+  }
+  async planMission(turnId: string) {
+    if (!this.env.PLAN) return this.planFromTurn(turnId);
+    const planner = await getAgentByName(this.env.PLAN, `plan:${turnId}`);
+    return planner.start(turnId);
+  }
+  recordStage(input: Parameters<Coordinator["recordStage"]>[0]) {
+    return this.getCoordinator().recordStage(input);
+  }
+  recordProbes(threadId: string, runId: string, probes: Parameters<Coordinator["recordProbes"]>[2]) {
+    return this.getCoordinator().recordProbes(threadId, runId, probes);
   }
   async readConversationAttachment(turnId: string, reference: StoredImageAttachment) {
     const turn = this.getCoordinator().conversationTurn(turnId);
@@ -439,8 +456,7 @@ export class RepositoryAgent extends Agent<Env> {
           const receipt = await worker.result(id);
           if (receipt.status === "completed") {
             const mission = core.threadMission(turn.threadId);
-            if (mission?.status === "clarifying" && !mission.proposal)
-              await core.ensureChatProposal(id);
+            if (mission?.status === "clarifying" && !mission.proposal) await this.planMission(id);
             core.completeConversation(id, receipt.text);
             return;
           }

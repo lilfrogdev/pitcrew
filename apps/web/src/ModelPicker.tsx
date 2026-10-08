@@ -152,9 +152,15 @@ export function WorkerModelSettings({
           onSelection={(selection) => update({ ...draft, default: selection })}
           label="Repository default"
         />
-        {(["implementer", "reviewer"] as const).map((role) => {
+        {(
+          [
+            ["implementer", "Implementer"],
+            ["reviewer", "Reviewer"],
+            ["planner", "Planner"],
+            ["testAgent", "Test agent"],
+          ] as const
+        ).map(([role, name]) => {
           const override = draft.roles?.[role];
-          const name = role === "implementer" ? "Implementer" : "Reviewer";
           return (
             <div className={styles.role} key={role}>
               <label className={styles.roleLabel}>

@@ -10,7 +10,8 @@ Implemented:
 
 - React Work GUI, repository listing, model catalog, and per-user encrypted OpenRouter credentials.
 - `RepositoryAgent` coordinator with threads, intake, knowledge, verification profiles, and run evidence.
-- `RepoConversationAgent`, `ChangeAgent`, and `ReviewAgent` using the Agents SDK `PiHarness` lifecycle and Pi Durable.
+- `RepoConversationAgent`, `PlanAgent`, `ChangeAgent`, `TestAgent`, and `ReviewAgent` using the Agents SDK `PiHarness` lifecycle and Pi Durable.
+- A Flow workspace tab that shows live handoffs and can replay the same durable trace.
 - Artifacts fork and candidate publish through the execution transport.
 - One-run infrastructure admission, pinned verification plans, and command checks.
 - Cloudflare Access on the backend. Execution, cloud conversation, and repository writes stay disabled until explicitly enabled.
@@ -33,10 +34,10 @@ Not built yet, and not required for the first usable loop:
 1. Choose the fixed baseline repository.
 2. Describe the feature.
 3. Answer the clarifying question.
-4. Review the proposed summary, affected area, acceptance criterion, and command checks.
+4. The planner drafts the summary, affected area, acceptance criterion, and command checks. The repository agent cannot draft that plan.
 5. Approve that exact revision. Editing the proposal cancels the approval.
-6. Start implementation. PiHarness edits an Artifacts fork, commits, and publishes a candidate ref.
-7. Read the candidate SHA, command results, contract digest, and reviewer decision in the GUI.
+6. Start implementation. The change worker edits an isolated checkout, the test runner executes pinned checks, and the test agent runs bounded probes in a disposable copy.
+7. Read the candidate SHA, command results, exploratory probes, contract digest, and reviewer decision in the GUI. Open Flow to watch or replay the handoffs.
 
 Questions and proposal edits do not start a sandbox. One implementation is active per project.
 

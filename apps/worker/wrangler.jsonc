@@ -28,6 +28,14 @@
         "name": "REVIEW",
         "class_name": "ReviewAgent",
       },
+      {
+        "name": "PLAN",
+        "class_name": "PlanAgent",
+      },
+      {
+        "name": "TEST",
+        "class_name": "TestAgent",
+      },
     ],
   },
   "migrations": [
@@ -42,6 +50,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["RepoConversationAgent"],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["PlanAgent", "TestAgent"],
     },
   ],
   "vars": {
@@ -73,6 +85,14 @@
           {
             "name": "REVIEW",
             "class_name": "ReviewAgent",
+          },
+          {
+            "name": "PLAN",
+            "class_name": "PlanAgent",
+          },
+          {
+            "name": "TEST",
+            "class_name": "TestAgent",
           },
         ],
       },
@@ -108,6 +128,14 @@
           {
             "name": "REVIEW",
             "class_name": "ReviewAgent",
+          },
+          {
+            "name": "PLAN",
+            "class_name": "PlanAgent",
+          },
+          {
+            "name": "TEST",
+            "class_name": "TestAgent",
           },
         ],
       },

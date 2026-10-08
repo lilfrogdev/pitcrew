@@ -39,6 +39,12 @@ export class LocalExecutorClient implements WorkspaceTransport, ForkTransport {
   stop(workspace: Workspace): Promise<void> {
     return this.call("stop", { workspace });
   }
+  duplicate(source: Workspace, target: Workspace): Promise<void> {
+    return this.call("duplicate", { source, target });
+  }
+  discard(workspace: Workspace): Promise<void> {
+    return this.call("discard", { workspace });
+  }
 
   private async call<T>(op: string, body: unknown, signal?: AbortSignal): Promise<T> {
     let response: Response;

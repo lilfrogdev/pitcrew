@@ -182,9 +182,10 @@ export function resolveRunModels(
     catalog,
     selection ?? settings?.default ?? catalog.defaultSelection,
   );
+  const roleNames = ["implementer", "reviewer", "planner", "testAgent"] as const;
   if (
     settings?.roles &&
-    Object.keys(settings.roles).some((role) => !["implementer", "reviewer"].includes(role))
+    Object.keys(settings.roles).some((role) => !roleNames.includes(role as (typeof roleNames)[number]))
   )
     throw Error("invalid_model_selection");
   return Object.freeze({
@@ -194,6 +195,8 @@ export function resolveRunModels(
       validateSelection(catalog, settings?.roles?.implementer ?? repoAgent),
     ),
     reviewer: Object.freeze(validateSelection(catalog, settings?.roles?.reviewer ?? repoAgent)),
+    planner: Object.freeze(validateSelection(catalog, settings?.roles?.planner ?? repoAgent)),
+    testAgent: Object.freeze(validateSelection(catalog, settings?.roles?.testAgent ?? repoAgent)),
   });
 }
 export function configureSelectedModels(
@@ -235,6 +238,8 @@ export function validateFrozenModels(env: ModelEnv, models?: FrozenRunModels) {
   validateSelection(catalog, models.repoAgent);
   validateSelection(catalog, models.implementer);
   validateSelection(catalog, models.reviewer);
+  if (models.planner) validateSelection(catalog, models.planner);
+  if (models.testAgent) validateSelection(catalog, models.testAgent);
 }
 
 /** The OpenRouter route never consults shared provider credentials. Other providers keep their own admission. */

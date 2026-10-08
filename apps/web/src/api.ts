@@ -57,6 +57,7 @@ export interface Api {
   threads(projectId: string): Promise<Thread[]>;
   setThreadArchived?(projectId: string, threadId: string, archived: boolean): Promise<Thread>;
   snapshot(threadId: string): Promise<Snapshot>;
+  trace(threadId: string, after?: number): Promise<import("@pitcrew/protocol").OrchestrationTrace>;
   latestRun?(threadId: string): Promise<Run | undefined>;
   createThread(projectId: string, title: string, key: string): Promise<Thread>;
   setThreadModelSelection?(
@@ -255,6 +256,8 @@ export const httpApi: Api = {
       { archived },
     ),
   latestRun: async (id) => (await request<Run[]>(`/threads/${encodeURIComponent(id)}/runs`)).at(-1),
+  trace: (id, after = 0) =>
+    request(`/threads/${encodeURIComponent(id)}/trace?after=${encodeURIComponent(String(after))}`),
   snapshot: async (id) => {
     const path = `/threads/${encodeURIComponent(id)}`;
     const [messages, runs, turns] = await Promise.all([

@@ -348,6 +348,11 @@ export function api(
     coordinator.thread(c.req.param("threadId"));
     return c.json(coordinator.state.runs.filter((r) => r.threadId === c.req.param("threadId")));
   });
+  app.get("/api/threads/:threadId/trace", (c) => {
+    const after = Number(c.req.query("after") ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_cursor");
+    return c.json(coordinator.threadTrace(c.req.param("threadId"), after));
+  });
   app.get("/api/runs/:runId/evidence", (c) => c.json(coordinator.evidence(c.req.param("runId"))));
   app.get("/api/runs/:runId/reviews", (c) =>
     c.json(coordinator.evidence(c.req.param("runId")).reviews),

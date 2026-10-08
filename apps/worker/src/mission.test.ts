@@ -129,7 +129,12 @@ describe("mission approval", () => {
     const proposed = await f.core.ensureChatProposal(turn.turn.id);
     expect(proposed?.status).toBe("proposed");
     expect(proposed?.proposal?.summary).toContain("hello, pitcrew");
+    const trace = f.core.threadTrace(f.thread.id);
+    expect(trace.nodes.map((node) => node.role)).toEqual(["repository", "planner"]);
+    expect(trace.edges.map((edge) => edge.label)).toEqual(["Draft plan"]);
+    expect(f.core.state.messages.some((message) => message.crew === "planner")).toBe(true);
     expect(await f.core.ensureChatProposal(turn.turn.id)).toBeUndefined();
+    expect(f.core.threadTrace(f.thread.id).nodes).toHaveLength(2);
   });
 
   it("gives a new thread its own mission while another thread is still clarifying", async () => {

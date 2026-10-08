@@ -66,9 +66,9 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
                   this.assertConversationAllowed();
                   return this.repository().askMission(this.input().turnId, prompts);
                 },
-                propose: (input) => {
+                plan: () => {
                   this.assertConversationAllowed();
-                  return this.repository().proposeMission(this.input().turnId, input);
+                  return this.repository().planMission(this.input().turnId);
                 },
               },
             ),

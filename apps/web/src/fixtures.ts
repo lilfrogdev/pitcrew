@@ -6,9 +6,31 @@ import {
   type ModelSettings,
   type MessageAttachment,
   type Mission,
+  type CrewRole,
 } from "@pitcrew/protocol";
 const baseSha = "851b619d31a4f1b769b8046a3d306122097ac036";
 const candidateSha = "2a456c88e1d6489d17c1684bfb7f9e0e2a915a04";
+const node = (stage: string, role: CrewRole, title: string, status: "passed", sequence: number) => ({
+  id: `welcome:thread:${stage}`,
+  threadId: "welcome",
+  role,
+  stage,
+  status,
+  title,
+  summary: `${title} finished ${stage}.`,
+  sequence,
+  createdAt: "2026-10-07T00:00:00.000Z",
+  updatedAt: "2026-10-07T00:00:00.000Z",
+});
+const edge = (from: string, to: string, label: string, sequence: number) => ({
+  id: `welcome:thread:${from}->welcome:thread:${to}`,
+  threadId: "welcome",
+  from: `welcome:thread:${from}`,
+  to: `welcome:thread:${to}`,
+  label,
+  sequence,
+  createdAt: "2026-10-07T00:00:00.000Z",
+});
 export function createFixtureApi(): Api {
   const models: ModelChoice[] = [
     {
@@ -274,6 +296,26 @@ export function createFixtureApi(): Api {
     latestRun: async (id) => structuredClone(data[id]?.runs.at(-1)),
     snapshot: async (id) =>
       structuredClone(data[id] ?? { messages: [], runs: [], reviews: [], evidence: [] }),
+    trace: async (id) =>
+      structuredClone(
+        id === "welcome"
+          ? {
+              sequence: 4,
+              probes: [],
+              nodes: [
+                node("request", "repository", "Repository agent", "passed", 1),
+                node("plan", "planner", "Planner", "passed", 2),
+                node("implement", "implementer", "Change worker", "passed", 3),
+                node("review", "reviewer", "Reviewer", "passed", 4),
+              ],
+              edges: [
+                edge("request", "plan", "Draft plan", 2),
+                edge("plan", "implement", "Approved", 3),
+                edge("implement", "review", "Review", 4),
+              ],
+            }
+          : { nodes: [], edges: [], probes: [], sequence: 0 },
+      ),
     createThread: async (projectId, title, key) => {
       const existing = threads.find((thread) => thread.id === key);
       if (existing) return existing;

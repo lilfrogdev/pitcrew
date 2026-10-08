@@ -1,12 +1,13 @@
 import { verificationGaps } from "../../../packages/verification/src/index.ts";
 import type { VerificationEvidence } from "@pitcrew/protocol";
-import type { ExecutionInput, ExecutionResult, Review } from "@pitcrew/protocol";
+import type { ExecutionInput, ExecutionResult, ProbeEvidence, Review } from "@pitcrew/protocol";
 import type { Workspace, TestEvidence } from "../../../packages/execution/src/contracts";
 export type Stage =
   | "prepare"
   | "change"
   | "publish"
   | "test"
+  | "explore"
   | "review"
   | "stop"
   | "done"
@@ -21,6 +22,7 @@ export interface PipelineState {
   preparePending?: boolean;
   change?: { candidateSha: string; summary: string };
   evidence?: TestEvidence;
+  probes?: ProbeEvidence[];
   verification?: VerificationEvidence;
   review?: Pick<
     Review,
@@ -43,6 +45,7 @@ export interface PipelinePorts {
   change(workspace: Workspace, input: ExecutionInput): Promise<PipelineState["change"]>;
   publish(workspace: Workspace, candidate: string): Promise<void>;
   test(workspace: Workspace, candidate: string): Promise<TestEvidence>;
+  explore?(workspace: Workspace, evidence: TestEvidence): Promise<ProbeEvidence[] | undefined>;
   verify?(workspace: Workspace, candidate: string): Promise<VerificationEvidence | undefined>;
   review(workspace: Workspace, evidence: TestEvidence): Promise<PipelineState["review"]>;
   stop(workspace: Workspace): Promise<void>;
@@ -161,6 +164,10 @@ export class DurableChangePipeline {
             state.verification = await ports.verify?.(state.workspace!, state.change!.candidateSha);
             if (!state.verification) throw Error("verification_missing");
           }
+          state.stage = ports.explore ? "explore" : "review";
+          break;
+        case "explore":
+          state.probes = (await ports.explore?.(state.workspace!, state.evidence!)) ?? [];
           state.stage = "review";
           break;
         case "review": {
@@ -197,6 +204,15 @@ export class DurableChangePipeline {
                 4096,
               );
             }
+          }
+          const blocking = (state.probes ?? []).filter((probe) => probe.blocking);
+          if (blocking.length && review.decision === "approve") {
+            review.decision = "request_changes";
+            review.summary =
+              `Exploratory probe failed: ${blocking.map((probe) => probe.purpose).join("; ")}. ${review.summary}`.slice(
+                0,
+                4096,
+              );
           }
           state.review = review;
           state.stage = "stop";

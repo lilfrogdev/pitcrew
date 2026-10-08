@@ -22,7 +22,12 @@ export interface ModelChoice {
 }
 export interface ModelSettings {
   default: ModelSelection;
-  roles?: { implementer?: ModelSelection; reviewer?: ModelSelection };
+  roles?: {
+    implementer?: ModelSelection;
+    reviewer?: ModelSelection;
+    planner?: ModelSelection;
+    testAgent?: ModelSelection;
+  };
 }
 /** Copied at admission; no subsequent thread/repository preference changes affect it. */
 export interface FrozenRunModels {
@@ -31,6 +36,9 @@ export interface FrozenRunModels {
   repoAgent: ModelSelection;
   implementer: ModelSelection;
   reviewer: ModelSelection;
+  /** Optional for runs admitted before the planner and test agent existed. */
+  planner?: ModelSelection;
+  testAgent?: ModelSelection;
 }
 
 /** Intersect every admitted role: attachments are never dropped on a model switch. */
@@ -38,7 +46,15 @@ export function selectionAttachmentCapabilities(
   models: ModelChoice[],
   selections: FrozenRunModels,
 ): import("./attachments.ts").AttachmentCapabilities {
-  const choices = [selections.repoAgent, selections.implementer, selections.reviewer].map(
+  const choices = [
+    selections.repoAgent,
+    selections.implementer,
+    selections.reviewer,
+    selections.planner,
+    selections.testAgent,
+  ]
+    .filter((selection): selection is ModelSelection => !!selection)
+    .map(
     (selection) => models.find((model) => model.id === selection.modelId),
   );
   const images = choices.every((choice) => !!choice?.imageLimits);

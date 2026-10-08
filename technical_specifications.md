@@ -33,11 +33,15 @@ Before the implementer is prompted, the change pipeline writes the snapshot to `
 
 | Piece                   | Role                                            |
 | ----------------------- | ----------------------------------------------- |
-| `RepositoryAgent`       | Coordinator, missions, admission, and API       |
-| `RepoConversationAgent` | Questions and proposal drafts through PiHarness |
-| `ChangeAgent`           | Implementer, contract snapshot, tests           |
-| `ReviewAgent`           | Independent review                              |
-| `UserCredentials`       | Per-user encrypted OpenRouter key               |
+| `RepositoryAgent`       | Coordinator, missions, trace, admission, and API |
+| `RepoConversationAgent` | Questions and handoff to the planner             |
+| `PlanAgent`             | The only drafter of the proposal                 |
+| `ChangeAgent`           | Implementer, contract snapshot, and pipeline     |
+| `TestAgent`             | Exploratory probes in a disposable checkout      |
+| `ReviewAgent`           | Independent review of code and both test results |
+| `UserCredentials`       | Per-user encrypted OpenRouter key                |
+
+The Flow tab reads `GET /api/threads/:threadId/trace`. Trace nodes and edges are coordinator-owned, idempotent, and safe to replay. They contain status, revisions, candidate SHAs, and sanitized probe output. They do not contain prompts, credentials, or model reasoning. Deterministic command results stay authoritative. A test-agent probe blocks approval only when the same failure reproduces; suggestions do not override a passing check. Probes never commit to the candidate.
 | Artifacts               | Fork, candidate ref, and baseline repository    |
 | React Work GUI          | Request, answers, approval, and evidence        |
 

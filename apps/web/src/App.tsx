@@ -33,6 +33,24 @@ const labels: Record<Run["status"], string> = {
 };
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong. Try again.";
+const crewNames = {
+  repository: "Repository agent",
+  planner: "Planner",
+  coordinator: "Coordinator",
+  implementer: "Change worker",
+  test_runner: "Test runner",
+  test_agent: "Test agent",
+  reviewer: "Reviewer",
+} as const;
+export function crewLabel(
+  crew: keyof typeof crewNames | undefined,
+  role: "user" | "coordinator" | "worker" | "reviewer",
+) {
+  if (crew) return crewNames[crew];
+  if (role === "coordinator") return "Repository agent";
+  if (role === "worker") return "Change worker";
+  return "Reviewer";
+}
 export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [planReady, setPlanReady] = useState(false);
@@ -634,8 +652,8 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
               <div className="empty">
                 <h2>Start with the outcome</h2>
                 <p>
-                  Describe what you want changed. Your repository agent will coordinate a separate
-                  worker and reviewer.
+                  Describe what you want changed. The repository agent will hand it to the planner,
+                  then the change worker, test runner, test agent, and reviewer.
                 </p>
               </div>
             ) : (
@@ -647,13 +665,7 @@ export function App({ api, demo = false }: { api: Api; demo?: boolean }) {
                   <div className="message-body">
                     <div className="message-meta">
                       <strong>
-                        {message.role === "user"
-                          ? "You"
-                          : message.role === "coordinator"
-                            ? "Repository agent"
-                            : message.role === "worker"
-                              ? "Change worker"
-                              : "Reviewer"}
+                        {message.role === "user" ? "You" : crewLabel(message.crew, message.role)}
                       </strong>
                       <time dateTime={message.createdAt}>
                         {new Date(message.createdAt).toLocaleTimeString([], {

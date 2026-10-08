@@ -40,13 +40,70 @@ export interface Change {
   originMessageIds: string[];
   contextRevision: string;
 }
+export type CrewRole =
+  | "repository"
+  | "planner"
+  | "coordinator"
+  | "implementer"
+  | "test_runner"
+  | "test_agent"
+  | "reviewer";
+export type TraceStatus = "waiting" | "active" | "passed" | "failed" | "skipped" | "stopped";
 export interface Message {
   attachments?: MessageAttachment[];
+  /** Stable crew identity. Legacy messages omit it and keep their original role label. */
+  crew?: CrewRole;
   id: string;
   threadId: string;
   role: "user" | "coordinator" | "worker" | "reviewer";
   content: string;
   createdAt: string;
+}
+export interface TraceNode {
+  id: string;
+  threadId: string;
+  runId?: string;
+  missionId?: string;
+  role: CrewRole;
+  stage: string;
+  status: TraceStatus;
+  title: string;
+  summary: string;
+  sequence: number;
+  createdAt: string;
+  updatedAt: string;
+  revision?: string;
+  candidateSha?: string;
+}
+export interface TraceEdge {
+  id: string;
+  threadId: string;
+  runId?: string;
+  from: string;
+  to: string;
+  label: string;
+  sequence: number;
+  createdAt: string;
+}
+export interface ProbeEvidence {
+  id: string;
+  threadId: string;
+  runId: string;
+  purpose: string;
+  command: string[];
+  candidateSha: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  reproducible: boolean;
+  blocking: boolean;
+}
+export interface OrchestrationTrace {
+  nodes: TraceNode[];
+  edges: TraceEdge[];
+  probes: ProbeEvidence[];
+  sequence: number;
 }
 export type RunStatus =
   | "queued"
@@ -119,7 +176,8 @@ export interface Event {
     | "run.completed"
     | "run.failed"
     | "review.created"
-    | "mission.updated";
+    | "mission.updated"
+    | "orchestration.updated";
   entityId: string;
   createdAt: string;
 }

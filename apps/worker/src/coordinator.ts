@@ -47,6 +47,7 @@ import type { VerificationEvidence } from "@pitcrew/protocol";
 import { AttachmentValidationError, validateMessageAttachments } from "@pitcrew/protocol";
 import type {
   Change,
+  CrewRole,
   Event,
   Mission,
   MissionProposal,
@@ -64,6 +65,11 @@ import type {
   ExecutionInput,
   ExecutionResult,
   LandingResultReceipt,
+  OrchestrationTrace,
+  ProbeEvidence,
+  TraceEdge,
+  TraceNode,
+  TraceStatus,
 } from "@pitcrew/protocol";
 export class AdmissionError extends Error {
   constructor(
@@ -94,6 +100,7 @@ export interface State {
   requests?: Record<string, ExecutionInput>;
   credentialActors?: Record<string, string>;
   missions?: Mission[];
+  orchestration?: { nodes: TraceNode[]; edges: TraceEdge[]; probes: ProbeEvidence[] };
 }
 export const initialState = (overrides: Partial<Project> = {}): State => {
   const project: Project = {
@@ -858,13 +865,15 @@ export class Coordinator {
       input.roles &&
       (typeof input.roles !== "object" ||
         Array.isArray(input.roles) ||
-        Object.keys(input.roles).some((key) => !["implementer", "reviewer"].includes(key)))
+        Object.keys(input.roles).some(
+          (key) => !["implementer", "reviewer", "planner", "testAgent"].includes(key),
+        ))
     )
       throw new AdmissionError("invalid_model_settings");
     const normalized: ModelSettings = { default: validateSelection(catalog, input.default) };
     if (input.roles) {
       normalized.roles = {};
-      for (const role of ["implementer", "reviewer"] as const)
+      for (const role of ["implementer", "reviewer", "planner", "testAgent"] as const)
         if (input.roles[role])
           normalized.roles[role] = validateSelection(catalog, input.roles[role]);
     }
@@ -1176,16 +1185,122 @@ export class Coordinator {
     if (!latest || latest.proposal) return latest;
     return [...items].reverse().find((item) => item.proposal) ?? latest;
   }
-  private crewNote(threadId: string, id: string, role: Message["role"], content: string) {
+  private crewNote(
+    threadId: string,
+    id: string,
+    role: Message["role"],
+    content: string,
+    crew?: CrewRole,
+  ) {
     if (this.state.messages.some((message) => message.id === id)) return;
     this.state.messages.push({
       id,
       threadId,
       role,
+      ...(crew ? { crew } : {}),
       content: content.slice(0, 4000),
       createdAt: this.now(),
     });
     this.event("message.created", id);
+  }
+  threadTrace(threadId: string, after = 0): OrchestrationTrace {
+    this.thread(threadId);
+    const book = this.state.orchestration ?? { nodes: [], edges: [], probes: [] };
+    return {
+      nodes: book.nodes.filter((node) => node.threadId === threadId && node.sequence > after),
+      edges: book.edges.filter((edge) => edge.threadId === threadId && edge.sequence > after),
+      probes: book.probes.filter((probe) => probe.threadId === threadId),
+      sequence: this.state.events.at(-1)?.sequence ?? 0,
+    };
+  }
+  recordStage(input: {
+    threadId: string;
+    runId?: string;
+    missionId?: string;
+    role: CrewRole;
+    stage: string;
+    status: TraceStatus;
+    title: string;
+    summary: string;
+    parentStage?: string;
+    parentId?: string;
+    edgeLabel?: string;
+    revision?: string;
+    candidateSha?: string;
+    note?: { id: string; role: Message["role"]; crew: CrewRole; content: string };
+  }): TraceNode {
+    this.thread(input.threadId);
+    return this.durableUpdate(() => {
+      const book = (this.state.orchestration ??= { nodes: [], edges: [], probes: [] });
+      const scope = input.runId ?? input.missionId ?? "thread";
+      const id = `${input.threadId}:${scope}:${input.stage}`;
+      const now = this.now();
+      let node = book.nodes.find((item) => item.id === id);
+      if (!node) {
+        node = {
+          id,
+          threadId: input.threadId,
+          runId: input.runId,
+          missionId: input.missionId,
+          role: input.role,
+          stage: input.stage,
+          status: input.status,
+          title: input.title.slice(0, 120),
+          summary: "",
+          sequence: this.state.events.length + 1,
+          createdAt: now,
+          updatedAt: now,
+        };
+        book.nodes.push(node);
+      }
+      node.status = input.status;
+      node.summary = input.summary.slice(0, 2000);
+      node.title = input.title.slice(0, 120);
+      node.updatedAt = now;
+      node.revision = input.revision ?? node.revision;
+      node.candidateSha = input.candidateSha ?? node.candidateSha;
+      node.sequence = this.state.events.length + 1;
+      if (input.parentId || input.parentStage) {
+        const from = input.parentId ?? `${input.threadId}:${scope}:${input.parentStage}`;
+        const edgeId = `${from}->${id}`;
+        if (!book.edges.some((edge) => edge.id === edgeId) && book.nodes.some((item) => item.id === from))
+          book.edges.push({
+            id: edgeId,
+            threadId: input.threadId,
+            runId: input.runId,
+            from,
+            to: id,
+            label: (input.edgeLabel ?? "handoff").slice(0, 80),
+            sequence: node.sequence,
+            createdAt: now,
+          });
+      }
+      if (input.note)
+        this.crewNote(input.threadId, input.note.id, input.note.role, input.note.content, input.note.crew);
+      this.event("orchestration.updated", id);
+      return structuredClone(node);
+    });
+  }
+  recordProbes(threadId: string, runId: string, probes: ProbeEvidence[]) {
+    this.thread(threadId);
+    return this.durableUpdate(() => {
+      const book = (this.state.orchestration ??= { nodes: [], edges: [], probes: [] });
+      for (const probe of probes) {
+        if (probe.threadId !== threadId || probe.runId !== runId) throw new AdmissionError("invalid_probe");
+        if (probe.command.join(" ").length > 500 || probe.purpose.length > 500)
+          throw new AdmissionError("invalid_probe");
+        const clean = {
+          ...probe,
+          stdout: probe.stdout.slice(0, 4000),
+          stderr: probe.stderr.slice(0, 4000),
+        };
+        const index = book.probes.findIndex((item) => item.id === clean.id);
+        if (index >= 0) book.probes[index] = clean;
+        else book.probes.push(clean);
+      }
+      this.event("orchestration.updated", runId);
+      return book.probes.filter((probe) => probe.runId === runId);
+    });
   }
   private openChatMission(threadId: string, messageId: string, request: string, actor: string) {
     const open = this.threadActive(threadId);
@@ -1450,7 +1565,7 @@ export class Coordinator {
       acceptance: mission.proposal.acceptance,
       reproduceBaseline: false,
     });
-    return this.durableUpdate(() => {
+    const run = this.durableUpdate(() => {
       const current = this.mission(missionId);
       if (current.runId) return structuredClone(this.evidence(current.runId).run);
       if (current.status !== "approved" || current.approvedRevision !== mission.approvedRevision)
@@ -1484,12 +1599,32 @@ export class Coordinator {
         `note:${run.id}:worker-started`,
         "worker",
         "I'm implementing the approved plan in an isolated checkout.",
+        "implementer",
       );
       this.event("change.created", change.id, { kind: "principal", id: actor });
       this.event("run.queued", run.id);
       this.event("mission.updated", current.id, { kind: "principal", id: actor });
       return structuredClone(run);
     });
+    this.recordStage({
+      threadId: run.threadId,
+      runId: run.id,
+      missionId,
+      role: "coordinator",
+      stage: "assign",
+      status: "passed",
+      title: "Coordinator",
+      summary: "Coordinator assigned the approved plan to the change worker.",
+      parentId: `${run.threadId}:${missionId}:plan`,
+      edgeLabel: "Approved",
+      note: {
+        id: `note:${run.id}:assigned`,
+        role: "coordinator",
+        crew: "coordinator",
+        content: "Coordinator sent the approved plan to the change worker.",
+      },
+    });
+    return run;
   }
   startMission(missionId: string, key: string, actor = "local-fixture"): Promise<Run> {
     this.validateKey(key);
@@ -1586,11 +1721,39 @@ export class Coordinator {
     if (mission.questions.some((item) => !item.answer)) return;
     const request = this.state.messages.find((message) => message.id === turn.messageId)?.content;
     if (!request?.trim()) return;
-    return this.proposeMission(turnId, {
+    this.recordStage({
+      threadId: turn.threadId,
+      missionId: mission.id,
+      role: "repository",
+      stage: "request",
+      status: "passed",
+      title: "Repository agent",
+      summary: "Scoped the request for planning.",
+    });
+    const proposed = await this.proposeMission(turnId, {
       summary: request.trim().slice(0, 4000),
       affectedArea: "the code named in the request",
       criterion: request.trim().slice(0, 2000),
     });
+    this.recordStage({
+      threadId: turn.threadId,
+      missionId: proposed.id,
+      role: "planner",
+      stage: "plan",
+      status: "passed",
+      title: "Planner",
+      summary: proposed.proposal?.summary ?? request.trim(),
+      parentStage: "request",
+      edgeLabel: "Draft plan",
+      revision: proposed.proposal?.revision,
+      note: {
+        id: `note:${proposed.id}:planner`,
+        role: "coordinator",
+        crew: "planner",
+        content: `Planner drafted revision ${proposed.proposal?.revision.slice(0, 12) ?? ""}. It is ready for approval.`,
+      },
+    });
+    return proposed;
   }
   submit(
     threadId: string,
@@ -1854,6 +2017,7 @@ export class Coordinator {
         `note:${run.id}:worker-result`,
         "worker",
         result.summary?.trim() || "Implementation finished and is ready for review.",
+        "implementer",
       );
       if (result.review) {
         const review: Review = {
@@ -1870,6 +2034,7 @@ export class Coordinator {
           `note:${run.id}:reviewer`,
           "reviewer",
           `${review.decision === "approve" ? "Approved." : "Changes requested."} ${review.summary}`,
+          "reviewer",
         );
         this.event("review.created", review.id);
       }

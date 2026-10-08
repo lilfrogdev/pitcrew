@@ -57,6 +57,35 @@
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
+.flow-board,
+.flow-layout {
+  display: grid;
+  grid-template-rows: auto minmax(280px, 1fr);
+  min-height: 420px;
+  height: 100%;
+}
+.flow-layout {
+  grid-template-rows: minmax(280px, 1fr);
+  grid-template-columns: minmax(0, 1fr) 240px;
+}
+.flow-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+}
+.flow-canvas {
+  min-height: 280px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.flow-details {
+  padding: 12px;
+  overflow: auto;
+}
+.flow-details pre {
+  white-space: pre-wrap;
+}
 .workspace-panel {
   padding: 20px 16px;
 }

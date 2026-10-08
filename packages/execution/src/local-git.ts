@@ -234,6 +234,18 @@ export class LocalGitWorkspace implements WorkspaceTransport {
 
   async stop(_workspace: Workspace): Promise<void> {}
 
+  async duplicate(source: Workspace, target: Workspace): Promise<void> {
+    if (!target.artifactId.endsWith("-probe")) throw new ExecutionError("REFUSING_DUPLICATE");
+    const { cp } = await import("node:fs/promises");
+    await cp(this.directory(source), this.directory(target), { recursive: true });
+  }
+
+  async discard(workspace: Workspace): Promise<void> {
+    if (!workspace.artifactId.endsWith("-probe")) throw new ExecutionError("REFUSING_DISCARD");
+    const { rm } = await import("node:fs/promises");
+    await rm(this.directory(workspace), { recursive: true, force: true });
+  }
+
   private git(workspace: Workspace, args: string[]): Promise<CommandResult> {
     const directory = this.directory(workspace);
     return runProcess(directory, ["git", ...args], 10_000, 65_536, undefined, gitEnv(directory));

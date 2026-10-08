@@ -62,7 +62,7 @@ VITE_PITCREW_DEMO=false pnpm -C apps/web dev --port 5173 --strictPort
 
 Open <http://127.0.0.1:8787>. Create a conversation and describe the change in the chat.
 The repository agent replies in the thread. When a plan is ready, choose **Approve this plan**.
-Worker and reviewer lines appear in the same transcript. The checkout is created under
+The transcript labels the repository agent, planner, coordinator, change worker, test runner, test agent, and reviewer. The Flow tab shows the same handoffs live and can replay them. The checkout is created under
 `.wrangler/local-workspaces`. The model is OpenRouter `deepseek/deepseek-v4-flash`. This mode does not fork Artifacts or reserve cloud budget.
 Restarting the Worker resumes the same run; it does not create a second checkout or a second
 model call for a stage that already finished. The `development` environment remains fake.

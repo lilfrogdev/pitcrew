@@ -8,7 +8,7 @@ Work continues on `feat/pitcrew-cloud-mvp` in this repository. Do not create ano
 - [x] Align these planning documents with the coordinator, PiHarness, and approval loop.
 - [x] Add durable mission states: clarifying, proposed, approved, running, awaiting review, and a terminal outcome.
 - [x] Require an explicit approval before `delegate_change` or mission start can queue an implementer.
-- [x] Show questions, the proposal, approval, candidate ref, tests, and review in the Work GUI.
+- [x] Show questions, the proposal, approval, candidate ref, tests, exploratory probes, review, and the Flow handoff graph in the Work GUI.
 - [x] Materialize the approved contract as `.agent_context/ASSERTIONS.json` and reject a missing or edited copy.
 - [x] Add the small baseline fixture and a credential-safe provisioning script.
 - [x] Prepare the backend container and observability configuration without enabling paid execution.

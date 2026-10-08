@@ -35,6 +35,12 @@ const operations = {
   stop(body) {
     return workspaces.stop(body.workspace);
   },
+  duplicate(body) {
+    return workspaces.duplicate(body.source, body.target);
+  },
+  discard(body) {
+    return workspaces.discard(body.workspace);
+  },
 };
 
 function readBody(req) {
