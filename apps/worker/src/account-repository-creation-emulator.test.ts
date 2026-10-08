@@ -229,7 +229,11 @@ it("authenticated discovery derives the exact rollout tuple from stable account 
     const owner = await f.enroll(),
       colleague = await f.enroll(colleagueEmail, "bryan");
     expect(owner).not.toBe(colleague);
-    expect(await f.discovery()).toEqual({ approval: null, creations: [] });
+    expect(await f.discovery()).toEqual({
+      approval: null,
+      capabilities: { create: false, manage: false, delete: false },
+      creations: [],
+    });
     expect((await f.create()).status).toBe(404);
     for (const [actor, name] of [
       ["access:legacy", targetName],
@@ -237,13 +241,25 @@ it("authenticated discovery derives the exact rollout tuple from stable account 
       ["", targetName],
     ]) {
       await f.repository.approve(actor, name);
-      expect(await f.discovery()).toEqual({ approval: null, creations: [] });
+      expect(await f.discovery()).toEqual({
+        approval: null,
+        capabilities: { create: false, manage: false, delete: false },
+        creations: [],
+      });
       expect((await f.create()).status).toBe(404);
     }
     const serverChosenName = "another-approved-name";
     await f.repository.approve(owner, serverChosenName);
-    expect(await f.discovery()).toEqual({ approval: { name: serverChosenName }, creations: [] });
-    expect(await f.discovery(colleagueEmail)).toEqual({ approval: null, creations: [] });
+    expect(await f.discovery()).toEqual({
+      approval: { name: serverChosenName },
+      capabilities: { create: false, manage: false, delete: false },
+      creations: [],
+    });
+    expect(await f.discovery(colleagueEmail)).toEqual({
+      approval: null,
+      capabilities: { create: false, manage: false, delete: false },
+      creations: [],
+    });
     expect((await f.create(serverChosenName, colleagueEmail)).status).toBe(404);
     expect((await f.create(targetName)).status).toBe(404);
     for (const body of [
@@ -403,7 +419,11 @@ it("an ambiguous post-create response remains durable pending and exact retries 
     expect((await transportCounts(f)).revokes).toBe(0);
     expect(await (await f.request("/projects")).json()).toEqual([]);
     await f.enroll(colleagueEmail, "bryan");
-    expect(await f.discovery(colleagueEmail)).toEqual({ approval: null, creations: [] });
+    expect(await f.discovery(colleagueEmail)).toEqual({
+      approval: null,
+      capabilities: { create: false, manage: false, delete: false },
+      creations: [],
+    });
   } finally {
     await f.mf.dispose();
   }
@@ -599,7 +619,11 @@ it("a replacement BetterAuth account with the same email cannot inherit a stable
       .run();
     const replacement = await f.enroll(ownerEmail, "replacement");
     expect(replacement).not.toBe(original);
-    expect(await f.discovery()).toEqual({ approval: null, creations: [] });
+    expect(await f.discovery()).toEqual({
+      approval: null,
+      capabilities: { create: false, manage: false, delete: false },
+      creations: [],
+    });
     expect((await f.create()).status).toBe(404);
     expect((await transportCounts(f)).creates).toBe(0);
   } finally {

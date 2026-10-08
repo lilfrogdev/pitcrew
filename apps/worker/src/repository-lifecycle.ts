@@ -3,8 +3,10 @@ import { normalizePublicRepositoryImportUrl } from "../../../packages/protocol/s
 /** Metadata only. No creation token is stored, returned, or used for Git. */
 export type LifecycleRecord = {
   ownerActor?: string;
+  displayName?: string;
+  description?: string;
   name: string;
-  operation: "create" | "import";
+  operation: "create" | "import" | "adopt";
   id?: string;
   source?: string;
   issue?: string;
@@ -43,6 +45,145 @@ export class RepositoryLifecycle {
     return this.store
       .list()
       .filter((record) => record.operation === "create" && record.ownerActor === ownerActor);
+  }
+  ownedRecord(name: string, ownerActor: string) {
+    const record = this.store.get(name);
+    return record?.ownerActor === ownerActor ? record : undefined;
+  }
+  /** Observe a quarantined delete; a present or unavailable resource stays frozen. */
+  observeDeletion(name: string, id: string, ownerActor: string, fresh?: () => Promise<void>) {
+    return this.exclusive(async () => {
+      const record = this.store.get(name);
+      if (!record || record.id !== id || record.ownerActor !== ownerActor) throw Error("not_found");
+      if (record.status !== "deleting") return record;
+      await fresh?.();
+      try {
+        using repo = await this.binding.get(name);
+        if ((await repo.info()).id !== id) throw Error("repository_identity_changed");
+        await fresh?.();
+      } catch (error) {
+        if (serviceCode(error) === "NOT_FOUND") {
+          await fresh?.();
+          const deleted = { ...record, status: "deleted" as const };
+          this.store.put(deleted);
+          return deleted;
+        }
+        if (
+          error instanceof Error &&
+          ["repository_identity_changed", "unauthorized", "not_found"].includes(error.message)
+        )
+          throw error;
+      }
+      return record;
+    });
+  }
+  /** Registered native resources carry immutable source evidence in the directory.
+   * This is separate from the generic lifecycle route, which cannot delete references.
+   * All namespace operations use this single DO queue. Names remain retired forever.
+   */
+  removeOwned(
+    name: string,
+    id: string,
+    confirmation: string,
+    ownerActor: string,
+    authorizeAndFreeze: () => Promise<void>,
+    fresh: () => Promise<void>,
+  ) {
+    return this.exclusive(async () => {
+      if (confirmation !== name) throw Error("confirmation_required");
+      let record = this.store.get(name);
+      if (record && (record.id !== id || record.ownerActor !== ownerActor))
+        throw Error("repository_identity_changed");
+      if (record && !["ready", "deleting", "deleted"].includes(record.status))
+        throw Error("repository_protected");
+      if (!record && this.store.list().length >= 200) throw Error("lifecycle_limit");
+      await authorizeAndFreeze();
+      if (record?.status === "deleted") return record;
+      record = {
+        ...(record ?? { name, id, ownerActor, operation: "adopt" as const }),
+        status: "deleting",
+      };
+      this.store.put(record);
+      try {
+        await fresh();
+        using repo = await this.binding.get(name);
+        await fresh();
+        const identity = async () => {
+          if ((await repo.info()).id !== id) throw Error("repository_identity_changed");
+          await fresh();
+        };
+        await identity();
+        const tokens = await repo.listTokens();
+        await fresh();
+        // Binding has no pagination: incomplete metadata must quarantine deletion.
+        if (tokens.total > 100 || tokens.tokens.length !== tokens.total)
+          throw Error("token_cleanup_required");
+        for (const token of tokens.tokens) {
+          if (token.state !== "active") continue;
+          if (typeof token.id !== "string" || !token.id || token.id.length > 256)
+            throw Error("token_cleanup_required");
+          await identity();
+          if (!(await repo.revokeToken(token.id))) throw Error("token_cleanup_required");
+          await fresh();
+        }
+        await identity();
+        const remaining = await repo.listTokens();
+        await fresh();
+        if (
+          remaining.tokens.length !== remaining.total ||
+          remaining.tokens.some((token) => token.state === "active")
+        )
+          throw Error("token_cleanup_required");
+        await identity();
+        // The provider documents only name-based delete, with no CAS. The queue
+        // prevents cooperating app replacements; out-of-band namespace writers
+        // must obey the same ownership/retirement policy before broad enablement.
+        await this.binding.delete(name);
+        await fresh();
+        // Acceptance is not proof of absence (the REST API returns 202).
+        try {
+          using observed = await this.binding.get(name);
+          if ((await observed.info()).id !== id) throw Error("repository_identity_changed");
+          await fresh();
+        } catch (error) {
+          if (serviceCode(error) !== "NOT_FOUND") throw error;
+          await fresh();
+          record = { ...record, status: "deleted" };
+          this.store.put(record);
+        }
+      } catch (error) {
+        if (serviceCode(error) === "NOT_FOUND") {
+          // Token APIs can also return NOT_FOUND. Only repository get/info
+          // absence is proof that the physical source is gone.
+          await fresh();
+          try {
+            using observed = await this.binding.get(name);
+            if ((await observed.info()).id !== id) throw Error("repository_identity_changed");
+            await fresh();
+          } catch (observation) {
+            if (serviceCode(observation) === "NOT_FOUND") {
+              await fresh();
+              record = { ...record, status: "deleted" };
+              this.store.put(record);
+            } else if (
+              observation instanceof Error &&
+              ["repository_identity_changed", "unauthorized", "not_found"].includes(
+                observation.message,
+              )
+            )
+              throw observation;
+          }
+        } else if (
+          error instanceof Error &&
+          ["repository_identity_changed", "unauthorized", "not_found"].includes(error.message)
+        ) {
+          throw error;
+        }
+        // Ambiguous failures stay frozen; only an explicit same-ID owner retry
+        // can repeat a destructive operation. Observation never restores readiness.
+      }
+      return record;
+    });
   }
   // DO storage is durable; serialize requests through cleanup and destructive checks.
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -116,6 +257,7 @@ export class RepositoryLifecycle {
     source?: string,
     ownerActor?: string,
     beforeCreate?: () => Promise<void>,
+    metadata?: { displayName: string; description: string },
   ) {
     return this.exclusive(async () => {
       const existing = this.store.get(name);
@@ -146,6 +288,7 @@ export class RepositoryLifecycle {
         operation,
         ...(ownerActor ? { ownerActor } : {}),
         ...(source ? { source } : {}),
+        ...metadata,
         status: "pending",
       };
       this.store.put(record);
@@ -160,7 +303,12 @@ export class RepositoryLifecycle {
         } else {
           created = await this.binding.create(name, { readOnly: true, setDefaultBranch: "main" });
         }
-        if (created.name !== name) throw Error();
+        if (
+          created.name !== name ||
+          typeof created.id !== "string" ||
+          !/^[A-Za-z0-9_-]{1,128}$/.test(created.id)
+        )
+          throw Error();
         record.id = created.id;
         record.status = "cleanup_required";
         this.store.put(record);
@@ -196,9 +344,7 @@ export class RepositoryLifecycle {
         try {
           using repo = await this.binding.get(name);
           if ((await repo.info()).id !== record.id) throw Error("repository_protected");
-          const ready = { ...record, status: "ready" as const };
-          this.store.put(ready);
-          return ready;
+          return record;
         } catch (error) {
           if (serviceCode(error) !== "NOT_FOUND") throw Error("deletion_pending");
           const deleted = { ...record, status: "deleted" as const };

@@ -330,3 +330,69 @@ it("migrates legacy reconnect idempotency only to the verified owner without dup
   expect(reloaded.state.conversationTurns).toHaveLength(1);
   expect(reloaded.state.threads).toHaveLength(1);
 });
+
+it("owner invitation metadata omits secrets and ID revoke blocks acceptance; editors cannot manage invitations", async () => {
+  const f = fixture();
+  f.access(owner).bootstrap();
+  const invite = await f.access(owner).invite("project", "pitcrew", bryan.email, "editor");
+  const list = await f.request(owner, "/api/projects/pitcrew/invitations");
+  expect(list.status).toBe(200);
+  const serialized = await list.text();
+  expect(serialized).not.toContain(invite.token);
+  expect(serialized).not.toContain("digest");
+  expect(serialized).toContain(invite.invitation.id);
+  expect(
+    (
+      await f.request(
+        other,
+        `/api/projects/pitcrew/invitations/${invite.invitation.id}/revoke`,
+        "POST",
+        {},
+      )
+    ).status,
+  ).toBe(404);
+  expect(
+    (
+      await f.request(
+        owner,
+        `/api/projects/pitcrew/invitations/${invite.invitation.id}/revoke`,
+        "POST",
+        {},
+      )
+    ).status,
+  ).toBe(200);
+  await expect(f.access(bryan).accept(invite.token)).rejects.toMatchObject({ status: 410 });
+  const editorInvite = await f.access(owner).invite("project", "pitcrew", bryan.email, "editor");
+  await f.access(bryan).accept(editorInvite.token);
+  const thread = f.core.createThread(
+    "Editor-created thread",
+    "editor-thread",
+    bryan.actor,
+    bryan.email,
+  );
+  await expect(
+    f.access(bryan).invite("thread", thread.id, other.email, "editor"),
+  ).rejects.toMatchObject({ status: 403 });
+  expect((await f.request(bryan, "/api/projects/pitcrew/invitations")).status).toBe(403);
+});
+
+it("frozen projects deny invitation links, thread reads, writes and idempotent replays while retaining historical records", async () => {
+  const f = fixture();
+  f.access(owner).bootstrap();
+  const thread = f.core.createThread("Retained history", "history", owner.actor, owner.email);
+  const note = f.core.appendNote(thread.id, "retained note", "original-note", owner.actor);
+  const invite = await f.access(owner).invite("project", "pitcrew", bryan.email, "editor");
+  f.core.freezeRepository("deleting");
+  expect(f.saved().messages).toContainEqual(note);
+  expect(f.saved().collaboration!.invitations[invite.invitation.id].revokedAt).toBeDefined();
+  expect((await f.request(owner, `/api/threads/${thread.id}/messages`)).status).toBe(404);
+  await expect(f.access(bryan).accept(invite.token)).rejects.toMatchObject({ status: 404 });
+  expect(() => f.core.appendNote(thread.id, "retained note", "original-note", owner.actor)).toThrow(
+    "not_found",
+  );
+  expect(() => f.core.createThread("new", "new", owner.actor, owner.email)).toThrow("not_found");
+  expect(f.core.actorAuthorized(owner.actor, thread.id)).toBe(false);
+  f.core.freezeRepository("deleted");
+  f.core.freezeRepository("deleting");
+  expect(f.saved().repositoryLifecycle).toBe("deleted");
+});

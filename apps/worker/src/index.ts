@@ -12,6 +12,10 @@ import {
 } from "./repository-lifecycle";
 import {
   approvedRepositoryCreation,
+  accountRepositoryManagement,
+  accountRepositoryDeletion,
+  readRepositoryBody,
+  repositoryMetadata,
   readRepositoryCreation,
   creationProjection,
   creationError,
@@ -120,6 +124,8 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   ADOPT_ACCOUNT_ACTOR?: string;
   CREATE_ACCOUNT_ACTOR?: string;
   CREATE_REPOSITORY_NAME?: string;
+  ACCOUNT_REPOSITORY_MANAGEMENT?: string;
+  ACCOUNT_REPOSITORY_DELETE?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   protected readonly visualizationAuthority = new VisualizationAuthorityGate();
@@ -279,6 +285,36 @@ export class RepositoryAgent extends Agent<Env> {
       );
     }
     return root;
+  }
+  private protectedNativeSource(name: string) {
+    const root = this.getCoordinator();
+    return (
+      name === this.env.ARTIFACT_REPOSITORY ||
+      root.state.project.repository === `artifact:${name}` ||
+      this.artifactSource(root)?.name === name
+    );
+  }
+  private repositoryProjection(core: Coordinator, identity: { actor: string }) {
+    const entry = this.getCoordinator().state.ownedProjects?.[core.state.project.id];
+    const role = core.state.collaboration?.projectMembers[identity.actor]?.role;
+    const status = core.state.repositoryLifecycle ?? "present";
+    const protectedSource = !entry || this.protectedNativeSource(entry.sourceName);
+    return {
+      projectId: core.state.project.id,
+      name: core.state.project.name,
+      description: core.state.project.description ?? "",
+      metadataRevision: core.state.project.metadataRevision ?? 0,
+      ...(entry ? { repositoryName: entry.sourceName, repositoryId: entry.sourceId } : {}),
+      role,
+      status,
+      lifecycle: status === "present" ? "registered" : status,
+      deletable:
+        status === "present" &&
+        role === "owner" &&
+        entry?.ownerActor === identity.actor &&
+        !protectedSource &&
+        accountRepositoryDeletion(this.env, identity.actor),
+    };
   }
   private repositoryLifecycle?: RepositoryLifecycle;
   private getRepositoryLifecycle(request: Request) {
@@ -1401,30 +1437,41 @@ export class RepositoryAgent extends Agent<Env> {
     const { user, identity, rootAccess } = admitted;
     const credentialActor = passwordMode ? identity.actor : accessIdentity!.actor;
     if (request.method === "GET" && ["/api/projects", "/api/repositories"].includes(path)) {
-      const fixture =
-        this.env.ENVIRONMENT === "development" &&
-        !passwordMode &&
-        this.env.AUTH_MODE !== "better-auth" &&
-        this.env.FIXTURE_IDENTITY === "lilfrogdev";
-      const projects = [
-        ...(fixture ? [root] : []),
-        ...Object.keys(root.state.ownedProjects ?? {}).map((id) => this.projectCoordinator(id)!),
-      ].filter((core) => !!new Collaboration(core, identity, ownerEmail).projectRole());
-      return Response.json(
-        path === "/api/projects"
-          ? projects.map((core) => core.state.project)
-          : {
-              repositories: projects.map((core) => ({
-                projectId: core.state.project.id,
-                name: core.state.project.name,
-                role: new Collaboration(core, identity, ownerEmail).projectRole(),
-                status: "present",
-                lifecycle: "registered",
-                deletable: false,
-              })),
-              cursor: null,
-            },
-      );
+      const listing = () => {
+        const fixture =
+          this.env.ENVIRONMENT === "development" &&
+          !passwordMode &&
+          this.env.AUTH_MODE !== "better-auth" &&
+          this.env.FIXTURE_IDENTITY === "lilfrogdev";
+        const projects = [
+          ...(fixture ? [root] : []),
+          ...Object.keys(root.state.ownedProjects ?? {}).map((id) => this.projectCoordinator(id)!),
+        ].filter((core) => {
+          const role = core.state.collaboration?.projectMembers[identity.actor]?.role;
+          return (
+            !!new Collaboration(core, identity, ownerEmail).projectRole() ||
+            (path === "/api/repositories" &&
+              core.state.repositoryLifecycle === "deleting" &&
+              role === "owner" &&
+              root.state.ownedProjects?.[core.state.project.id]?.ownerActor === identity.actor)
+          );
+        });
+        return Response.json(
+          path === "/api/projects"
+            ? projects.map((core) => core.state.project)
+            : {
+                repositories: projects.map((core) => this.repositoryProjection(core, identity)),
+                cursor: null,
+              },
+        );
+      };
+      if (!auth || !user) return listing();
+      return this.visualizationAuthority.run(async () => {
+        const current = await authUser(auth!, request, accessIdentity);
+        if (!current || current.id !== user.id)
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        return listing();
+      });
     }
     if (request.method === "GET" && path === "/api/account")
       return Response.json({
@@ -1434,7 +1481,172 @@ export class RepositoryAgent extends Agent<Env> {
         username: "username" in identity ? identity.username : undefined,
         avatar: "avatar" in identity ? identity.avatar : undefined,
       });
+    const management = path.match(
+      /^\/api\/projects\/([A-Za-z0-9:_-]{1,128})\/repository(\/delete)?$/,
+    );
+    if (passwordMode && management) {
+      if (
+        !accountRepositoryManagement(this.env, identity.actor) ||
+        (management[2] && !accountRepositoryDeletion(this.env, identity.actor))
+      )
+        return Response.json({ error: "not_found" }, { status: 404 });
+      const projectId = management[1];
+      const core = this.projectCoordinator(projectId);
+      const lifecycle = this.getLifecycle();
+      const owned = () => root.state.ownedProjects?.[projectId];
+      const owner = () => {
+        const entry = owned();
+        if (
+          !core ||
+          !entry ||
+          entry.ownerActor !== identity.actor ||
+          entry.state.collaboration?.projectMembers[identity.actor]?.role !== "owner"
+        )
+          throw new RepositoryCreationError("not_found", 404);
+        return entry;
+      };
+      const authorize = async () => {
+        const current = await authUser(auth!, request);
+        if (!current || current.id !== user?.id || `account:${current.id}` !== identity.actor)
+          throw new RepositoryCreationError("unauthorized", 401);
+        if (
+          !accountRepositoryManagement(this.env, identity.actor) ||
+          (management[2] && !accountRepositoryDeletion(this.env, identity.actor))
+        )
+          throw new RepositoryCreationError("not_found", 404);
+        return owner();
+      };
+      const fresh = () =>
+        this.visualizationAuthority.run(async () => {
+          await authorize();
+        });
+      try {
+        if (!lifecycle) throw new RepositoryCreationError("repository_backend_unavailable", 503);
+        // Check ownership before admitting any caller-selected body or provider read.
+        owner();
+        if (request.method === "GET" && !management[2]) {
+          const entry = await this.visualizationAuthority.run(authorize);
+          if (core!.state.repositoryLifecycle === "deleting") {
+            const saved = lifecycle.ownedRecord(entry.sourceName, identity.actor);
+            if (saved) {
+              const observed = await lifecycle.observeDeletion(
+                entry.sourceName,
+                entry.sourceId,
+                identity.actor,
+                fresh,
+              );
+              await this.visualizationAuthority.run(async () => {
+                await authorize();
+                if (observed.status === "deleted") core!.freezeRepository("deleted");
+              });
+            }
+          }
+          return await this.visualizationAuthority.run(async () => {
+            await authorize();
+            return Response.json(this.repositoryProjection(core!, identity));
+          });
+        }
+        if (request.method === "PATCH" && !management[2]) {
+          const body = await readRepositoryBody(request, [
+            "displayName",
+            "description",
+            "expectedRevision",
+          ]);
+          const metadata = repositoryMetadata(body.displayName, body.description);
+          if (
+            body.expectedRevision !== undefined &&
+            (typeof body.expectedRevision !== "number" ||
+              !Number.isSafeInteger(body.expectedRevision) ||
+              body.expectedRevision < 0)
+          )
+            throw new RepositoryCreationError("invalid_repository_metadata", 400);
+          return await this.visualizationAuthority.run(async () => {
+            await authorize();
+            return Response.json(
+              core!.updateRepositoryMetadata(
+                metadata.displayName,
+                metadata.description,
+                body.expectedRevision as number | undefined,
+              ),
+            );
+          });
+        }
+        if (request.method === "POST" && management[2]) {
+          const body = await readRepositoryBody(request, ["confirmation", "repositoryId"], 2048);
+          if (
+            Object.keys(body).length !== 2 ||
+            typeof body.repositoryId !== "string" ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(body.repositoryId) ||
+            typeof body.confirmation !== "string"
+          )
+            throw new RepositoryCreationError("invalid_repository_request", 400);
+          const entry = owner();
+          if (this.protectedNativeSource(entry.sourceName))
+            throw new RepositoryCreationError("repository_protected", 409);
+          if (body.repositoryId !== entry.sourceId)
+            throw new RepositoryCreationError("repository_identity_changed", 409);
+          if (body.confirmation !== entry.sourceName)
+            throw new RepositoryCreationError("confirmation_required", 400);
+          const expectedName = entry.sourceName,
+            expectedId = entry.sourceId;
+          const pinned = async () => {
+            const current = await authorize();
+            if (this.protectedNativeSource(current.sourceName))
+              throw new RepositoryCreationError("repository_protected", 409);
+            if (current.sourceName !== expectedName || current.sourceId !== expectedId)
+              throw new RepositoryCreationError("repository_identity_changed", 409);
+          };
+          const fence = () => this.visualizationAuthority.run(pinned);
+          const record = await lifecycle.removeOwned(
+            expectedName,
+            expectedId,
+            body.confirmation,
+            identity.actor,
+            () =>
+              this.visualizationAuthority.run(async () => {
+                await pinned();
+                this.getLandingStore().assertRepositoryIdle(expectedName);
+                const runIds = new Set(core!.state.runs.map((run) => run.id));
+                if (
+                  this.getAdmission()
+                    .monitored()
+                    .some((reservation) =>
+                      runIds.has(reservation.owningRunId ?? reservation.runId),
+                    ) ||
+                  core!.state.runs.some((run) => ["queued", "running"].includes(run.status)) ||
+                  core!.state.conversationTurns?.some((turn) =>
+                    ["queued", "running"].includes(turn.status),
+                  )
+                )
+                  throw new RepositoryCreationError("repository_busy", 409);
+                core!.freezeRepository("deleting");
+              }),
+            fence,
+          );
+          return await this.visualizationAuthority.run(async () => {
+            await pinned();
+            if (record.status === "deleted") core!.freezeRepository("deleted");
+            return Response.json(this.repositoryProjection(core!, identity), {
+              status: record.status === "deleted" ? 200 : 202,
+            });
+          });
+        }
+        return Response.json({ error: "method_not_allowed" }, { status: 405 });
+      } catch (error) {
+        if (error instanceof AdmissionError)
+          return creationError(new RepositoryCreationError(error.message, error.status));
+        if (
+          error instanceof Error &&
+          ["repository_identity_changed", "repository_protected", "lifecycle_limit"].includes(
+            error.message,
+          )
+        )
+          return creationError(new RepositoryCreationError(error.message, 409));
+        return creationError(error);
+      }
+    }
     if (passwordMode && ["/api/repository-creations", "/api/repositories/create"].includes(path)) {
+      const broad = () => accountRepositoryManagement(this.env, identity.actor);
       const approved = () => approvedRepositoryCreation(this.env, identity.actor);
       const lifecycle = this.getLifecycle();
       const projectFor = (record: LifecycleRecord) =>
@@ -1443,7 +1655,8 @@ export class RepositoryAgent extends Agent<Env> {
               (entry) =>
                 entry.sourceId === record.id &&
                 entry.sourceName === record.name &&
-                entry.ownerActor === identity.actor,
+                entry.ownerActor === identity.actor &&
+                !entry.state.repositoryLifecycle,
             )?.state.project
           : undefined;
       if (request.method === "GET" && path === "/api/repository-creations") {
@@ -1458,6 +1671,11 @@ export class RepositoryAgent extends Agent<Env> {
               target && !records.some((record) => record.name === target.name && projectFor(record))
                 ? target
                 : null,
+            capabilities: {
+              create: broad(),
+              manage: broad(),
+              delete: accountRepositoryDeletion(this.env, identity.actor),
+            },
             creations: records.map((record) => creationProjection(record, projectFor(record)?.id)),
           });
         });
@@ -1465,10 +1683,11 @@ export class RepositoryAgent extends Agent<Env> {
       if (request.method !== "POST" || path !== "/api/repositories/create")
         return Response.json({ error: "not_found" }, { status: 404 });
       const target = approved();
-      if (!target || !lifecycle) return Response.json({ error: "not_found" }, { status: 404 });
+      if ((!target && !broad()) || !lifecycle)
+        return Response.json({ error: "not_found" }, { status: 404 });
       try {
-        const name = await readRepositoryCreation(request);
-        if (name !== target.name) throw new RepositoryCreationError("not_found", 404);
+        const { name, displayName, description } = await readRepositoryCreation(request, broad());
+        if (!broad() && name !== target?.name) throw new RepositoryCreationError("not_found", 404);
         const grant = await this.visualizationAuthority.run(() =>
           visualizationGrant(auth!, request),
         );
@@ -1480,7 +1699,8 @@ export class RepositoryAgent extends Agent<Env> {
           } catch {
             throw new RepositoryCreationError("unauthorized", 401);
           }
-          if (approved()?.name !== name) throw new RepositoryCreationError("not_found", 404);
+          if (!broad() && approved()?.name !== name)
+            throw new RepositoryCreationError("not_found", 404);
         };
         const task = (async () => {
           await this.visualizationAuthority.run(fresh);
@@ -1490,12 +1710,18 @@ export class RepositoryAgent extends Agent<Env> {
           let record =
             previous?.status === "cleanup_required"
               ? await lifecycle.reconcile(name, identity.actor)
-              : await lifecycle.provision(name, "create", undefined, identity.actor, () =>
-                  this.visualizationAuthority.run(async () => {
-                    await fresh();
-                    if (Object.keys(root.state.ownedProjects ?? {}).length >= 20)
-                      throw new RepositoryCreationError("capacity", 429);
-                  }),
+              : await lifecycle.provision(
+                  name,
+                  "create",
+                  undefined,
+                  identity.actor,
+                  () =>
+                    this.visualizationAuthority.run(async () => {
+                      await fresh();
+                      if (Object.keys(root.state.ownedProjects ?? {}).length >= 20)
+                        throw new RepositoryCreationError("capacity", 429);
+                    }),
+                  broad() ? { displayName, description } : undefined,
                 );
           if (record.status !== "ready") return creationProjection(record);
           if (
@@ -1560,6 +1786,9 @@ export class RepositoryAgent extends Agent<Env> {
                     username: current.username,
                     avatar: current.image,
                   },
+                  record.displayName !== undefined
+                    ? { displayName: record.displayName, description: record.description ?? "" }
+                    : undefined,
                 );
                 return creationProjection(record, project.id);
               } catch (error) {

@@ -17,6 +17,7 @@ export function approvedRepositoryCreation(
     ARTIFACTS?: unknown;
     CREATE_ACCOUNT_ACTOR?: string;
     CREATE_REPOSITORY_NAME?: string;
+    ACCOUNT_REPOSITORY_MANAGEMENT?: string;
   },
   actor: string,
 ) {
@@ -35,12 +36,50 @@ export function approvedRepositoryCreation(
   }
 }
 
-export async function readRepositoryCreation(request: Request) {
-  const limit = 2048;
-  if (Number(request.headers.get("content-length") ?? 0) > limit)
+export function accountRepositoryManagement(
+  env: {
+    AUTH_MODE?: string;
+    ENVIRONMENT?: string;
+    ARTIFACTS?: unknown;
+    ACCOUNT_REPOSITORY_MANAGEMENT?: string;
+  },
+  actor: string,
+) {
+  return (
+    env.AUTH_MODE === "password-only" &&
+    env.ENVIRONMENT === "production" &&
+    !!env.ARTIFACTS &&
+    env.ACCOUNT_REPOSITORY_MANAGEMENT === "enabled" &&
+    /^account:[A-Za-z0-9_-]{1,128}$/.test(actor)
+  );
+}
+
+/** Destructive rollout approval is independent from routine repository management. */
+export function accountRepositoryDeletion(
+  env: {
+    AUTH_MODE?: string;
+    ENVIRONMENT?: string;
+    ARTIFACTS?: unknown;
+    ACCOUNT_REPOSITORY_MANAGEMENT?: string;
+    ACCOUNT_REPOSITORY_DELETE?: string;
+  },
+  actor: string,
+) {
+  return accountRepositoryManagement(env, actor) && env.ACCOUNT_REPOSITORY_DELETE === "enabled";
+}
+
+/** Strict object JSON, bounded before decoding or any authority/provider admission. */
+export async function readRepositoryBody(request: Request, allowed: string[], limit = 8192) {
+  if (
+    request.headers.has("content-encoding") ||
+    request.headers.get("content-type")?.split(";", 1)[0].trim() !== "application/json"
+  )
+    throw new RepositoryCreationError("unsupported_media_type", 415);
+  const declared = request.headers.get("content-length");
+  if (declared && (!/^\d+$/.test(declared) || Number(declared) > limit))
     throw new RepositoryCreationError("body_too_large", 413);
   const reader = request.body?.getReader();
-  if (!reader) throw new RepositoryCreationError("invalid_repository_creation", 400);
+  if (!reader) throw new RepositoryCreationError("invalid_repository_request", 400);
   let body: unknown;
   try {
     const chunks: Uint8Array[] = [];
@@ -61,7 +100,7 @@ export async function readRepositoryCreation(request: Request) {
     body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch (error) {
     if (error instanceof RepositoryCreationError) throw error;
-    throw new RepositoryCreationError("invalid_repository_creation", 400);
+    throw new RepositoryCreationError("invalid_repository_request", 400);
   } finally {
     await reader.cancel().catch(() => {});
   }
@@ -69,18 +108,49 @@ export async function readRepositoryCreation(request: Request) {
     !body ||
     typeof body !== "object" ||
     Array.isArray(body) ||
-    Object.keys(body).length !== 2 ||
-    Object.keys(body).some((key) => !["name", "credentialConsent"].includes(key))
+    Object.keys(body).some((key) => !allowed.includes(key))
   )
-    throw new RepositoryCreationError("invalid_repository_creation", 400);
-  const input = body as { name?: unknown; credentialConsent?: unknown };
-  if (input.credentialConsent !== true)
+    throw new RepositoryCreationError("invalid_repository_request", 400);
+  return body as Record<string, unknown>;
+}
+export function repositoryMetadata(displayName: unknown, description: unknown) {
+  if (
+    typeof displayName !== "string" ||
+    !displayName.trim() ||
+    displayName.trim().length > 80 ||
+    // eslint-disable-next-line no-control-regex -- Local labels reject invisible controls.
+    /[\u0000-\u001f\u007f]/.test(displayName) ||
+    typeof description !== "string" ||
+    description.trim().length > 1000 ||
+    // eslint-disable-next-line no-control-regex -- Multiline text permits only LF and tab controls.
+    /[\u0000-\u0008\u000b-\u001f\u007f]/.test(description)
+  )
+    throw new RepositoryCreationError("invalid_repository_metadata", 400);
+  return { displayName: displayName.trim(), description: description.trim() };
+}
+export async function readRepositoryCreation(request: Request, broad = false) {
+  const body = await readRepositoryBody(
+    request,
+    broad
+      ? ["name", "credentialConsent", "displayName", "description"]
+      : ["name", "credentialConsent"],
+    broad ? 8192 : 2048,
+  );
+  if (body.credentialConsent !== true)
     throw new RepositoryCreationError("credential_consent_required", 400);
+  let name: string;
   try {
-    return repositoryName(input.name);
+    name = repositoryName(body.name);
   } catch {
     throw new RepositoryCreationError("invalid_name", 400);
   }
+  return {
+    name,
+    ...repositoryMetadata(
+      body.displayName === undefined ? name : body.displayName,
+      body.description === undefined ? "" : body.description,
+    ),
+  };
 }
 
 export function creationProjection(record: LifecycleRecord, projectId?: string) {
@@ -89,9 +159,11 @@ export function creationProjection(record: LifecycleRecord, projectId?: string) 
       ? projectId
         ? "ready"
         : "registration_required"
-      : record.status === "cleanup_required"
-        ? "cleanup_required"
-        : "pending";
+      : record.status === "deleted" || record.status === "deleting"
+        ? record.status
+        : record.status === "cleanup_required"
+          ? "cleanup_required"
+          : "pending";
   return {
     name: record.name,
     status,

@@ -93,6 +93,7 @@ export class Collaboration {
   }
   /** Refresh labels from a verified session, without changing membership or authorship. */
   refreshProfile() {
+    if (this.core.state.repositoryLifecycle) return;
     const access = this.state();
     if (!access?.projectMembers[this.identity.actor]) return;
     const profile = {
@@ -155,6 +156,7 @@ export class Collaboration {
     });
   }
   projectRole() {
+    if (this.core.state.repositoryLifecycle) return;
     return this.state()?.projectMembers[this.identity.actor]?.role;
   }
   threadRole(threadId: string) {
@@ -187,6 +189,7 @@ export class Collaboration {
     );
   }
   async invite(scope: "project" | "thread", scopeId: string, emailValue: unknown, role: unknown) {
+    this.requireProject(this.core.state.project.id, true);
     if (scope === "project") this.requireProject(scopeId, true);
     else this.requireThread(scopeId, true);
     if (role !== "editor") throw new AdmissionError("invalid_role");
@@ -206,6 +209,7 @@ export class Collaboration {
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     };
     this.core.updateCollaboration((state) => {
+      this.requireProject(this.core.state.project.id, true);
       const access = state.collaboration!;
       if (scope === "project") {
         if (access.projectMembers[this.identity.actor]?.role !== "owner") forbidden();
@@ -225,7 +229,23 @@ export class Collaboration {
     const { digest: _digest, ...publicValue } = invitation;
     return { ...publicValue, projectId: this.core.state.project.id };
   }
+  invitations(projectId: string) {
+    this.requireProject(projectId, true);
+    return Object.values(this.state()?.invitations ?? {}).map((invite) =>
+      this.publicInvitation(invite),
+    );
+  }
+  revokeById(projectId: string, invitationId: string) {
+    this.requireProject(projectId, true);
+    return this.core.updateCollaboration((state) => {
+      this.requireProject(projectId, true);
+      const current = state.collaboration?.invitations[invitationId] ?? missing();
+      current.revokedAt ??= new Date().toISOString();
+      return this.publicInvitation(current);
+    });
+  }
   private async find(token: string) {
+    if (this.core.state.repositoryLifecycle) missing();
     if (!/^[a-f0-9]{64}$/.test(token)) missing();
     const hashed = await digest(token);
     const invitation = Object.values(this.state()?.invitations ?? {}).find(
@@ -279,6 +299,7 @@ export class Collaboration {
     });
   }
   async revoke(token: string) {
+    this.requireProject(this.core.state.project.id, true);
     const invite = await this.find(token);
     if (
       this.projectRole() !== "owner" &&
@@ -293,6 +314,7 @@ export class Collaboration {
     });
   }
   remove(scope: "project" | "thread", scopeId: string, actor: string) {
+    this.requireProject(this.core.state.project.id, true);
     if (scope === "project") this.requireProject(scopeId, true);
     else this.requireThread(scopeId, true);
     if (actor === this.identity.actor || actor.length > 256)

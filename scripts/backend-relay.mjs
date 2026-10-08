@@ -77,6 +77,16 @@ const safeErrors = new Set([
   "repository_already_registered",
   "repository_verification_failed",
   "repository_uninitialized",
+  "repository_management_unavailable",
+  "invalid_repository_metadata",
+  "invalid_repository_deletion",
+  "repository_metadata_conflict",
+  "repository_revision_conflict",
+  "repository_active",
+  "repository_deleting",
+  "repository_busy",
+  "revision_conflict",
+  "repository_storage_limit",
   "invalid_event_cursor",
   "source_unavailable",
   "source_stale",
@@ -123,10 +133,16 @@ function sharedRoute(path, method, passwordMode = false) {
     routes.POST = [
       "projects",
       "repositories/create",
+      `projects/${id}/repository/delete`,
+      `projects/${id}/invitations/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/revoke`,
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
       `threads/${id}/(?:messages|invitations|presence)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
     ];
+  if (passwordMode) {
+    routes.GET.push(`projects/${id}/(?:repository|invitations)`);
+    routes.PATCH = [`projects/${id}/repository`];
+  }
   return (routes[method] ?? []).some((route) => new RegExp(`^/api/${route}$`).test(path));
 }
 const loopback = (value) => ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(value);
@@ -325,6 +341,70 @@ function normalizeMutation(path, value) {
   }
   return action !== "delete" || value.confirmation === value.name;
 }
+const nativeProjectRepository = /^\/api\/projects\/[A-Za-z0-9:_-]{1,128}\/repository(?:\/delete)?$/;
+const nativeProjectInvitations =
+  /^\/api\/projects\/[A-Za-z0-9:_-]{1,128}\/invitations(?:\/[a-f0-9-]{36}\/revoke)?$/;
+const safeText = (value, limit, multiline = false) =>
+  typeof value === "string" &&
+  value.length <= limit &&
+  // eslint-disable-next-line no-control-regex -- Plain labels reject controls; descriptions permit LF and tab.
+  !(multiline ? /[\x00-\x08\x0b-\x1f\x7f]/ : /[\x00-\x1f\x7f]/).test(value);
+const resourceId = /^[A-Za-z0-9:_-]{1,128}$/;
+function normalizeNativeManagement(path, method, value) {
+  const keys = Object.keys(value);
+  if (path === "/api/repositories/create") {
+    if (
+      !keys.includes("displayName") &&
+      !keys.includes("description") &&
+      Buffer.byteLength(JSON.stringify(value)) > 2048
+    )
+      throw Object.assign(Error(), { status: 413 });
+    return (
+      keys.every((key) =>
+        ["name", "credentialConsent", "displayName", "description"].includes(key),
+      ) &&
+      namePattern.test(value.name ?? "") &&
+      typeof value.name === "string" &&
+      value.credentialConsent === true &&
+      (value.displayName === undefined ||
+        (safeText(value.displayName, 80) && value.displayName.trim().length > 0)) &&
+      (value.description === undefined || safeText(value.description, 1000, true))
+    );
+  }
+  if (nativeProjectRepository.test(path)) {
+    if (method === "PATCH")
+      return (
+        keys.every((key) => ["displayName", "description", "expectedRevision"].includes(key)) &&
+        safeText(value.displayName, 80) &&
+        value.displayName.trim().length > 0 &&
+        safeText(value.description, 1000, true) &&
+        (value.expectedRevision === undefined ||
+          (Number.isSafeInteger(value.expectedRevision) && value.expectedRevision >= 0))
+      );
+    return (
+      keys.length === 2 &&
+      keys.includes("confirmation") &&
+      keys.includes("repositoryId") &&
+      typeof value.confirmation === "string" &&
+      namePattern.test(value.confirmation) &&
+      typeof value.repositoryId === "string" &&
+      resourceId.test(value.repositoryId)
+    );
+  }
+  if (nativeProjectInvitations.test(path)) {
+    if (path.endsWith("/revoke")) return keys.length === 0;
+    return (
+      keys.length === 2 &&
+      keys.includes("email") &&
+      keys.includes("role") &&
+      typeof value.email === "string" &&
+      value.email.length <= 254 &&
+      /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(value.email) &&
+      value.role === "editor"
+    );
+  }
+  return false;
+}
 async function boundedJson(response, limit = 262144) {
   if (response.headers.get("content-type")?.split(";", 1)[0].trim() !== "application/json")
     throw Error();
@@ -348,7 +428,134 @@ async function boundedJson(response, limit = 262144) {
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
-function cleanResponse(path, value, passwordMode = false) {
+function nativeInvitationProjection(item) {
+  if (
+    !item ||
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(item.id ?? "") ||
+    !["project", "thread"].includes(item.scope) ||
+    !resourceId.test(item.projectId ?? "") ||
+    (item.scope === "thread" && !resourceId.test(item.threadId ?? "")) ||
+    !safeText(item.email, 254) ||
+    !/^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(item.email) ||
+    item.role !== "editor" ||
+    !safeText(item.invitedBy, 256) ||
+    !item.invitedBy.length ||
+    typeof item.expiresAt !== "string" ||
+    item.expiresAt.length > 30 ||
+    !Number.isFinite(Date.parse(item.expiresAt)) ||
+    (item.acceptedBy !== undefined &&
+      (!safeText(item.acceptedBy, 256) || !item.acceptedBy.length)) ||
+    (item.revokedAt !== undefined &&
+      (typeof item.revokedAt !== "string" ||
+        item.revokedAt.length > 30 ||
+        !Number.isFinite(Date.parse(item.revokedAt))))
+  )
+    throw Error();
+  return {
+    id: item.id,
+    scope: item.scope,
+    projectId: item.projectId,
+    ...(item.scope === "thread" ? { threadId: item.threadId } : {}),
+    email: item.email,
+    role: item.role,
+    invitedBy: item.invitedBy,
+    expiresAt: item.expiresAt,
+    ...(item.acceptedBy !== undefined ? { acceptedBy: item.acceptedBy } : {}),
+    ...(item.revokedAt !== undefined ? { revokedAt: item.revokedAt } : {}),
+  };
+}
+function nativeRepositoryProjection(item) {
+  if (
+    !item ||
+    !resourceId.test(item.projectId ?? "") ||
+    !resourceId.test(item.repositoryId ?? "") ||
+    !namePattern.test(item.repositoryName ?? "") ||
+    !safeText(item.name, 80) ||
+    !item.name.trim().length ||
+    !safeText(item.description ?? "", 1000, true) ||
+    !Number.isSafeInteger(item.metadataRevision ?? 0) ||
+    (item.metadataRevision ?? 0) < 0 ||
+    item.role !== "owner" ||
+    !["present", "deleting", "deleted"].includes(item.status) ||
+    !["registered", "deleting", "deleted"].includes(item.lifecycle) ||
+    (item.status === "present"
+      ? item.lifecycle !== "registered"
+      : item.status !== item.lifecycle) ||
+    typeof item.deletable !== "boolean"
+  )
+    throw Error();
+  return {
+    projectId: item.projectId,
+    name: item.name,
+    repositoryName: item.repositoryName,
+    repositoryId: item.repositoryId,
+    description: item.description ?? "",
+    metadataRevision: item.metadataRevision ?? 0,
+    role: "owner",
+    status: item.status,
+    lifecycle: item.lifecycle,
+    deletable: item.status === "present" && item.deletable,
+  };
+}
+function cleanResponse(path, value, passwordMode = false, method = "GET", mutation) {
+  if (
+    passwordMode &&
+    nativeProjectInvitations.test(path) &&
+    (method === "GET" || path.endsWith("/revoke"))
+  ) {
+    const projectId = path.split("/")[3];
+    if (path.endsWith("/revoke")) {
+      const projected = nativeInvitationProjection(value);
+      if (projected.projectId !== projectId || projected.id !== path.split("/")[5]) throw Error();
+      return projected;
+    }
+    if (!Array.isArray(value) || value.length > 100) throw Error();
+    return value.map((item) => {
+      const projected = nativeInvitationProjection(item);
+      if (projected.projectId !== projectId) throw Error();
+      return projected;
+    });
+  }
+  if (passwordMode && nativeProjectRepository.test(path)) {
+    const projectId = path.split("/")[3];
+    if (method !== "PATCH") {
+      const projected = nativeRepositoryProjection(value);
+      if (
+        projected.projectId !== projectId ||
+        (mutation &&
+          (projected.repositoryId !== mutation.repositoryId ||
+            projected.repositoryName !== mutation.confirmation))
+      )
+        throw Error();
+      return projected;
+    }
+    if (
+      !value ||
+      !resourceId.test(value.id ?? "") ||
+      value.id !== projectId ||
+      !safeText(value.name, 80) ||
+      !value.name.trim().length ||
+      typeof value.repository !== "string" ||
+      !namePattern.test(value.repository.replace(/^artifact:/, "")) ||
+      !value.repository.startsWith("artifact:") ||
+      !/^[a-f0-9]{40}$/.test(value.baseSha ?? "") ||
+      !safeText(value.configurationRevision, 128) ||
+      !safeText(value.description ?? "", 1000, true) ||
+      !Number.isSafeInteger(value.metadataRevision ?? 0) ||
+      (value.metadataRevision ?? 0) < 0
+    )
+      throw Error();
+    return {
+      id: value.id,
+      name: value.name,
+      repository: value.repository,
+      baseSha: value.baseSha,
+      configurationRevision: value.configurationRevision,
+      description: value.description ?? "",
+      metadataRevision: value.metadataRevision ?? 0,
+      ...(value.modelSettings !== undefined ? { modelSettings: value.modelSettings } : {}),
+    };
+  }
   if (
     path === "/api/repository-creations" ||
     (passwordMode && path === "/api/repositories/create")
@@ -359,7 +566,14 @@ function cleanResponse(path, value, passwordMode = false) {
         !item ||
         typeof item.name !== "string" ||
         !namePattern.test(item.name) ||
-        !["pending", "cleanup_required", "registration_required", "ready"].includes(item.status) ||
+        ![
+          "pending",
+          "cleanup_required",
+          "registration_required",
+          "ready",
+          "deleting",
+          "deleted",
+        ].includes(item.status) ||
         (item.repositoryId !== undefined && !projectId.test(item.repositoryId)) ||
         (item.status === "ready" &&
           (!projectId.test(item.repositoryId ?? "") || !projectId.test(item.projectId ?? "")))
@@ -386,6 +600,25 @@ function cleanResponse(path, value, passwordMode = false) {
       throw Error();
     return {
       approval: value.approval ? { name: value.approval.name } : null,
+      ...(value.capabilities !== undefined
+        ? (() => {
+            if (
+              typeof value.capabilities?.create !== "boolean" ||
+              typeof value.capabilities?.manage !== "boolean" ||
+              (value.capabilities.delete !== undefined &&
+                typeof value.capabilities.delete !== "boolean") ||
+              (value.capabilities.delete === true && !value.capabilities.manage)
+            )
+              throw Error();
+            return {
+              capabilities: {
+                create: value.capabilities.create,
+                manage: value.capabilities.manage,
+                delete: value.capabilities.delete === true,
+              },
+            };
+          })()
+        : {}),
       creations: value.creations.map(creation),
     };
   }
@@ -449,24 +682,47 @@ function cleanResponse(path, value, passwordMode = false) {
       throw Error();
     return {
       repositories: value.repositories.map((item) => {
+        const registered = passwordMode && ["registered", "deleting"].includes(item?.lifecycle);
         if (
           typeof item?.name !== "string" ||
-          !namePattern.test(item.name) ||
+          !(registered
+            ? safeText(item.name, 80) && item.name.trim().length > 0
+            : namePattern.test(item.name)) ||
           !(statuses.has(item.lifecycle) || item.lifecycle === "registered") ||
-          typeof item.deletable !== "boolean"
+          typeof item.deletable !== "boolean" ||
+          (registered &&
+            (!resourceId.test(item.projectId ?? "") ||
+              !["owner", "editor"].includes(item.role) ||
+              (item.repositoryName !== undefined && !namePattern.test(item.repositoryName)) ||
+              (item.repositoryId !== undefined && !resourceId.test(item.repositoryId)) ||
+              (item.description !== undefined && !safeText(item.description, 1000, true)) ||
+              (item.metadataRevision !== undefined &&
+                (!Number.isSafeInteger(item.metadataRevision) || item.metadataRevision < 0))))
         )
           throw Error();
         return {
           name: item.name,
           lifecycle: item.lifecycle,
           deletable: item.deletable,
-          ...(item.lifecycle === "registered" &&
+          ...(["registered", ...(passwordMode ? ["deleting"] : [])].includes(item.lifecycle) &&
           /^[a-zA-Z0-9_-]{1,128}$/.test(item.projectId ?? "") &&
           ["owner", "editor"].includes(item.role)
             ? {
                 projectId: item.projectId,
                 role: item.role,
-                status: "present",
+                status: item.lifecycle === "deleting" ? "deleting" : "present",
+                ...(passwordMode && item.repositoryName !== undefined
+                  ? { repositoryName: item.repositoryName }
+                  : {}),
+                ...(passwordMode && item.repositoryId !== undefined
+                  ? { repositoryId: item.repositoryId }
+                  : {}),
+                ...(passwordMode && item.description !== undefined
+                  ? { description: item.description }
+                  : {}),
+                ...(passwordMode && item.metadataRevision !== undefined
+                  ? { metadataRevision: item.metadataRevision }
+                  : {}),
               }
             : {}),
           ...(safeErrors.has(item.issue) ? { issue: item.issue } : {}),
@@ -633,16 +889,19 @@ export function createBackendRelayMiddleware({
       req.method === "GET" &&
       (shared || provider || models || url.pathname === "/api/repositories");
     const write =
-      (shared && ["POST", "PUT", "DELETE"].includes(req.method)) ||
+      (shared && ["POST", "PATCH", "PUT", "DELETE"].includes(req.method)) ||
       (req.method === "POST" &&
         (provider || /^\/api\/repositories\/(create|import|reconcile|delete)$/.test(url.pathname)));
     const uploadCancel = shared && req.method === "DELETE" && /\/uploads\//.test(url.pathname);
     const uploadWrite = shared && req.method === "PUT" && /\/uploads\//.test(url.pathname);
     const creationWrite =
+      passwordMode && shared && req.method === "POST" && decodedPath === "/api/repositories/create";
+    const nativeManagementWrite =
       passwordMode &&
       shared &&
-      req.method === "POST" &&
-      url.pathname === "/api/repositories/create";
+      write &&
+      (nativeProjectRepository.test(decodedPath) || nativeProjectInvitations.test(decodedPath));
+    const accountBoundWrite = uploadWrite || (passwordMode && shared && write);
     const presenceWrite = shared && write && url.pathname.endsWith("/presence");
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
@@ -696,7 +955,7 @@ export function createBackendRelayMiddleware({
         )
       )
         return reply(res, 403, { error: "backend_session_required" });
-      if (uploadWrite || creationWrite) {
+      if (accountBoundWrite) {
         // Bind mutation consent to the account present before reading its bytes.
         // Another tab may replace this local vault while the stream is pending.
         uploadAccess = passwordMode ? "" : await token();
@@ -717,9 +976,15 @@ export function createBackendRelayMiddleware({
                     : shared && url.pathname.endsWith("/messages")
                       ? 2097152
                       : shared
-                        ? url.pathname === "/api/repositories/create"
-                          ? 2048
-                          : 16384
+                        ? creationWrite
+                          ? 8192
+                          : nativeManagementWrite
+                            ? decodedPath.endsWith("/repository/delete")
+                              ? 2048
+                              : nativeProjectInvitations.test(decodedPath)
+                                ? 512
+                                : 8192
+                            : 16384
                         : 8192,
                 uploadWrite,
               );
@@ -743,8 +1008,8 @@ export function createBackendRelayMiddleware({
             )
           )
             throw Error();
-        } else if (passwordMode && url.pathname === "/api/repositories/create") {
-          if (!normalizeMutation(url.pathname, content)) throw Error();
+        } else if (creationWrite || nativeManagementWrite) {
+          if (!normalizeNativeManagement(decodedPath, req.method, content)) throw Error();
         } else if (shared && url.pathname.endsWith("/presence")) {
           if (
             Object.keys(content).sort().join(",") !== "active,clientId,sequence" ||
@@ -773,7 +1038,7 @@ export function createBackendRelayMiddleware({
       const authHeaders = sessionHeaders ? await sessionHeaders(req, access) : {};
       if ((passwordMode || sharedApi) && !authHeaders.Cookie)
         return reply(res, 401, { error: "unauthorized" });
-      if ((uploadWrite || creationWrite) && authHeaders.Cookie !== uploadAccountCookie)
+      if (accountBoundWrite && authHeaders.Cookie !== uploadAccountCookie)
         return reply(res, 409, { error: "backend_account_changed" });
       // Rebuild headers. Never forward browser Cookie/Authorization/identity, nonce or hints.
       const response = await fetchImpl(
@@ -786,7 +1051,7 @@ export function createBackendRelayMiddleware({
             Accept: "application/json",
             ...(!passwordMode ? { "Cf-Access-Token": access } : {}),
             ...(authHeaders.Cookie
-              ? { Cookie: uploadWrite || creationWrite ? uploadAccountCookie : authHeaders.Cookie }
+              ? { Cookie: accountBoundWrite ? uploadAccountCookie : authHeaders.Cookie }
               : {}),
             ...(write
               ? {
@@ -883,12 +1148,21 @@ export function createBackendRelayMiddleware({
       return reply(
         res,
         response.status,
-        shared && !["/api/repository-creations", "/api/repositories/create"].includes(url.pathname)
+        shared &&
+          !(
+            ["/api/repository-creations", "/api/repositories/create"].includes(decodedPath) ||
+            (passwordMode &&
+              (nativeProjectRepository.test(decodedPath) ||
+                (nativeProjectInvitations.test(decodedPath) &&
+                  (req.method === "GET" || decodedPath.endsWith("/revoke")))))
+          )
           ? value
           : cleanResponse(
-              url.pathname,
+              decodedPath,
               passwordMode && provider ? { ...value, executionEnabled: false } : value,
               passwordMode,
+              req.method,
+              nativeManagementWrite ? content : undefined,
             ),
         shared && /^\d{1,15}$/.test(nextSequence ?? "") ? { "X-Next-Sequence": nextSequence } : {},
       );

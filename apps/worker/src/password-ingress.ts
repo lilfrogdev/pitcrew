@@ -12,7 +12,7 @@ export function passwordApiRoute(path: string, method: string) {
       "repositories",
       "capabilities",
       "provider-connection/openrouter(?:/models)?",
-      `projects/${id}/(?:context|threads|members|events|intake|verification-metrics)`,
+      `projects/${id}/(?:context|threads|members|invitations|repository|events|intake|verification-metrics)`,
       `projects/${id}/threads/${id}/visualizations(?:/${id})?`,
       `threads/${id}/source/(?:tree|file|diff)`,
       `threads/${id}/(?:members|messages|changes|runs|turns|presence|attachments/${id})`,
@@ -26,10 +26,13 @@ export function passwordApiRoute(path: string, method: string) {
       "provider-connection/openrouter",
       "projects",
       "repositories/create",
+      `projects/${id}/repository/delete`,
+      `projects/${id}/invitations/${upload}/revoke`,
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
       `threads/${id}/(?:messages|invitations|presence)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
     ],
+    PATCH: [`projects/${id}/repository`],
     PUT: [`threads/${id}/uploads/${upload}`],
     DELETE: [
       `threads/${id}/uploads/${upload}`,
@@ -91,7 +94,7 @@ export function passwordIngressRequest(
     return denied("ingress_forbidden", 403);
   if (
     request.headers.has("content-encoding") ||
-    (request.method === "POST" &&
+    (["POST", "PATCH"].includes(request.method) &&
       request.headers.get("content-type")?.split(";", 1)[0].trim() !== "application/json")
   )
     return denied("unsupported_media_type", 415);

@@ -67,9 +67,13 @@ export type SharedRepository = {
   projectId: string;
   name: string;
   role: "owner" | "editor";
-  status: "present";
-  lifecycle: "registered";
-  deletable: false;
+  repositoryName?: string;
+  repositoryId?: string;
+  description?: string;
+  metadataRevision?: number;
+  status: "present" | "deleting";
+  lifecycle: "registered" | "deleting";
+  deletable: boolean;
 };
 export type ApprovedProjectAdoption = {
   name: string;
@@ -78,12 +82,37 @@ export type ApprovedProjectAdoption = {
 export type RepositoryCreation = {
   name: string;
   repositoryId?: string;
-  status: "pending" | "cleanup_required" | "registration_required" | "ready";
+  status:
+    | "pending"
+    | "cleanup_required"
+    | "registration_required"
+    | "ready"
+    | "deleting"
+    | "deleted";
   projectId?: string;
 };
 export type RepositoryCreations = {
   approval: { name: string } | null;
   creations: RepositoryCreation[];
+  capabilities?: { create: boolean; manage: boolean; delete: boolean };
+};
+export type RepositoryMetadata = {
+  displayName: string;
+  description: string;
+  expectedRevision?: number;
+};
+export type RepositoryDeletion = { confirmation: string; repositoryId: string };
+export type RepositoryStatus = {
+  projectId: string;
+  name: string;
+  repositoryName: string;
+  repositoryId: string;
+  description: string;
+  metadataRevision: number;
+  role: "owner";
+  status: "present" | "deleting" | "deleted";
+  lifecycle: "registered" | "deleting" | "deleted";
+  deletable: boolean;
 };
 export type Invitation = {
   id: string;
@@ -104,7 +133,16 @@ export interface CollaborationApi {
   approvedProjectAdoptions?(): Promise<ApprovedProjectAdoption[]>;
   adoptProject?(name: string, repositoryId: string): Promise<Project>;
   repositoryCreations?(): Promise<RepositoryCreations>;
-  createRepository?(name: string, credentialConsent: true): Promise<RepositoryCreation>;
+  createRepository?(
+    name: string,
+    credentialConsent: true,
+    metadata?: { displayName: string; description: string },
+  ): Promise<RepositoryCreation>;
+  updateRepository?(projectId: string, metadata: RepositoryMetadata): Promise<Project>;
+  deleteRepository?(projectId: string, target: RepositoryDeletion): Promise<RepositoryStatus>;
+  repositoryStatus?(projectId: string): Promise<RepositoryStatus>;
+  projectInvitations?(projectId: string): Promise<Invitation[]>;
+  revokeProjectInvitation?(projectId: string, invitationId: string): Promise<Invitation>;
   projectMembers(projectId: string): Promise<Member[]>;
   threadMembers(threadId: string): Promise<Member[]>;
   inviteProject(projectId: string, email: string): Promise<CreatedInvitation>;
@@ -207,6 +245,7 @@ export async function mutationHeaders(): Promise<Record<string, string>> {
 }
 export async function apiFetch(path: string, body?: unknown): Promise<Response> {
   const repositoryCreation = path === "/repositories/create";
+  const repositoryDeletion = path.endsWith("/repository/delete");
   const send = async () => {
     const headers = body ? await mutationHeaders() : undefined;
     const perform = () =>
@@ -214,12 +253,17 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
         method: body ? "POST" : "GET",
         // Reads include edge admission, cached-token/JWKS checks and the relay's
         // own upstream deadline. Don't free a client slot before that work ends.
-        signal: AbortSignal.timeout(body && !repositoryCreation ? 10000 : 45000),
+        signal: AbortSignal.timeout(
+          body && !repositoryCreation && !repositoryDeletion ? 10000 : 45000,
+        ),
         headers,
         ...(path.includes("/source/") ||
         path === "/project-adoptions" ||
         path === "/repository-creations" ||
-        repositoryCreation
+        repositoryCreation ||
+        repositoryDeletion ||
+        path.endsWith("/repository") ||
+        path.endsWith("/invitations")
           ? { cache: "no-store" as const }
           : {}),
         body: body ? JSON.stringify(body) : undefined,
@@ -230,21 +274,157 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
   const first = await send();
   // A rejected local admission has no side effects. Another tab may have
   // established the session cookie while our initial bootstrap was in flight.
-  if (!repositoryCreation && first.local && first.response.status === 403)
+  if (!repositoryCreation && !repositoryDeletion && first.local && first.response.status === 403)
     return (await send()).response;
   return first.response;
 }
+
+const publicIdentifier = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+function repositoryCapabilities(value: unknown): {
+  create: boolean;
+  manage: boolean;
+  delete: boolean;
+} {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("create" in value) ||
+    !("manage" in value) ||
+    typeof value.create !== "boolean" ||
+    typeof value.manage !== "boolean" ||
+    ("delete" in value && typeof value.delete !== "boolean")
+  )
+    throw new ApiError(0);
+  return {
+    create: value.create,
+    manage: value.manage,
+    delete: "delete" in value ? (value.delete as boolean) : false,
+  };
+}
+function repositoryStatus(value: unknown): RepositoryStatus {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(0);
+  const item = value as Record<string, unknown>;
+  if (
+    !publicIdentifier(item.projectId) ||
+    typeof item.name !== "string" ||
+    !item.name.trim() ||
+    item.name.length > 80 ||
+    // eslint-disable-next-line no-control-regex -- Repository display labels reject hidden controls.
+    /[\x00-\x1f\x7f]/.test(item.name) ||
+    typeof item.repositoryName !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{0,62}$/.test(item.repositoryName) ||
+    !publicIdentifier(item.repositoryId) ||
+    typeof item.description !== "string" ||
+    item.description.length > 1000 ||
+    // eslint-disable-next-line no-control-regex -- Descriptions permit LF and tab, but reject other controls.
+    /[\x00-\x08\x0b-\x1f\x7f]/.test(item.description) ||
+    !Number.isSafeInteger(item.metadataRevision) ||
+    (item.metadataRevision as number) < 0 ||
+    item.role !== "owner" ||
+    !["present", "deleting", "deleted"].includes(item.status as string) ||
+    item.lifecycle !== (item.status === "present" ? "registered" : item.status) ||
+    typeof item.deletable !== "boolean" ||
+    (item.status !== "present" && item.deletable !== false)
+  )
+    throw new ApiError(0);
+  return {
+    projectId: item.projectId,
+    name: item.name,
+    repositoryName: item.repositoryName,
+    repositoryId: item.repositoryId,
+    description: item.description,
+    metadataRevision: item.metadataRevision as number,
+    role: "owner",
+    status: item.status as RepositoryStatus["status"],
+    lifecycle: item.lifecycle as RepositoryStatus["lifecycle"],
+    deletable: item.deletable,
+  };
+}
+function safeInvitation(value: unknown): Invitation {
+  if (!value || typeof value !== "object") throw new ApiError(0);
+  const item = value as Record<string, unknown>;
+  if (
+    !publicIdentifier(item.id) ||
+    typeof item.email !== "string" ||
+    item.role !== "editor" ||
+    !["project", "thread"].includes(item.scope as string) ||
+    !publicIdentifier(item.projectId) ||
+    typeof item.expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(item.expiresAt)) ||
+    ["threadId", "acceptedBy", "revokedAt"].some(
+      (key) => item[key] !== undefined && !publicIdentifier(item[key]),
+    )
+  )
+    throw new ApiError(0);
+  return {
+    id: item.id,
+    email: item.email,
+    role: "editor",
+    scope: item.scope as Invitation["scope"],
+    projectId: item.projectId,
+    expiresAt: item.expiresAt,
+    ...(item.threadId === undefined ? {} : { threadId: item.threadId as string }),
+    ...(item.acceptedBy === undefined ? {} : { acceptedBy: item.acceptedBy as string }),
+    ...(item.revokedAt === undefined ? {} : { revokedAt: item.revokedAt as string }),
+  };
+}
+async function repositoryMutation(
+  path: string,
+  body: unknown,
+  method: "POST" | "PATCH",
+): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      headers: await mutationHeaders(),
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal: AbortSignal.timeout(45000),
+    });
+  } catch {
+    throw new ApiError(0);
+  }
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    throw new ApiError(response.status);
+  }
+  try {
+    const value: unknown = await response.json();
+    const status =
+      value && typeof value === "object" ? (value as Record<string, unknown>).status : undefined;
+    if (
+      path.endsWith("/repository/delete") &&
+      response.status !== (status === "deleted" ? 200 : status === "deleting" ? 202 : -1)
+    )
+      throw new ApiError(0);
+    return value;
+  } catch {
+    throw new ApiError(0);
+  }
+}
+
 function repositoryCreation(value: unknown): RepositoryCreation {
   if (!value || typeof value !== "object") throw new ApiError(0);
   const item = value as Record<string, unknown>;
   const identifier = (value: unknown) => typeof value === "string" && value.length > 0;
   if (
-    !identifier(item.name) ||
+    typeof item.name !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{0,62}$/.test(item.name) ||
     typeof item.status !== "string" ||
-    !["pending", "cleanup_required", "registration_required", "ready"].includes(item.status) ||
+    ![
+      "pending",
+      "cleanup_required",
+      "registration_required",
+      "ready",
+      "deleting",
+      "deleted",
+    ].includes(item.status) ||
     (item.repositoryId !== undefined && !identifier(item.repositoryId)) ||
     (item.projectId !== undefined && !identifier(item.projectId)) ||
-    (item.status === "ready" && (!identifier(item.repositoryId) || !identifier(item.projectId)))
+    (item.status === "ready" && (!identifier(item.repositoryId) || !identifier(item.projectId))) ||
+    (["deleting", "deleted"].includes(item.status) && !identifier(item.repositoryId))
   )
     throw new ApiError(0);
   // Keep only public identifiers and lifecycle state; provider diagnostics and credentials stay out.
@@ -258,11 +438,12 @@ function repositoryCreation(value: unknown): RepositoryCreation {
 async function createAccountRepository(
   name: string,
   credentialConsent: true,
+  metadata?: { displayName: string; description: string },
 ): Promise<RepositoryCreation> {
   if (typeof name !== "string" || !name || credentialConsent !== true) throw new ApiError(0);
   let response: Response;
   try {
-    response = await apiFetch("/repositories/create", { name, credentialConsent });
+    response = await apiFetch("/repositories/create", { name, credentialConsent, ...metadata });
   } catch (cause) {
     throw cause instanceof ApiError ? cause : new ApiError(0);
   }
@@ -276,7 +457,11 @@ async function createAccountRepository(
   } catch {
     throw new ApiError(0);
   }
-  if (result.name !== name || response.status !== (result.status === "ready" ? 200 : 202))
+  if (
+    result.name !== name ||
+    ["deleting", "deleted"].includes(result.status) ||
+    response.status !== (result.status === "ready" ? 200 : 202)
+  )
     throw new ApiError(0);
   return result;
 }
@@ -417,6 +602,9 @@ export const httpApi: Api = {
       return {
         approval: approval === null ? null : { name: (approval as { name: string }).name },
         creations,
+        ...(envelope.capabilities === undefined
+          ? {}
+          : { capabilities: repositoryCapabilities(envelope.capabilities) }),
       };
     },
     createRepository: createAccountRepository,
@@ -450,14 +638,58 @@ export const httpApi: Api = {
             typeof item.projectId !== "string" ||
             typeof item.name !== "string" ||
             !["owner", "editor"].includes(item.role) ||
-            item.status !== "present" ||
-            item.lifecycle !== "registered" ||
-            item.deletable !== false,
+            !["present", "deleting"].includes(item.status) ||
+            !["registered", "deleting"].includes(item.lifecycle) ||
+            typeof item.deletable !== "boolean" ||
+            (item.repositoryName !== undefined && !publicIdentifier(item.repositoryName)) ||
+            (item.repositoryId !== undefined && !publicIdentifier(item.repositoryId)) ||
+            (item.description !== undefined && typeof item.description !== "string") ||
+            (item.metadataRevision !== undefined &&
+              (!Number.isSafeInteger(item.metadataRevision) || item.metadataRevision < 0)),
         )
       )
         throw new ApiError(0);
-      return value.repositories as SharedRepository[];
+      return value.repositories.map((item) => ({
+        projectId: item.projectId,
+        name: item.name,
+        role: item.role,
+        status: item.status,
+        lifecycle: item.lifecycle,
+        deletable: item.deletable,
+        ...(item.repositoryName === undefined ? {} : { repositoryName: item.repositoryName }),
+        ...(item.repositoryId === undefined ? {} : { repositoryId: item.repositoryId }),
+        ...(item.description === undefined ? {} : { description: item.description }),
+        ...(item.metadataRevision === undefined ? {} : { metadataRevision: item.metadataRevision }),
+      })) as SharedRepository[];
     },
+    updateRepository: (id, metadata) =>
+      repositoryMutation(
+        `/projects/${encodeURIComponent(id)}/repository`,
+        metadata,
+        "PATCH",
+      ) as Promise<Project>,
+    deleteRepository: async (id, target) =>
+      repositoryStatus(
+        await repositoryMutation(
+          `/projects/${encodeURIComponent(id)}/repository/delete`,
+          target,
+          "POST",
+        ),
+      ),
+    repositoryStatus: async (id) =>
+      repositoryStatus(await request(`/projects/${encodeURIComponent(id)}/repository`)),
+    projectInvitations: async (id) => {
+      const value = await request<unknown>(`/projects/${encodeURIComponent(id)}/invitations`);
+      if (!Array.isArray(value)) throw new ApiError(0);
+      return value.map(safeInvitation);
+    },
+    revokeProjectInvitation: async (id, invitationId) =>
+      safeInvitation(
+        await request(
+          `/projects/${encodeURIComponent(id)}/invitations/${encodeURIComponent(invitationId)}/revoke`,
+          {},
+        ),
+      ),
     projectMembers: (id) => request(`/projects/${encodeURIComponent(id)}/members`),
     threadMembers: (id) => request(`/threads/${encodeURIComponent(id)}/members`),
     inviteProject: (id, email) =>
