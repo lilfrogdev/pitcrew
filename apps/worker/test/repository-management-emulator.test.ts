@@ -54,18 +54,18 @@ it("broad capability is off by default and does not expand the exact legacy appr
     const owner = await f.enroll();
     await f.enroll(colleagueEmail, "second_owner");
     expect(await f.discovery()).toMatchObject({
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       approval: null,
       creations: [],
     });
     expect((await f.create()).status).toBe(404);
     await f.repository.approve(owner, targetName);
     expect(await f.discovery()).toMatchObject({
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       approval: { name: targetName },
     });
     expect(await f.discovery(colleagueEmail)).toMatchObject({
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       approval: null,
     });
     expect((await f.create("synthetic-not-approved")).status).toBe(404);
@@ -96,7 +96,7 @@ it("two real accounts create independent repositories with stable ownership, ide
     expect(actors[0]).not.toBe(actors[1]);
     expect(actors.every((actor) => actor.startsWith("account:"))).toBe(true);
     expect(await f.discovery()).toMatchObject({
-      capabilities: { create: true, manage: true },
+      capabilities: { create: true, manage: true, delete: false },
       approval: null,
     });
     await f.repository.pause("create");
@@ -349,7 +349,7 @@ it("pending invitations expose safe owner-only IDs and revocation cannot grant m
 }, 90000);
 
 it("explicit deletion freezes descendants and pending invitations, retains historical messages, retires the name and survives restart", async () => {
-  const f = await fixture();
+  const f = await fixture(true, true);
   try {
     const owner = await f.enroll();
     const editor = await f.enroll(colleagueEmail, "editor_user");
@@ -442,7 +442,7 @@ it("explicit deletion freezes descendants and pending invitations, retains histo
 }, 90000);
 
 it("cleanup failures quarantine deletion; explicit recovery cannot delete a replaced immutable repository", async () => {
-  const f = await fixture();
+  const f = await fixture(true, true);
   try {
     await f.enroll();
     const own = await createOwned(f);
@@ -533,7 +533,7 @@ it("ambiguous creation never repeats the provider mutation and only explicit obs
 }, 90000);
 
 it("failed deletion requires explicit retry and lost success can be reconciled without deleting a replacement or recycling its name", async () => {
-  const f = await fixture();
+  const f = await fixture(true, true);
   try {
     await f.enroll();
     const own = await createOwned(f);
@@ -705,7 +705,7 @@ it("session revocation and expiry while provider metadata awaits cannot be laund
 }, 90000);
 
 it("owner-session revocation during deletion token discovery leaves a frozen resource until a fresh explicit recovery", async () => {
-  const f = await fixture();
+  const f = await fixture(true, true);
   try {
     const owner = await f.enroll();
     const own = await createOwned(f);
@@ -737,7 +737,7 @@ it("owner-session revocation during deletion token discovery leaves a frozen res
 }, 90000);
 
 it("active repository work blocks deletion before provider mutation and remains available until explicit idle deletion", async () => {
-  const f = await fixture();
+  const f = await fixture(true, true);
   try {
     await f.enroll();
     const own = await createOwned(f);
@@ -795,7 +795,7 @@ it("queued metadata edits retain their original session and cannot commit after 
 }, 90000);
 
 it("missing-token provider errors cannot falsely certify repository absence or unfreeze a present physical resource", async () => {
-  const f = await fixture();
+  const f = await fixture(true, true);
   try {
     await f.enroll();
     const own = await createOwned(f);
@@ -840,7 +840,7 @@ it("missing-token provider errors cannot falsely certify repository absence or u
 }, 90000);
 
 it("legitimately adopted repositories named like old fixtures allow owner display edits and deletion while retaining immutable source metadata", async () => {
-  const f = await fixture();
+  const f = await fixture(true, true);
   try {
     const owner = await f.enroll();
     await f.enroll(colleagueEmail, "other_owner");
@@ -912,7 +912,7 @@ it("legitimately adopted repositories named like old fixtures allow owner displa
 
 it("configured root bindings and actual artifact root sources permit account metadata edits but reject physical deletion before provider access", async () => {
   for (const mode of ["binding", "project"] as const) {
-    const f = await fixture();
+    const f = await fixture(true, true);
     try {
       const owner = await f.enroll();
       const physicalName = "synthetic-configured-root-" + mode;
@@ -970,5 +970,235 @@ it("configured root bindings and actual artifact root sources permit account met
     } finally {
       await close(f);
     }
+  }
+}, 90000);
+
+it("management alone permits creation metadata and safe invitation work while physical deletion remains disabled before parsing or provider work", async () => {
+  const f = await fixture();
+  try {
+    await f.enroll();
+    await f.enroll(colleagueEmail, "gated_invitee");
+    expect(await f.discovery()).toMatchObject({
+      capabilities: { create: true, manage: true, delete: false },
+    });
+    const own = await createOwned(f);
+    const edit = await f.request(
+      projectRoute(own.projectId),
+      ownerEmail,
+      editBody("Delete disabled display label"),
+      {},
+      "PATCH",
+    );
+    expect(edit.status, await edit.clone().text()).toBe(200);
+    const invitation = await invite(f, `/projects/${own.projectId}/invitations`);
+    const invitations = (await (
+      await f.request(`/projects/${own.projectId}/invitations`)
+    ).json()) as { id: string }[];
+    expect(
+      (
+        await f.request(
+          `/projects/${own.projectId}/invitations/${invitations[0].id}/revoke`,
+          ownerEmail,
+          {},
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await f.request(`/invitations/${invitation.token}/accept`, colleagueEmail, {})).status,
+    ).toBe(410);
+    const observation = await f.request(projectRoute(own.projectId));
+    expect(observation.status).toBe(200);
+    expect(await observation.json()).toMatchObject({
+      name: "Delete disabled display label",
+      repositoryName: targetName,
+      repositoryId: own.repositoryId,
+      status: "present",
+      deletable: false,
+    });
+    const { repositories } = (await (await f.request("/repositories")).json()) as {
+      repositories: { deletable: boolean }[];
+    };
+    expect(repositories).toHaveLength(1);
+    expect(repositories[0].deletable).toBe(false);
+    const before = await f.repository.storedState();
+    const callsBefore = (await transportCounts(f)).calls;
+    const valid = { confirmation: targetName, repositoryId: own.repositoryId };
+    for (const body of [
+      valid,
+      {},
+      null,
+      [],
+      { ...valid, actor: "account:forged" },
+      { ...valid, confirmation: "wrong physical name" },
+    ])
+      expect(
+        (await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body)).status,
+      ).toBe(404);
+    const malformed = await f.mf.dispatchFetch(
+      "https://fixture.pitcrew.test/app/api" + projectRoute(own.projectId) + "/delete",
+      {
+        method: "POST",
+        headers: {
+          origin: "https://fixture.pitcrew.test",
+          cookie: f.cookies.get(ownerEmail)!,
+          "content-type": "application/json",
+        },
+        body: "{",
+      },
+    );
+    expect(malformed.status).toBe(404);
+    for (const path of [projectRoute(own.projectId), projectRoute(own.projectId) + "/delete"]) {
+      const rawDelete = await f.request(path, ownerEmail, undefined, {}, "DELETE");
+      expect([403, 404, 405], await rawDelete.clone().text()).toContain(rawDelete.status);
+    }
+    const namespaceDelete = await f.request("/repositories/delete", ownerEmail, {
+      name: targetName,
+      confirmation: targetName,
+    });
+    expect([403, 404], await namespaceDelete.clone().text()).toContain(namespaceDelete.status);
+    expect((await transportCounts(f)).calls).toEqual(callsBefore);
+    expect(await f.repository.storedState()).toEqual(before);
+    expect(await f.repository.lifecycleRows()).toContainEqual(
+      expect.objectContaining({ name: targetName, status: "ready" }),
+    );
+    await f.restart();
+    expect(await f.discovery()).toMatchObject({ capabilities: { delete: false } });
+    expect(
+      (await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, valid)).status,
+    ).toBe(404);
+    expect((await transportCounts(f)).calls).toEqual(callsBefore);
+  } finally {
+    await close(f);
+  }
+}, 90000);
+
+it("the delete switch alone cannot expand legacy creation approval or enable management or physical deletion", async () => {
+  const f = await fixture(false, true);
+  try {
+    const owner = await f.enroll();
+    expect(await f.discovery()).toMatchObject({
+      capabilities: { create: false, manage: false, delete: false },
+    });
+    expect((await f.create()).status).toBe(404);
+    await f.repository.approve(owner, targetName);
+    const own = await createOwned(f);
+    const { repositories } = (await (await f.request("/repositories")).json()) as {
+      repositories: { deletable: boolean }[];
+    };
+    expect(repositories[0].deletable).toBe(false);
+    const callsBefore = (await transportCounts(f)).calls;
+    const before = await f.repository.storedState();
+    expect(
+      (await f.request(projectRoute(own.projectId), ownerEmail, editBody(), {}, "PATCH")).status,
+    ).toBe(404);
+    expect(
+      (
+        await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, {
+          confirmation: targetName,
+          repositoryId: own.repositoryId,
+        })
+      ).status,
+    ).toBe(404);
+    expect((await transportCounts(f)).calls).toEqual(callsBefore);
+    expect(await f.repository.storedState()).toEqual(before);
+  } finally {
+    await close(f);
+  }
+}, 90000);
+
+it("disabling physical deletion fences provider awaits and recovery while allowing pending observation without destructive work", async () => {
+  const f = await fixture(true, true);
+  try {
+    await f.enroll();
+    expect(await f.discovery()).toMatchObject({
+      capabilities: { create: true, manage: true, delete: true },
+    });
+    const own = await createOwned(f);
+    await f.repository.replaceRepositoryWithToken(targetName, own.repositoryId);
+    await f.repository.pause("tokens");
+    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const deletion = f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
+    await f.waitPaused();
+    await f.repository.deletion(false);
+    await f.repository.releaseTransport();
+    const fenced = await deletion;
+    expect(fenced.status, await fenced.clone().text()).toBe(404);
+    expect(
+      (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
+    ).toBe(0);
+    expect((await transportCounts(f)).revokes).toBe(1); // only the initial creation cleanup
+    expect(
+      (await f.repository.repositories()).find((repo) => repo.name === targetName)?.tokens,
+    ).toEqual([{ id: "replacement-sole-credential", state: "active" }]);
+    const frozen = await f.repository.storedState();
+    expect(frozen.ownedProjects![own.projectId].state.repositoryLifecycle).toBe("deleting");
+    expect((await f.request(`/projects/${own.projectId}/context`)).status).toBe(404);
+    expect(await f.discovery()).toMatchObject({
+      capabilities: { create: true, manage: true, delete: false },
+    });
+    const callsBeforeRecovery = (await transportCounts(f)).calls;
+    for (const requestBody of [body, {}, null])
+      expect(
+        (await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, requestBody)).status,
+      ).toBe(404);
+    expect((await transportCounts(f)).calls).toEqual(callsBeforeRecovery);
+    expect(await f.repository.storedState()).toEqual(frozen);
+    const observed = await f.request(projectRoute(own.projectId));
+    expect(observed.status).toBe(200);
+    expect(await observed.json()).toMatchObject({
+      status: "deleting",
+      deletable: false,
+      repositoryName: targetName,
+      repositoryId: own.repositoryId,
+    });
+    expect(
+      (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
+    ).toBe(0);
+    await f.restart();
+    expect((await f.request(projectRoute(own.projectId))).status).toBe(200);
+    expect(
+      (await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body)).status,
+    ).toBe(404);
+    expect(
+      (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
+    ).toBe(0);
+    await f.repository.deletion(true);
+    const recovery = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
+    expect(recovery.status, await recovery.clone().text()).toBe(200);
+    expect(
+      (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
+    ).toBe(1);
+  } finally {
+    await close(f);
+  }
+}, 90000);
+
+it("an explicitly disabled delete flag has the same native refusal as an absent flag", async () => {
+  const f = await fixture(true, "disabled");
+  try {
+    await f.enroll();
+    expect(await f.discovery()).toMatchObject({
+      capabilities: { create: true, manage: true, delete: false },
+    });
+    const own = await createOwned(f);
+    const before = await f.repository.storedState();
+    const callsBefore = (await transportCounts(f)).calls;
+    const result = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, {
+      confirmation: targetName,
+      repositoryId: own.repositoryId,
+    });
+    expect(result.status, await result.clone().text()).toBe(404);
+    expect((await transportCounts(f)).calls).toEqual(callsBefore);
+    expect(await f.repository.storedState()).toEqual(before);
+    const observed = await f.request(projectRoute(own.projectId));
+    expect(observed.status).toBe(200);
+    expect(await observed.json()).toMatchObject({ status: "present", deletable: false });
+    await f.restart();
+    expect((await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, {})).status).toBe(
+      404,
+    );
+    expect((await transportCounts(f)).calls).toEqual(callsBefore);
+  } finally {
+    await close(f);
   }
 }, 90000);

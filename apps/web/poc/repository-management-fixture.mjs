@@ -38,9 +38,11 @@ export function createFixture() {
     projectId: owner.projectId,
   };
   let state;
-  const reset = (scenario = "normal") =>
+  const reset = (scenario = "normal", deleteEnabled = false) =>
     (state = {
       scenario,
+      deleteCapability:
+        deleteEnabled === true && scenario !== "delete-off" && scenario !== "gate-off",
       repositories: structuredClone([owner, editor, external]),
       creations: [],
       invitations: [structuredClone(invitation)],
@@ -71,11 +73,15 @@ export function createFixture() {
       if (raw.length > 8192) return json(res, {}, 413);
       const body = raw ? JSON.parse(raw) : undefined;
       if (path === "/fixture/reset") {
-        reset(body.scenario);
+        reset(body.scenario, body.deleteEnabled);
         return json(res, { ok: true });
       }
       if (path === "/fixture/release") {
         for (const release of state.held.splice(0)) release();
+        return json(res, { ok: true });
+      }
+      if (path === "/fixture/delete-capability") {
+        state.deleteCapability = body.enabled === true;
         return json(res, { ok: true });
       }
       if (path === "/fixture/switch") {
@@ -102,6 +108,7 @@ export function createFixture() {
           capabilities: {
             create: state.scenario !== "gate-off",
             manage: state.scenario !== "gate-off",
+            ...(state.scenario === "delete-omitted" ? {} : { delete: state.deleteCapability }),
           },
         });
       if (path === "/api/repositories") {

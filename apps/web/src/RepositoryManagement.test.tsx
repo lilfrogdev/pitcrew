@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { AccountRepositories } from "./AccountRepositories";
+import { RepositoryManagement } from "./RepositoryManagement";
 import {
   ApiError,
   httpApi,
@@ -40,7 +41,7 @@ function managementApi() {
     repositoryCreations: vi.fn().mockResolvedValue({
       approval: null,
       creations: [],
-      capabilities: { create: true, manage: true },
+      capabilities: { create: true, manage: true, delete: true },
     }),
     createRepository: vi.fn().mockResolvedValue({ name: "new-physical", status: "pending" }),
     updateRepository: vi.fn().mockResolvedValue({
@@ -119,7 +120,7 @@ it("gates all management controls on discovered capability and owner role", asyn
   vi.mocked(api.repositoryCreations!).mockResolvedValue({
     approval: null,
     creations: [],
-    capabilities: { create: false, manage: false },
+    capabilities: { create: false, manage: false, delete: false },
   });
   render(<AccountRepositories api={api} />);
   await screen.findByText("My display label");
@@ -389,7 +390,7 @@ it("keeps live directory management and new creation usable after another reposi
     if (path === "/api/repository-creations")
       return Response.json({
         approval: null,
-        capabilities: { create: true, manage: true },
+        capabilities: { create: true, manage: true, delete: true },
         creations: [
           { name: "retiring-repo", repositoryId: "retiring-id", status: "deleting" },
           { name: "retired-repo", repositoryId: "retired-id", status: "deleted" },
@@ -454,4 +455,97 @@ it("refreshes Work and the directory as soon as a validated deletion is accepted
     true,
   );
   expect(screen.getByRole("button", { name: "Refresh deletion status" })).toBeTruthy();
+});
+it("keeps create and management available but denies deletion when its independent capability is off despite a stale deletable row", async () => {
+  const api = managementApi();
+  vi.mocked(api.repositoryCreations!).mockResolvedValue({
+    approval: null,
+    creations: [],
+    capabilities: { create: true, manage: true, delete: false },
+  });
+  const { user } = await open(api);
+  expect(screen.getByText(/Repository deletion is not enabled/)).toBeTruthy();
+  const review = screen.getByRole("button", { name: "Review deletion" });
+  expect(review).toHaveProperty("disabled", true);
+  fireEvent.click(review);
+  expect(screen.queryByRole("button", { name: "Permanently delete repository" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Save repository details" })).toHaveProperty(
+    "disabled",
+    false,
+  );
+  expect(screen.getByRole("form", { name: "Create repository" })).toBeTruthy();
+  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
+    "disabled",
+    false,
+  );
+  expect(api.deleteRepository).not.toHaveBeenCalled();
+});
+it("denies an already open, typed deletion when capability disappears, without requiring the stale row to change", async () => {
+  const api = managementApi();
+  const onChanged = vi.fn();
+  const user = userEvent.setup();
+  const view = render(
+    <RepositoryManagement api={api} item={repository} deletionEnabled onChanged={onChanged} />,
+  );
+  await user.click(screen.getByRole("button", { name: "Manage repository" }));
+  await user.click(screen.getByRole("button", { name: "Review deletion" }));
+  await user.type(
+    screen.getByLabelText("Type the permanent repository name to confirm"),
+    repository.repositoryName!,
+  );
+  const deletion = screen.getByRole("button", { name: "Permanently delete repository" });
+  expect(deletion).toHaveProperty("disabled", false);
+  view.rerender(
+    <RepositoryManagement
+      api={api}
+      item={repository}
+      deletionEnabled={false}
+      onChanged={onChanged}
+    />,
+  );
+  expect(deletion).toHaveProperty("disabled", true);
+  fireEvent.click(deletion);
+  expect(api.deleteRepository).not.toHaveBeenCalled();
+  expect(onChanged).not.toHaveBeenCalled();
+});
+it("keeps pending status GET available but denies verified recovery when deletion capability disappears", async () => {
+  const api = managementApi();
+  const item = {
+    ...repository,
+    status: "deleting" as const,
+    lifecycle: "deleting" as const,
+    deletable: false,
+  };
+  const onChanged = vi.fn();
+  const user = userEvent.setup();
+  const view = render(
+    <RepositoryManagement api={api} item={item} deletionEnabled onChanged={onChanged} />,
+  );
+  await user.click(screen.getByRole("button", { name: "Manage repository" }));
+  await user.click(screen.getByRole("button", { name: "Refresh deletion status" }));
+  await screen.findByText(/Confirm the permanent name to recover/);
+  await user.type(
+    screen.getByLabelText("Type the permanent repository name to confirm"),
+    repository.repositoryName!,
+  );
+  const recovery = screen.getByRole("button", { name: "Recover repository deletion" });
+  expect(recovery).toHaveProperty("disabled", false);
+  view.rerender(
+    <RepositoryManagement api={api} item={item} deletionEnabled={false} onChanged={onChanged} />,
+  );
+  expect(recovery).toHaveProperty("disabled", true);
+  fireEvent.click(recovery);
+  await user.click(screen.getByRole("button", { name: "Refresh deletion status" }));
+  await waitFor(() => expect(api.repositoryStatus).toHaveBeenCalledTimes(2));
+  expect(screen.getByText(/Repository deletion is not enabled/)).toBeTruthy();
+  expect(api.deleteRepository).not.toHaveBeenCalled();
+});
+it("defaults direct management deletion to disabled when no independent capability is supplied", async () => {
+  const api = managementApi();
+  const user = userEvent.setup();
+  render(<RepositoryManagement api={api} item={repository} onChanged={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Manage repository" }));
+  expect(screen.getByRole("button", { name: "Review deletion" })).toHaveProperty("disabled", true);
+  expect(api.deleteRepository).not.toHaveBeenCalled();
 });

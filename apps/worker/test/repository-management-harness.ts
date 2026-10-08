@@ -20,7 +20,7 @@ type RPC<T> = {
     : never;
 };
 type Discovery = {
-  capabilities: { create: boolean; manage: boolean };
+  capabilities: { create: boolean; manage: boolean; delete: boolean };
   approval: { name: string } | null;
   creations: {
     name: string;
@@ -31,7 +31,7 @@ type Discovery = {
   }[];
 };
 
-export async function fixture(enabled = true) {
+export async function fixture(enabled = true, deleteEnabled: boolean | "disabled" = false) {
   const bundle = await build({
     entryPoints: [new URL("./fixtures/repository-management-worker.ts", import.meta.url).pathname],
     bundle: true,
@@ -58,6 +58,11 @@ export async function fixture(enabled = true) {
     },
     bindings: {
       ACCOUNT_REPOSITORY_MANAGEMENT: enabled ? "enabled" : "disabled",
+      ...(deleteEnabled === true
+        ? { ACCOUNT_REPOSITORY_DELETE: "enabled" }
+        : deleteEnabled === "disabled"
+          ? { ACCOUNT_REPOSITORY_DELETE: "disabled" }
+          : {}),
       AUTH_MODE: "password-only",
       BETTER_AUTH_URL: base,
       BETTER_AUTH_SECRET: "synthetic-account-creation-secret-never-live-123456",
@@ -90,6 +95,7 @@ export async function fixture(enabled = true) {
   let ns = await mf.getDurableObjectNamespace("REPOSITORY");
   let repository = ns.get(ns.idFromName("pitcrew")) as unknown as RPC<RepositoryManagementFixture>;
   await repository.management(enabled);
+  await repository.deletion(deleteEnabled);
   const cookies = new Map<string, string>(),
     usernames = new Map<string, string>();
   let sequence = 0;

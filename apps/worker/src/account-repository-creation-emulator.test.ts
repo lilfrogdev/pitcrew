@@ -231,7 +231,7 @@ it("authenticated discovery derives the exact rollout tuple from stable account 
     expect(owner).not.toBe(colleague);
     expect(await f.discovery()).toEqual({
       approval: null,
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       creations: [],
     });
     expect((await f.create()).status).toBe(404);
@@ -243,7 +243,7 @@ it("authenticated discovery derives the exact rollout tuple from stable account 
       await f.repository.approve(actor, name);
       expect(await f.discovery()).toEqual({
         approval: null,
-        capabilities: { create: false, manage: false },
+        capabilities: { create: false, manage: false, delete: false },
         creations: [],
       });
       expect((await f.create()).status).toBe(404);
@@ -252,12 +252,12 @@ it("authenticated discovery derives the exact rollout tuple from stable account 
     await f.repository.approve(owner, serverChosenName);
     expect(await f.discovery()).toEqual({
       approval: { name: serverChosenName },
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       creations: [],
     });
     expect(await f.discovery(colleagueEmail)).toEqual({
       approval: null,
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       creations: [],
     });
     expect((await f.create(serverChosenName, colleagueEmail)).status).toBe(404);
@@ -421,7 +421,7 @@ it("an ambiguous post-create response remains durable pending and exact retries 
     await f.enroll(colleagueEmail, "bryan");
     expect(await f.discovery(colleagueEmail)).toEqual({
       approval: null,
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       creations: [],
     });
   } finally {
@@ -621,7 +621,7 @@ it("a replacement BetterAuth account with the same email cannot inherit a stable
     expect(replacement).not.toBe(original);
     expect(await f.discovery()).toEqual({
       approval: null,
-      capabilities: { create: false, manage: false },
+      capabilities: { create: false, manage: false, delete: false },
       creations: [],
     });
     expect((await f.create()).status).toBe(404);

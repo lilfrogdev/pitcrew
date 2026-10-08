@@ -152,9 +152,9 @@ try {
   const scopeSource = (scope) =>
     scope ? `document.querySelector('section[aria-label="Manage ${scope}"]')` : "document";
   const buttonSource = (name, scope) =>
-    `[...${scopeSource(scope)}.querySelectorAll('button')].find(el=>el.textContent.trim()===${JSON.stringify(name)})`;
+    `[...(${scopeSource(scope)}?.querySelectorAll('button') ?? [])].find(el=>el.textContent.trim()===${JSON.stringify(name)})`;
   const labelSource = (name, scope) =>
-    `[...${scopeSource(scope)}.querySelectorAll('label')].find(el=>[...el.childNodes].filter(node=>node.nodeType===3).map(node=>node.textContent).join('').trim()===${JSON.stringify(name)})?.querySelector('input,textarea')`;
+    `[...(${scopeSource(scope)}?.querySelectorAll('label') ?? [])].find(el=>[...el.childNodes].filter(node=>node.nodeType===3).map(node=>node.textContent).join('').trim()===${JSON.stringify(name)})?.querySelector('input,textarea')`;
   const disabled = (name, scope) => evaluate(`Boolean((${buttonSource(name, scope)})?.disabled)`);
   const clickElement = async (source) => {
     await wait(
@@ -162,7 +162,7 @@ try {
       "enabled rendered control",
     );
     const rect = await evaluate(
-      `(()=>{const el=${source};el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`,
+      `(async()=>{const el=${source};el.scrollIntoView({block:'center',behavior:'instant'});await new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)));const r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};})()`,
     );
     await cdp("Input.dispatchMouseEvent", {
       type: "mousePressed",
@@ -198,8 +198,8 @@ try {
   const state = async () => await (await fetch(origin + "/fixture/state")).json();
   const calls = async (path, method) =>
     (await state()).calls.filter((c) => c.path === path && (!method || c.method === method));
-  const navigate = async (scenario = "normal") => {
-    await control("reset", { scenario });
+  const navigate = async (scenario = "normal", deleteEnabled = false) => {
+    await control("reset", { scenario, deleteEnabled });
     await cdp("Page.navigate", { url: origin + "/" });
     await includes(scenario === "read-failure" ? "Could not load repositories" : "Repositories");
     if (scenario !== "late-read" && scenario !== "read-failure") await includes("Owner display");
@@ -352,7 +352,7 @@ try {
     "Revoking the currently displayed invitation clears its link",
     "Selected invitation UUID is used; revoked ephemeral link disappears immediately.",
   );
-  await navigate();
+  await navigate("normal", true);
   await open();
   await click("Review deletion", "Owner display");
   await includes("permanently removes");
@@ -386,7 +386,7 @@ try {
     "Typed permanent delete, 202 observation and explicit same-resource recovery",
     "No automatic POST retry; GET preceded fresh typed confirmation and second explicit POST; deleted row removed.",
   );
-  await navigate();
+  await navigate("normal", true);
   await fill("Permanent repository name", "qa-lifecycle-slug");
   await fill("Display name (optional)", "Lifecycle display");
   await checkbox();
@@ -458,7 +458,7 @@ try {
   await includes("This repository changed.");
   assert.equal((await calls("/api/projects/qa-owner/repository", "PATCH")).length, 1);
   assert.equal(String(await text()).includes("private-provider-diagnostic"), false);
-  await navigate("delete-failure");
+  await navigate("delete-failure", true);
   await open();
   await click("Review deletion", "Owner display");
   await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
@@ -471,7 +471,7 @@ try {
     "Mutation conflict and uncertain-delete constraints",
     "Generic error text excludes provider diagnostics; unknown delete blocks further mutation and does not retry.",
   );
-  await navigate("wrong-delete-target");
+  await navigate("wrong-delete-target", true);
   await open();
   await click("Review deletion", "Owner display");
   await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
@@ -509,6 +509,88 @@ try {
   pass(
     "Unknown creation constraint",
     "GET discovery does not silently retry POST or unlock another create while the prior outcome remains unknown.",
+  );
+  await navigate("delete-off");
+  assert.equal((await state()).repositories[0].deletable, true);
+  await open();
+  assert.equal(await disabled("Review deletion", "Owner display"), true);
+  await includes("Repository deletion is not enabled for this account.");
+  await fill("Display name", "Owner without delete", "Owner display");
+  await click("Save repository details", "Owner display");
+  await includes("Owner without delete");
+  await open("Owner without delete");
+  await includes("pending@example.test");
+  await fill("Invitation recipient email", "guest@example.test", "Owner without delete");
+  await click("Create invitation link", "Owner without delete");
+  await includes("Invitation created.");
+  await fill("Permanent repository name", "qa-delete-disabled");
+  await fill("Display name (optional)", "Created without delete");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("Created without delete");
+  assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 0);
+  assert.equal((await calls("/api/projects/qa-owner/repository", "PATCH")).length, 1);
+  assert.equal((await calls("/api/projects/qa-owner/invitations", "POST")).length, 1);
+  await open("Owner without delete");
+  assert.equal(await disabled("Review deletion", "Owner without delete"), true);
+  await screenshot("06-management-on-delete-off");
+  pass(
+    "Independent delete-off capability preserves create and access management",
+    "Explicit capabilities.delete:false overrides stale row.deletable:true. Repository creation, metadata PATCH, and invitation creation remain available; deletion review stays disabled and no delete POST is sent.",
+  );
+  await navigate("delete-omitted");
+  await open();
+  assert.equal(await disabled("Review deletion", "Owner display"), true);
+  assert.equal(await disabled("Save repository details", "Owner display"), false);
+  assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 0);
+  pass(
+    "Missing independent delete capability defaults off",
+    "An older discovery response with only create/manage leaves metadata enabled and deletion disabled despite stale deletable:true.",
+  );
+  await navigate("normal", true);
+  await open();
+  await click("Review deletion", "Owner display");
+  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  assert.equal(await disabled("Permanently delete repository", "Owner display"), false);
+  await control("delete-capability", { enabled: false });
+  await click("Refresh");
+  await open();
+  assert.equal(await disabled("Review deletion", "Owner display"), true);
+  assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 0);
+  await navigate("normal", true);
+  await open();
+  await click("Review deletion", "Owner display");
+  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await click("Permanently delete repository", "Owner display");
+  await observePendingDeletion();
+  await click("Refresh deletion status", "Owner display");
+  await includes("Confirm the permanent name to recover");
+  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  assert.equal(await disabled("Recover repository deletion", "Owner display"), false);
+  await control("delete-capability", { enabled: false });
+  await click("Refresh");
+  await open();
+  assert.equal(await disabled("Recover repository deletion", "Owner display"), true);
+  assert.equal(
+    await evaluate(
+      `(${labelSource("Type the permanent repository name to confirm", "Owner display")}).disabled`,
+    ),
+    true,
+  );
+  await click("Refresh deletion status", "Owner display");
+  await wait(
+    async () => (await calls("/api/projects/qa-owner/repository", "GET")).length === 2,
+    "pending status remains observable with delete off",
+  );
+  await wait(
+    async () => !(await disabled("Refresh deletion status", "Owner display")),
+    "status read completed",
+  );
+  assert.equal(await disabled("Recover repository deletion", "Owner display"), true);
+  assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 1);
+  pass(
+    "Refreshed delete-off capability blocks reviewed deletion and pending recovery",
+    "Directory refresh after a capability change invalidates the reviewed delete state and blocks a previously authorized recovery action. Confirmation stays disabled while pending status GET remains usable. No additional destructive POST occurs after the false snapshot is observed; this does not claim external administrator TOCTOU prevention.",
   );
   await navigate("gate-off");
   assert.equal(await evaluate("document.querySelectorAll('button[aria-expanded]').length"), 0);
@@ -654,6 +736,8 @@ try {
       2,
     ),
   );
+  await rm(join(evidence, "failure.json"), { force: true });
+  await rm(join(evidence, "failure.png"), { force: true });
   process.stdout.write(`Completed ${results.length} browser scenarios. Evidence: ${evidence}\n`);
 } catch (error) {
   if (cdp) {

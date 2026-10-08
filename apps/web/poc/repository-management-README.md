@@ -34,9 +34,15 @@ overflow, keyboard activation, and accessible action names.
 Native creation records transition through `ready`, `deleting`, and `deleted`.
 Directory discovery at both deletion stages must preserve unrelated management
 and creation; a tombstoned physical name remains unavailable for reuse.
+Deletion is an independent `capabilities.delete` boolean: positive destructive
+scenarios explicitly enable it. Separate cases exercise deletion off and absent
+while create/manage remain on, stale `deletable:true` rows, and a false capability
+snapshot after an open deletion review or a confirmed pending recovery. These
+checks verify UI behavior after discovery refresh; they do not establish an
+external administrator protection change cannot race an in-flight delete.
 
 Evidence is written to the requested directory: `results.json`,
-`accessible-names.json`, and five desktop/mobile PNG screenshots. Failure evidence
+`accessible-names.json`, and six desktop/mobile PNG screenshots. Failure evidence
 is written as `failure.json` and `failure.png` when applicable. A successful run
 verifies the UI and real client contract against the synthetic transport; it does
 not verify Codex in-app browser behavior, real authentication, live provider

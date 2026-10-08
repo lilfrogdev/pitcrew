@@ -267,6 +267,7 @@ export function AccountRepositories({
                   <RepositoryManagement
                     api={api}
                     item={item}
+                    deletionEnabled={creations.capabilities.delete === true}
                     onChanged={() => {
                       onReady.current?.();
                       void load();

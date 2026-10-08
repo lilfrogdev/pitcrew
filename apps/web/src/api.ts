@@ -94,7 +94,7 @@ export type RepositoryCreation = {
 export type RepositoryCreations = {
   approval: { name: string } | null;
   creations: RepositoryCreation[];
-  capabilities?: { create: boolean; manage: boolean };
+  capabilities?: { create: boolean; manage: boolean; delete: boolean };
 };
 export type RepositoryMetadata = {
   displayName: string;
@@ -281,17 +281,26 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
 
 const publicIdentifier = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
-function repositoryCapabilities(value: unknown): { create: boolean; manage: boolean } {
+function repositoryCapabilities(value: unknown): {
+  create: boolean;
+  manage: boolean;
+  delete: boolean;
+} {
   if (
     !value ||
     typeof value !== "object" ||
     !("create" in value) ||
     !("manage" in value) ||
     typeof value.create !== "boolean" ||
-    typeof value.manage !== "boolean"
+    typeof value.manage !== "boolean" ||
+    ("delete" in value && typeof value.delete !== "boolean")
   )
     throw new ApiError(0);
-  return { create: value.create, manage: value.manage };
+  return {
+    create: value.create,
+    manage: value.manage,
+    delete: "delete" in value ? (value.delete as boolean) : false,
+  };
 }
 function repositoryStatus(value: unknown): RepositoryStatus {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(0);

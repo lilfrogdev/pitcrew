@@ -13,6 +13,7 @@ import {
 import {
   approvedRepositoryCreation,
   accountRepositoryManagement,
+  accountRepositoryDeletion,
   readRepositoryBody,
   repositoryMetadata,
   readRepositoryCreation,
@@ -124,6 +125,7 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   CREATE_ACCOUNT_ACTOR?: string;
   CREATE_REPOSITORY_NAME?: string;
   ACCOUNT_REPOSITORY_MANAGEMENT?: string;
+  ACCOUNT_REPOSITORY_DELETE?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
   protected readonly visualizationAuthority = new VisualizationAuthorityGate();
@@ -311,7 +313,7 @@ export class RepositoryAgent extends Agent<Env> {
         role === "owner" &&
         entry?.ownerActor === identity.actor &&
         !protectedSource &&
-        accountRepositoryManagement(this.env, identity.actor),
+        accountRepositoryDeletion(this.env, identity.actor),
     };
   }
   private repositoryLifecycle?: RepositoryLifecycle;
@@ -1483,7 +1485,10 @@ export class RepositoryAgent extends Agent<Env> {
       /^\/api\/projects\/([A-Za-z0-9:_-]{1,128})\/repository(\/delete)?$/,
     );
     if (passwordMode && management) {
-      if (!accountRepositoryManagement(this.env, identity.actor))
+      if (
+        !accountRepositoryManagement(this.env, identity.actor) ||
+        (management[2] && !accountRepositoryDeletion(this.env, identity.actor))
+      )
         return Response.json({ error: "not_found" }, { status: 404 });
       const projectId = management[1];
       const core = this.projectCoordinator(projectId);
@@ -1504,7 +1509,10 @@ export class RepositoryAgent extends Agent<Env> {
         const current = await authUser(auth!, request);
         if (!current || current.id !== user?.id || `account:${current.id}` !== identity.actor)
           throw new RepositoryCreationError("unauthorized", 401);
-        if (!accountRepositoryManagement(this.env, identity.actor))
+        if (
+          !accountRepositoryManagement(this.env, identity.actor) ||
+          (management[2] && !accountRepositoryDeletion(this.env, identity.actor))
+        )
           throw new RepositoryCreationError("not_found", 404);
         return owner();
       };
@@ -1663,7 +1671,11 @@ export class RepositoryAgent extends Agent<Env> {
               target && !records.some((record) => record.name === target.name && projectFor(record))
                 ? target
                 : null,
-            capabilities: { create: broad(), manage: broad() },
+            capabilities: {
+              create: broad(),
+              manage: broad(),
+              delete: accountRepositoryDeletion(this.env, identity.actor),
+            },
             creations: records.map((record) => creationProjection(record, projectFor(record)?.id)),
           });
         });

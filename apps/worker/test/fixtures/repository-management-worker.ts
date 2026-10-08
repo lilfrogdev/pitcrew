@@ -37,6 +37,7 @@ export class RepositoryManagementFixture extends PasswordRepositoryFixture {
     const approval = this.read<{ actor?: string; name?: string }>("approval");
     if (approval) this.applyApproval(approval.actor, approval.name);
     this.management(this.read<boolean>("management") ?? false);
+    this.deletion(this.read<boolean | "disabled">("deletion_enabled") ?? false);
     const source = this.read<string>("configured_root_source");
     if (source) this.env.ARTIFACT_REPOSITORY = source;
     this.env.ARTIFACTS = {
@@ -230,6 +231,13 @@ export class RepositoryManagementFixture extends PasswordRepositoryFixture {
       this.env as typeof this.env & { ACCOUNT_REPOSITORY_MANAGEMENT?: string }
     ).ACCOUNT_REPOSITORY_MANAGEMENT = enabled ? "enabled" : "disabled";
     this.write("management", enabled);
+  }
+  deletion(enabled: boolean | "disabled" = false) {
+    const env = this.env as typeof this.env & { ACCOUNT_REPOSITORY_DELETE?: string };
+    if (enabled === true) env.ACCOUNT_REPOSITORY_DELETE = "enabled";
+    else if (enabled === "disabled") env.ACCOUNT_REPOSITORY_DELETE = "disabled";
+    else delete env.ACCOUNT_REPOSITORY_DELETE;
+    this.write("deletion_enabled", enabled);
   }
   syntheticActiveWork(projectId: string, kind: "run" | "conversation", active: boolean) {
     const coordinator = (

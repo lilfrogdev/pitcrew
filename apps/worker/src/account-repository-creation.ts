@@ -54,6 +54,20 @@ export function accountRepositoryManagement(
   );
 }
 
+/** Destructive rollout approval is independent from routine repository management. */
+export function accountRepositoryDeletion(
+  env: {
+    AUTH_MODE?: string;
+    ENVIRONMENT?: string;
+    ARTIFACTS?: unknown;
+    ACCOUNT_REPOSITORY_MANAGEMENT?: string;
+    ACCOUNT_REPOSITORY_DELETE?: string;
+  },
+  actor: string,
+) {
+  return accountRepositoryManagement(env, actor) && env.ACCOUNT_REPOSITORY_DELETE === "enabled";
+}
+
 /** Strict object JSON, bounded before decoding or any authority/provider admission. */
 export async function readRepositoryBody(request: Request, allowed: string[], limit = 8192) {
   if (

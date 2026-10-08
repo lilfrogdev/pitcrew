@@ -1,5 +1,9 @@
 import { expect, it, vi } from "vite-plus/test";
 import {
+  accountRepositoryDeletion,
+  accountRepositoryManagement,
+} from "./account-repository-creation";
+import {
   RepositoryLifecycle,
   lifecycleRequest,
   publicImportUrl,
@@ -477,4 +481,50 @@ it("token NOT_FOUND and incomplete metadata never establish repository absence",
       .status,
   ).toBe("deleting");
   expect(f.binding.delete).not.toHaveBeenCalled();
+});
+
+it("native deletion defaults off while routine management stays enabled", () => {
+  const env = {
+    AUTH_MODE: "password-only",
+    ENVIRONMENT: "production",
+    ARTIFACTS: {},
+    ACCOUNT_REPOSITORY_MANAGEMENT: "enabled",
+  };
+  const actor = "account:immutable-owner";
+  expect(accountRepositoryManagement(env, actor)).toBe(true);
+  for (const flag of [undefined, "", "disabled", "false", "true", "ENABLED"])
+    expect(accountRepositoryDeletion({ ...env, ACCOUNT_REPOSITORY_DELETE: flag }, actor)).toBe(
+      false,
+    );
+  expect(accountRepositoryDeletion({ ...env, ACCOUNT_REPOSITORY_DELETE: "enabled" }, actor)).toBe(
+    true,
+  );
+});
+
+it("native delete approval cannot bypass management, native identity, production or the binding", () => {
+  const env = {
+    AUTH_MODE: "password-only",
+    ENVIRONMENT: "production",
+    ARTIFACTS: {},
+    ACCOUNT_REPOSITORY_MANAGEMENT: "enabled",
+    ACCOUNT_REPOSITORY_DELETE: "enabled",
+  };
+  for (const override of [
+    { ACCOUNT_REPOSITORY_MANAGEMENT: undefined },
+    { ACCOUNT_REPOSITORY_MANAGEMENT: "disabled" },
+    { AUTH_MODE: "better-auth" },
+    { ENVIRONMENT: "development" },
+    { ARTIFACTS: undefined },
+  ])
+    expect(accountRepositoryDeletion({ ...env, ...override }, "account:immutable-owner")).toBe(
+      false,
+    );
+  for (const actor of [
+    "",
+    "access:owner",
+    "account:",
+    "account:owner@example.com",
+    "account:" + "x".repeat(129),
+  ])
+    expect(accountRepositoryDeletion(env, actor)).toBe(false);
 });

@@ -1414,7 +1414,12 @@ test("native management discovers capabilities and safe physical identity alongs
         url.endsWith("repository-creations")
           ? {
               approval: null,
-              capabilities: { create: true, manage: true, token: "private-provider-value" },
+              capabilities: {
+                create: true,
+                manage: true,
+                delete: true,
+                token: "private-provider-value",
+              },
               creations: [],
             }
           : {
@@ -1431,7 +1436,7 @@ test("native management discovers capabilities and safe physical identity alongs
   });
   assert.deepEqual((await request(f.handler, "/api/repository-creations")).json, {
     approval: null,
-    capabilities: { create: true, manage: true },
+    capabilities: { create: true, manage: true, delete: true },
     creations: [],
   });
   const directory = await request(f.handler, "/api/repositories");
@@ -1440,6 +1445,34 @@ test("native management discovers capabilities and safe physical identity alongs
   assert.ok(!directory.text.includes("private-provider-value"));
   assert.ok(!directory.text.includes("private-owner"));
   assert.equal(f.tokens.length, 0);
+});
+
+test("physical deletion capability is independent, absent-default-off and malformed-fail-closed", async () => {
+  for (const [capabilities, expectedStatus, expectedDelete] of [
+    [{ create: true, manage: true }, 200, false],
+    [{ create: true, manage: true, delete: false }, 200, false],
+    [{ create: true, manage: true, delete: true }, 200, true],
+    [{ create: true, manage: true, delete: "enabled" }, 503, undefined],
+    [{ create: true, manage: true, delete: null }, 503, undefined],
+    [{ create: false, manage: false, delete: true }, 503, undefined],
+  ]) {
+    const f = fixture({
+      passwordMode: true,
+      sharedApi: true,
+      sessionHeaders: async () => ({ Cookie: "synthetic-held-session" }),
+      fetchImpl: async () => Response.json({ approval: null, capabilities, creations: [] }),
+    });
+    const result = await request(f.handler, "/api/repository-creations");
+    assert.equal(result.status, expectedStatus);
+    if (expectedStatus === 200) {
+      assert.equal(result.json.capabilities.create, capabilities.create);
+      assert.equal(result.json.capabilities.manage, capabilities.manage);
+      assert.equal(result.json.capabilities.delete, expectedDelete);
+    } else {
+      assert.deepEqual(result.json, { error: "repository_backend_unavailable" });
+    }
+    assert.equal(f.tokens.length, 0);
+  }
 });
 
 test("native metadata and deletion accept only explicit routes, strict bodies, nonce and origin", async () => {

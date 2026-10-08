@@ -604,13 +604,17 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
         ? (() => {
             if (
               typeof value.capabilities?.create !== "boolean" ||
-              typeof value.capabilities?.manage !== "boolean"
+              typeof value.capabilities?.manage !== "boolean" ||
+              (value.capabilities.delete !== undefined &&
+                typeof value.capabilities.delete !== "boolean") ||
+              (value.capabilities.delete === true && !value.capabilities.manage)
             )
               throw Error();
             return {
               capabilities: {
                 create: value.capabilities.create,
                 manage: value.capabilities.manage,
+                delete: value.capabilities.delete === true,
               },
             };
           })()

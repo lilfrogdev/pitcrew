@@ -608,7 +608,7 @@ it("reads self-service capabilities and directory metadata while omitting privat
           ? {
               approval: null,
               creations: [],
-              capabilities: { create: true, manage: true, token: "private" },
+              capabilities: { create: true, manage: true, delete: true, token: "private" },
             }
           : { repositories: [{ ...entry, token: "private", actor: "private" }] },
       ),
@@ -617,7 +617,7 @@ it("reads self-service capabilities and directory metadata while omitting privat
   expect(await httpApi.collaboration!.repositoryCreations!()).toEqual({
     approval: null,
     creations: [],
-    capabilities: { create: true, manage: true },
+    capabilities: { create: true, manage: true, delete: true },
   });
   expect(await httpApi.collaboration!.repositories()).toEqual([entry]);
 });
@@ -828,7 +828,7 @@ it("keeps creation capabilities and safe deletion tombstones without requiring o
     vi.fn(async () =>
       Response.json({
         approval: null,
-        capabilities: { create: true, manage: true },
+        capabilities: { create: true, manage: true, delete: false },
         creations: tombstones.map((item) => ({
           ...item,
           token: "private",
@@ -839,7 +839,7 @@ it("keeps creation capabilities and safe deletion tombstones without requiring o
   );
   expect(await httpApi.collaboration!.repositoryCreations!()).toEqual({
     approval: null,
-    capabilities: { create: true, manage: true },
+    capabilities: { create: true, manage: true, delete: false },
     creations: tombstones,
   });
   for (const tombstone of [
@@ -853,7 +853,7 @@ it("keeps creation capabilities and safe deletion tombstones without requiring o
       vi.fn(async () =>
         Response.json({
           approval: null,
-          capabilities: { create: true, manage: true },
+          capabilities: { create: true, manage: true, delete: false },
           creations: [tombstone],
         }),
       ),
@@ -875,3 +875,33 @@ it.each(["deleting", "deleted"])(
     ).rejects.toEqual(new ApiError(0));
   },
 );
+it("defaults an omitted independent delete capability to false and rejects malformed deletion capability", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        approval: null,
+        creations: [],
+        capabilities: { create: true, manage: true },
+      }),
+    ),
+  );
+  expect(await httpApi.collaboration!.repositoryCreations!()).toEqual({
+    approval: null,
+    creations: [],
+    capabilities: { create: true, manage: true, delete: false },
+  });
+  for (const deletion of [null, "enabled", 1, {}]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          approval: null,
+          creations: [],
+          capabilities: { create: true, manage: true, delete: deletion },
+        }),
+      ),
+    );
+    await expect(httpApi.collaboration!.repositoryCreations!()).rejects.toEqual(new ApiError(0));
+  }
+});

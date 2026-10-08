@@ -12,10 +12,12 @@ import styles from "./Repositories.module.css";
 export function RepositoryManagement({
   api,
   item,
+  deletionEnabled = false,
   onChanged,
 }: {
   api: CollaborationApi;
   item: SharedRepository;
+  deletionEnabled?: boolean;
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -124,11 +126,24 @@ export function RepositoryManagement({
       }
     }
   };
+  const deletionPermission = useRef({ fresh: false, recovery: false });
+  deletionPermission.current = {
+    fresh:
+      deletionEnabled === true &&
+      item.role === "owner" &&
+      item.status === "present" &&
+      item.deletable,
+    recovery: deletionEnabled === true && item.role === "owner" && item.status === "deleting",
+  };
+  const deletionAvailable = deleting
+    ? deletionPermission.current.recovery
+    : deletionPermission.current.fresh;
   const targetReady = !!item.repositoryName && !!item.repositoryId;
   const unavailable = busy || deleting || deletionUnknown;
   const deleteRepository = () => {
     if (
       !api.deleteRepository ||
+      !(deleting ? deletionPermission.current.recovery : deletionPermission.current.fresh) ||
       !targetReady ||
       confirmation !== item.repositoryName ||
       deletionUnknown ||
@@ -463,11 +478,32 @@ export function RepositoryManagement({
             </>
           )}
           <h3>Delete repository</h3>
+          {!deletionEnabled && (
+            <p>
+              Repository deletion is not enabled for this account. You can still refresh pending
+              deletion status.
+            </p>
+          )}
+          {deletionEnabled && !deletionAvailable && (
+            <p>
+              Deletion actions are unavailable for this repository. You can still refresh pending
+              deletion status.
+            </p>
+          )}
           {!deleteOpen && !deleting && !deletionUnknown && (
             <button
               type="button"
-              disabled={busy || !targetReady || !item.deletable || !api.deleteRepository}
+              disabled={
+                busy || !targetReady || !deletionPermission.current.fresh || !api.deleteRepository
+              }
               onClick={() => {
+                if (
+                  pending.current ||
+                  !deletionPermission.current.fresh ||
+                  !targetReady ||
+                  !api.deleteRepository
+                )
+                  return;
                 setDeleteOpen(true);
                 setConfirmation("");
               }}
@@ -506,7 +542,7 @@ export function RepositoryManagement({
                 Type the permanent repository name to confirm
                 <input
                   value={confirmation}
-                  disabled={busy || deletionUnknown}
+                  disabled={busy || deletionUnknown || !deletionAvailable}
                   autoComplete="off"
                   spellCheck={false}
                   onChange={(event) => setConfirmation(event.target.value)}
@@ -516,6 +552,7 @@ export function RepositoryManagement({
                 type="button"
                 disabled={
                   busy ||
+                  !deletionAvailable ||
                   deletionUnknown ||
                   (deleting && !recoveryConfirmed) ||
                   !targetReady ||
