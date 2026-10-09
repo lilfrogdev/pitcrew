@@ -3,7 +3,9 @@ import { Agent } from "agents";
 import { LifecycleCapability, type CapabilityStartContext } from "agents/lifecycle";
 import type { PiHarness } from "agents/harness/pi";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, GenerationTask, hook } from "@earendil-works/pi-durable";
+import { memoryRequestBytes } from "./repo-memory-orchestration";
+import { repositoryMemoryTools } from "./repo-memory-tools";
 import { repositoryConversationTools } from "./repo-conversation-tools";
 import { visualizationRpcTools } from "./visualization-tools";
 import { configureSelectedModels, configureConversation } from "./model-selection";
@@ -38,6 +40,7 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
         harness: async ({ storage, context }) => {
           this.assertConversationAllowed();
           const input = this.input();
+          await this.assertFreshConversation();
           const configured = configureSelectedModels(
             userModelEnv(env, input.credentialActor),
             input.models.repoAgent,
@@ -56,6 +59,58 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
             configured.models.setProvider(fixture.provider);
           }
 
+          if (input.memoryEnabled) {
+            const provider = configured.models.getProvider(configured.model.provider);
+            if (!provider) throw Error("model_not_configured");
+            configured.models.setProvider({
+              ...provider,
+              streamSimple: (model, context, options) =>
+                provider.streamSimple(model, context, {
+                  ...options,
+                  maxTokens: 4096,
+                  maxRetries: 0,
+                  timeoutMs: 20000,
+                }),
+            });
+            this.registry.install(
+              repositoryMemoryTools((callId, operation, args) =>
+                this.repository().readRepoMemory(input.turnId, `tool:${callId}`, operation, args),
+              ),
+            );
+          }
+          const requests = new Map<string, string>();
+          if (input.memoryEnabled)
+            this.registry.install({
+              name: "repository-authority-fence",
+              hooks: [
+                hook(GenerationTask, {
+                  beforeRequest: async (request, api) => {
+                    await this.assertFreshConversation();
+                    const requestId = crypto.randomUUID();
+                    requests.set(String(api.taskId), requestId);
+                    const bytes = memoryRequestBytes(request.messages);
+                    await this.repository().authorizeConversationModel(
+                      input.turnId,
+                      bytes.inputBytes,
+                      0,
+                      false,
+                      requestId,
+                      bytes.nativeInputBytes,
+                    );
+                  },
+                  afterResponse: async (message, api) => {
+                    await this.assertFreshConversation();
+                    await this.repository().authorizeConversationModel(
+                      input.turnId,
+                      0,
+                      new TextEncoder().encode(JSON.stringify(message.content)).byteLength,
+                      true,
+                      requests.get(String(api.taskId)),
+                    );
+                  },
+                }),
+              ],
+            });
           this.registry.install(
             repositoryConversationTools(() => {
               this.assertConversationAllowed();
@@ -77,7 +132,13 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
             {
               models: configured.models,
               registry: this.registry,
-              settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
+              settings: input.memoryEnabled
+                ? {
+                    retry: { enabled: false, maxRetries: 0 },
+                    compaction: { enabled: false },
+                    stream: { maxRetries: 0, timeoutMs: 20000 },
+                  }
+                : { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
             },
             context,
           );
@@ -86,6 +147,7 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
             throw Error("execution_disabled");
           }
           await configureConversation(harness, configured.model, configured.selection, context);
+          await this.assertFreshConversation();
           if (!this.conversationAllowed()) {
             await harness.close(context);
             throw Error("execution_disabled");
@@ -93,7 +155,20 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
           // The SDK awaits root() after this factory before resuming durable tasks.
           const resume = harness.resume.bind(harness);
           harness.resume = () => {
-            if (this.conversationAllowed()) resume();
+            if (this.conversationAllowed()) {
+              if (!input.memoryEnabled) {
+                resume();
+                return;
+              }
+              void this.assertFreshConversation()
+                .then(() => {
+                  if (this.conversationAllowed()) resume();
+                })
+                .catch(() => {
+                  this.finish({ status: "failed", error: "membership_revoked" });
+                  void this.harness.dispose();
+                });
+            }
           };
           return harness;
         },
@@ -115,17 +190,19 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
         if (row.status !== "running") return;
         try {
           this.assertConversationAllowed();
-          const input = this.input();
+          const input = await this.assertFreshConversation();
           const prompt = await repositoryPrompt(input, (ref) => {
             this.assertConversationAllowed();
             return this.repository().readConversationAttachment(input.turnId, ref);
           });
           this.assertConversationAllowed();
+          await this.assertFreshConversation();
           await this.harness.submit(prompt, { operationId: `repo:${input.turnId}` });
           this.assertConversationAllowed();
           const result = await this.harness.wait(`repo:${input.turnId}`);
           if (result.status !== "done" || !result.text?.trim() || result.text.length > 16384)
             throw Error("conversation_unanswered");
+          await this.assertFreshConversation();
           this.finish({ status: "completed", text: result.text });
         } catch {
           // Error details can include provider responses; expose only a stable code.
@@ -151,6 +228,15 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
           this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
           this.env.CLOUD_CONVERSATION_ENABLED === "true"))
     );
+  }
+  private async assertFreshConversation() {
+    this.assertConversationAllowed();
+    if (!this.input().memoryEnabled) return this.input();
+    const input = await this.repository().freshConversationMemory(this.input().turnId);
+    if (JSON.stringify(input) !== JSON.stringify(this.input()))
+      throw Error("conversation_conflict");
+    this.assertConversationAllowed();
+    return input;
   }
   private assertConversationAllowed() {
     if (!this.conversationAllowed()) throw Error("execution_disabled");

@@ -7,7 +7,14 @@ import {
   type LifecycleJobContext,
 } from "agents/lifecycle";
 import { PiHarness } from "agents/harness/pi";
-import { createRegistry, defineTool, Harness } from "@earendil-works/pi-durable";
+import {
+  createRegistry,
+  defineTool,
+  Harness,
+  GenerationTask,
+  CompactionTask,
+  hook,
+} from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 import type {
   ExecutionInput,
@@ -26,6 +33,7 @@ import {
 import { sandboxImage } from "./cloud-configuration";
 import { configureSelectedModels, configureConversation } from "./model-selection";
 import {
+  workerPiSettings,
   applyChange,
   bootstrapDependencies,
   reviewCandidate,
@@ -58,6 +66,7 @@ export interface PiEnv extends CredentialEnv {
   EXECUTION_MODE: string;
   INFRASTRUCTURE_ADMISSION_ENABLED?: string;
   CLOUD_CONVERSATION_ENABLED?: string;
+  REPO_MEMORY_ENABLED?: string;
   MODEL_CONFIGURATION?: string;
   MODELS_CONFIGURATION?: string;
   CONFIGURATION_REVISION?: string;
@@ -127,6 +136,21 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
   protected registry = createRegistry();
   constructor(ctx: DurableObjectState, env: PiEnv) {
     super(ctx, env);
+    this.registry.install({
+      name: "scoped-memory-brief-fence",
+      hooks: [
+        hook(GenerationTask, {
+          beforeRequest: async () => {
+            await this.assertCurrentAdmission();
+          },
+        }),
+        hook(CompactionTask, {
+          beforeCompact: async () => {
+            await this.assertCurrentAdmission();
+          },
+        }),
+      ],
+    });
     this.lifecycle.use(
       new TaskModelAdmission((admission) =>
         this.bindModelAdmission(
@@ -192,7 +216,7 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
             {
               models,
               registry: this.registry,
-              settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
+              settings: workerPiSettings,
             },
             context,
           );
@@ -248,6 +272,7 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     this.assertTaskActive();
     const [row] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
     const admission = row ? (JSON.parse(row.value) as TaskAdmission | null) : undefined;
+    await this.assertMemoryAdmission();
     if (!admission?.artifactAdmission) {
       if (this.env.ENVIRONMENT !== "development") throw Error("execution_disabled");
       return; // Explicit local fixtures have no paid resource authority.
@@ -263,6 +288,7 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
       this.ctx.waitUntil(this.harness.dispose());
       throw Error("execution_disabled");
     }
+    await this.assertMemoryAdmission();
     this.assertTaskActive();
   }
   protected assertTaskActive() {
@@ -274,6 +300,22 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     const [previous] = this.sql<{ run_id: string }>`SELECT run_id FROM task_control WHERE id=1`;
     if (previous && previous.run_id !== runId) throw Error("context_mismatch");
     void this.sql`INSERT OR IGNORE INTO task_control VALUES(1,${runId})`;
+  }
+  private async assertMemoryAdmission() {
+    void this
+      .sql`CREATE TABLE IF NOT EXISTS task_context(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
+    const row = this.sql<{ value: string }>`SELECT value FROM task_context WHERE id=1`[0];
+    if (!row) return;
+    const task = JSON.parse(row.value) as Context;
+    const memoryBrief = task.input?.memoryBrief ?? task.brief?.memoryBrief;
+    if (!memoryBrief) return;
+    const context = task.input?.knowledgeContext ?? task.brief?.knowledgeContext;
+    if (!context) throw Error("memory_context_unavailable");
+    await this.env.REPOSITORY.get(this.env.REPOSITORY.idFromName("pitcrew")).assertWorkerMemory(
+      context,
+      memoryBrief,
+    );
+    this.assertTaskActive();
   }
   protected async prompt() {
     await this.assertCurrentAdmission();
@@ -697,6 +739,7 @@ export class ChangeAgent extends TaskAgent {
               verification: this.pipeline.status()!.verification,
               messages: input.messages,
               conversationContext: input.conversationContext,
+              memoryBrief: input.memoryBrief,
               repositoryContext: input.repositoryContext,
               implementationSummary: this.pipeline.status()!.change!.summary,
               runModels: input.runModels,
