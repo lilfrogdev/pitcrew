@@ -8,6 +8,7 @@ import {
   lifecycleRequest,
   publicImportUrl,
   repositoryName,
+  logicalRepositoryName,
   type LifecycleRecord,
 } from "./repository-lifecycle";
 function fixture() {
@@ -527,4 +528,295 @@ it("native delete approval cannot bypass management, native identity, production
     "account:" + "x".repeat(129),
   ])
     expect(accountRepositoryDeletion(env, actor)).toBe(false);
+});
+
+function logicalFixture() {
+  const records = new Map<string, LifecycleRecord>();
+  const repos = new Map<string, { id: string; active: boolean }>();
+  const registrations: {
+    ownerActor: string;
+    name: string;
+    logicalName: string;
+    projectId?: string;
+    deleted: boolean;
+  }[] = [];
+  const binding = {
+    list: vi.fn(async () => ({ repos: [...repos].map(([name, repo]) => ({ name, id: repo.id })) })),
+    create: vi.fn(async (name: string) => {
+      const intent = records.get(name)!;
+      expect(intent.status).toBe("pending");
+      expect(intent.projectId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(name).toBe(
+        `${intent.logicalName!.slice(0, 30)}-${intent.projectId!.replaceAll("-", "")}`,
+      );
+      const repo = { id: "resource-" + intent.projectId, active: true };
+      repos.set(name, repo);
+      return { name, id: repo.id, token: "never-expose" };
+    }),
+    import: vi.fn(async () => {
+      throw Error("unexpected_import");
+    }),
+    get: vi.fn(async (name: string) => {
+      const current = () => {
+        const repo = repos.get(name);
+        if (!repo) throw Error("NOT_FOUND");
+        return repo;
+      };
+      current();
+      return {
+        [Symbol.dispose]() {},
+        info: async () => ({ id: current().id }),
+        listTokens: async () => ({
+          total: 1,
+          tokens: [{ id: "token-id", state: current().active ? "active" : "revoked" }],
+        }),
+        revokeToken: async (_id: string) => {
+          current().active = false;
+          return true;
+        },
+      };
+    }),
+    delete: vi.fn(async (name: string) => {
+      repos.delete(name);
+      return true;
+    }),
+  };
+  const lifecycle = new RepositoryLifecycle(
+    binding as unknown as Artifacts,
+    {
+      get: (name) => records.get(name),
+      list: () => [...records.values()],
+      put: (record) => records.set(record.name, structuredClone(record)),
+    },
+    () => false,
+    () => registrations,
+  );
+  const admission = async (commit: () => void) => {
+    commit();
+  };
+  const create = (name: string, owner = "account:owner") =>
+    lifecycle.provisionLogical(name, owner, { displayName: "Label", description: "" }, admission);
+  return { records, repos, binding, registrations, lifecycle, admission, create };
+}
+
+it("canonicalizes account-local ASCII slugs without accepting non-ASCII names or separators", () => {
+  expect(logicalRepositoryName(" Acme-Website ")).toBe("acme-website");
+  expect(logicalRepositoryName("\t\nAcme-Website\r\v\f ")).toBe("acme-website");
+  for (const value of [
+    "",
+    "-name",
+    "folder/name",
+    "has space",
+    "KK",
+    "é",
+    "a".repeat(64),
+    null,
+    "\u00a0not-ascii-trim\u00a0",
+  ])
+    expect(() => logicalRepositoryName(value)).toThrow("invalid_name");
+});
+
+it("serializes case variants into one intent and stable UUID while different owners reuse a logical name", async () => {
+  const f = logicalFixture();
+  const concurrent = await Promise.all(
+    Array.from({ length: 10 }, (_, index) =>
+      f.create(index % 2 ? "ACME-Website" : " acme-website "),
+    ),
+  );
+  expect(new Set(concurrent.map((record) => record.name)).size).toBe(1);
+  expect(new Set(concurrent.map((record) => record.projectId)).size).toBe(1);
+  expect(f.binding.create).toHaveBeenCalledTimes(1);
+  const anotherOwner = await f.create("Acme-Website", "account:another-owner");
+  expect(anotherOwner.name).not.toBe(concurrent[0].name);
+  expect(anotherOwner.projectId).not.toBe(concurrent[0].projectId);
+  expect(anotherOwner.logicalName).toBe("acme-website");
+  expect(f.binding.create).toHaveBeenCalledTimes(2);
+  const longest = await f.create("a".repeat(63));
+  expect(longest.name.length).toBe(63);
+  expect(longest.logicalName!.length).toBe(63);
+});
+
+it("keeps the UUID and logical reservation after ambiguous provisioning without submitting again", async () => {
+  const f = logicalFixture();
+  f.binding.create.mockImplementationOnce(async () => {
+    throw Error("response_lost");
+  });
+  const first = await f.create("acme");
+  expect(first.status).toBe("pending");
+  const recovered = new RepositoryLifecycle(
+    f.binding as unknown as Artifacts,
+    {
+      get: (name) => f.records.get(name),
+      list: () => [...f.records.values()],
+      put: (record) => f.records.set(record.name, record),
+    },
+    () => false,
+  );
+  const retry = await recovered.provisionLogical(
+    "ACME",
+    "account:owner",
+    { displayName: "changed", description: "changed" },
+    f.admission,
+  );
+  expect(retry.projectId).toBe(first.projectId);
+  expect(retry.name).toBe(first.name);
+  expect(retry.displayName).toBe("Label");
+  expect(f.binding.create).toHaveBeenCalledTimes(1);
+});
+
+it("reserves logical renames atomically against creates and frees the previous logical name without renaming the provider", async () => {
+  const f = logicalFixture();
+  const original = await f.create("original");
+  const another = await f.create("another");
+  await expect(
+    f.lifecycle.renameLogical(original.name, original.id!, "account:owner", "ANOTHER", f.admission),
+  ).rejects.toThrow("repository_exists");
+  expect(f.records.get(original.name)?.logicalName).toBe("original");
+  await f.lifecycle.renameLogical(
+    original.name,
+    original.id!,
+    "account:owner",
+    "renamed",
+    f.admission,
+  );
+  expect(f.records.get(original.name)?.id).toBe(original.id);
+  expect(f.records.get(original.name)?.projectId).toBe(original.projectId);
+  const reuse = await f.create("ORIGINAL");
+  expect(reuse.name).not.toBe(original.name);
+  expect(reuse.projectId).not.toBe(original.projectId);
+  const raced = await Promise.allSettled([
+    f.lifecycle.renameLogical(another.name, another.id!, "account:owner", "claimed", f.admission),
+    f.create("CLAIMED"),
+  ]);
+  expect(raced.filter((result) => result.status === "fulfilled")).toHaveLength(2);
+  expect(f.binding.create).toHaveBeenCalledTimes(3);
+  expect(f.lifecycle.logicalCreation("account:owner", "claimed")?.name).toBe(another.name);
+  expect(f.records.get(original.name)?.name).toBe(original.name);
+});
+
+it("holds deleting logical names until confirmed absence then reuses them with fresh UUIDs while retiring physical names", async () => {
+  const f = logicalFixture();
+  const original = await f.create("acme");
+  f.binding.delete.mockResolvedValueOnce(false);
+  const pending = await f.lifecycle.removeOwned(
+    original.name,
+    original.id!,
+    original.name,
+    "account:owner",
+    async () => {},
+    async () => {},
+  );
+  expect(pending.status).toBe("deleting");
+  await expect(f.create("ACME")).rejects.toThrow("deletion_pending");
+  const removed = await f.lifecycle.removeOwned(
+    original.name,
+    original.id!,
+    original.name,
+    "account:owner",
+    async () => {},
+    async () => {},
+  );
+  expect(removed.status).toBe("deleted");
+  const next = await f.create("ACME");
+  expect(next.projectId).not.toBe(original.projectId);
+  expect(next.name).not.toBe(original.name);
+  await expect(
+    f.lifecycle.provision(original.name, "create", undefined, "account:owner"),
+  ).rejects.toThrow("repository_name_retired");
+});
+
+it("checks adopted legacy registrations and session admission before persisting a new logical intent", async () => {
+  const f = logicalFixture();
+  f.registrations.push({
+    ownerActor: "account:owner",
+    name: "legacy",
+    logicalName: "legacy",
+    deleted: false,
+  });
+  await expect(f.create("LEGACY")).rejects.toThrow("repository_exists");
+  await expect(
+    f.lifecycle.provisionLogical(
+      "new",
+      "account:owner",
+      { displayName: "New", description: "" },
+      async () => {
+        throw Error("unauthorized");
+      },
+    ),
+  ).rejects.toThrow("unauthorized");
+  expect(f.records.size).toBe(0);
+  expect(f.binding.create).not.toHaveBeenCalled();
+});
+
+it("rejects injected project UUID collisions before provisioning even when logical prefixes differ", async () => {
+  for (const secondName of ["a".repeat(30) + "-two", "different-prefix"]) {
+    const f = logicalFixture();
+    const first = await f.create("a".repeat(30) + "-one");
+    const before = f.binding.list.mock.calls.length;
+    const uuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValue(first.projectId as ReturnType<typeof crypto.randomUUID>);
+    try {
+      await expect(f.create(secondName)).rejects.toThrow("repository_identity_changed");
+      expect(f.binding.create).toHaveBeenCalledTimes(1);
+      expect(f.binding.list.mock.calls.length).toBe(before);
+      expect(f.records.size).toBe(1);
+    } finally {
+      uuid.mockRestore();
+    }
+  }
+});
+
+it("retired and registered project UUIDs cannot be reused for a new physical repository", async () => {
+  for (const source of ["retired", "registered"]) {
+    const f = logicalFixture();
+    const projectId = crypto.randomUUID();
+    if (source === "retired")
+      f.records.set("old-physical", {
+        name: "old-physical",
+        logicalName: "old",
+        projectId,
+        ownerActor: "account:other",
+        operation: "create",
+        status: "deleted",
+      });
+    else
+      f.registrations.push({
+        name: "legacy-physical",
+        logicalName: "legacy",
+        projectId,
+        ownerActor: "account:other",
+        deleted: true,
+      });
+    const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(projectId);
+    try {
+      await expect(f.create("new")).rejects.toThrow("repository_identity_changed");
+      expect(f.binding.create).not.toHaveBeenCalled();
+      expect(f.binding.list).not.toHaveBeenCalled();
+    } finally {
+      uuid.mockRestore();
+    }
+  }
+});
+
+it("a generated managed physical-name collision cannot borrow a legacy intent lacking its UUID mapping", async () => {
+  const f = logicalFixture();
+  const projectId = crypto.randomUUID();
+  const physical = `acme-${projectId.replaceAll("-", "")}`;
+  f.records.set(physical, {
+    name: physical,
+    ownerActor: "account:owner",
+    operation: "create",
+    id: "legacy-id",
+    status: "ready",
+  });
+  const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(projectId);
+  try {
+    await expect(f.create("acme")).rejects.toThrow("repository_identity_changed");
+    expect(f.binding.create).not.toHaveBeenCalled();
+    expect(f.records.get(physical)?.id).toBe("legacy-id");
+    expect(f.records.get(physical)?.projectId).toBeUndefined();
+  } finally {
+    uuid.mockRestore();
+  }
 });

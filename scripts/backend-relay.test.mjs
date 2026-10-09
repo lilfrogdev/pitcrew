@@ -1688,6 +1688,99 @@ test("native general creation forwards optional bounded metadata without provide
   assert.equal(forwarded.length, 1);
 });
 
+test("native logical names preserve separate immutable physical identities across create and rename", async () => {
+  const physicalName = "acme-website-11111111222243338444555555555555";
+  const forwarded = [];
+  let malformed = false;
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-original-session" }),
+    fetchImpl: async (url, init) => {
+      forwarded.push({ url, init });
+      if (url.endsWith("/create"))
+        return Response.json({
+          name: "acme-website",
+          repositoryName: malformed ? "INVALID/physical" : physicalName,
+          status: "ready",
+          repositoryId: "immutable-id",
+          projectId: "11111111-2222-4333-8444-555555555555",
+          token: "private-provider-value",
+        });
+      return Response.json({
+        id: managedRepository.projectId,
+        name: "Display label",
+        logicalName: "renamed-site",
+        repository: `artifact:${physicalName}`,
+        baseSha: "0".repeat(40),
+        configurationRevision: "uninitialized-v1",
+        description: "",
+        metadataRevision: 3,
+        token: "private-provider-value",
+      });
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  const input = { name: " Acme-Website ", credentialConsent: true };
+  const created = await request(f.handler, "/api/repositories/create", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(input),
+  });
+  assert.equal(created.status, 200);
+  assert.equal(created.json.name, "acme-website");
+  assert.equal(created.json.repositoryName, physicalName);
+  assert.deepEqual(JSON.parse(forwarded[0].init.body), input);
+  assert.ok(!created.text.includes("private-provider-value"));
+  const path = `/api/projects/${managedRepository.projectId}/repository`;
+  const edit = {
+    displayName: "Display label",
+    description: "",
+    logicalName: " Renamed-Site ",
+    expectedRevision: 2,
+  };
+  const renamed = await request(f.handler, path, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify(edit),
+  });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.json.logicalName, "renamed-site");
+  assert.equal(renamed.json.repository, `artifact:${physicalName}`);
+  assert.deepEqual(JSON.parse(forwarded[1].init.body), edit);
+  assert.ok(!renamed.text.includes("private-provider-value"));
+  for (const logicalName of [
+    null,
+    "",
+    "-bad",
+    "bad/name",
+    "bad_name",
+    "x".repeat(64),
+    "Kelvin",
+    "\u00a0not-ascii\u00a0",
+  ]) {
+    assert.equal(
+      (
+        await request(f.handler, path, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ ...edit, logicalName }),
+        })
+      ).status,
+      400,
+    );
+  }
+  assert.equal(forwarded.length, 2);
+  malformed = true;
+  const invalid = await request(f.handler, "/api/repositories/create", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(input),
+  });
+  assert.equal(invalid.status, 503);
+  assert.deepEqual(invalid.json, { error: "repository_backend_unavailable" });
+});
+
 test("native invitation listing and ID revocation omit tokens and require an exact empty body", async () => {
   const id = "11111111-2222-4333-8444-555555555555";
   const invitation = {

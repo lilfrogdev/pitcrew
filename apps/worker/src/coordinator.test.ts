@@ -342,3 +342,42 @@ describe("durable coordinator", () => {
     expect(seen!.repositoryContext!.baseSha).toBe(run.baseSha);
   });
 });
+
+it("registers the preallocated project UUID and preserves distinct owner-local names independently of display labels", () => {
+  const root = new Coordinator(initialState(), () => {});
+  const allocated = crypto.randomUUID();
+  const first = root.addOwnedProject(
+    "acme-" + allocated.replaceAll("-", ""),
+    "resource-one",
+    "account:one",
+    "one@example.com",
+    undefined,
+    undefined,
+    { displayName: "Same label", description: "", logicalName: "acme" },
+    allocated,
+  );
+  expect(first.id).toBe(allocated);
+  expect(first.logicalName).toBe("acme");
+  expect(() =>
+    root.addOwnedProject(
+      "different-physical",
+      "resource-two",
+      "account:one",
+      "one@example.com",
+      undefined,
+      undefined,
+      { displayName: "Other label", description: "", logicalName: "acme" },
+    ),
+  ).toThrow("repository_exists");
+  const otherOwner = root.addOwnedProject(
+    "owner-two-physical",
+    "resource-three",
+    "account:two",
+    "two@example.com",
+    undefined,
+    undefined,
+    { displayName: "Same label", description: "", logicalName: "acme" },
+  );
+  expect(otherOwner.name).toBe(first.name);
+  expect(otherOwner.id).not.toBe(first.id);
+});

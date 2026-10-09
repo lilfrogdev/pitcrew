@@ -154,7 +154,7 @@ try {
   const buttonSource = (name, scope) =>
     `[...(${scopeSource(scope)}?.querySelectorAll('button') ?? [])].find(el=>el.textContent.trim()===${JSON.stringify(name)})`;
   const labelSource = (name, scope) =>
-    `[...(${scopeSource(scope)}?.querySelectorAll('label') ?? [])].find(el=>[...el.childNodes].filter(node=>node.nodeType===3).map(node=>node.textContent).join('').trim()===${JSON.stringify(name)})?.querySelector('input,textarea')`;
+    `[...(${!scope && name === "Repository name" ? "document.querySelector('form[aria-label=\"Create repository\"]')" : scopeSource(scope)}?.querySelectorAll('label') ?? [])].find(el=>[...el.childNodes].filter(node=>node.nodeType===3).map(node=>node.textContent).join('').trim()===${JSON.stringify(name)})?.querySelector('input,textarea')`;
   const disabled = (name, scope) => evaluate(`Boolean((${buttonSource(name, scope)})?.disabled)`);
   const clickElement = async (source) => {
     await wait(
@@ -243,7 +243,7 @@ try {
     "Owner and external-owner metadata are manageable; editor has no management controls; external repository delete disabled.",
   );
   assert.equal(await disabled("Create empty repository"), true);
-  await fill("Permanent repository name", "qa-arbitrary-slug");
+  await fill("Repository name", "qa-arbitrary-slug");
   await fill("Display name (optional)", "Created display");
   await fill("Description (optional)", "Created description");
   assert.equal(await disabled("Create empty repository"), true);
@@ -272,6 +272,7 @@ try {
   assert.equal(edited.repositoryName, "owner-physical");
   assert.equal(edited.repositoryId, "qa-repository-id");
   assert.deepEqual((await calls("/api/projects/qa-owner/repository", "PATCH"))[0].body, {
+    logicalName: "owner-logical",
     displayName: "Changed display",
     description: "Changed description",
     expectedRevision: 0,
@@ -279,6 +280,209 @@ try {
   pass(
     "Display metadata edit preserves physical identity",
     "PATCH changed display/description and kept physical name/id; browser still renders permanent identifiers.",
+  );
+  await navigate();
+  await fill("Repository name", "invalid_name");
+  await checkbox();
+  assert.equal(await disabled("Create empty repository"), true);
+  await fill("Repository name", "a".repeat(64));
+  await checkbox();
+  assert.equal(await disabled("Create empty repository"), true);
+  await fill("Repository name", "Kelvin");
+  await checkbox();
+  assert.equal(await disabled("Create empty repository"), true);
+  await fill("Repository name", "\u00a0name\u00a0");
+  await checkbox();
+  assert.equal(await disabled("Create empty repository"), true);
+  const rawLogical = `  MiXeD-${"A".repeat(57)}  `;
+  const canonicalLogical = rawLogical.trim().toLowerCase();
+  await fill("Repository name", rawLogical);
+  await fill("Display name (optional)", "Canonical display");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("Canonical display");
+  const canonicalCreation = (await state()).creations[0];
+  assert.equal(canonicalCreation.logicalName, canonicalLogical);
+  assert.equal(canonicalCreation.name, canonicalLogical);
+  assert.equal(
+    canonicalCreation.repositoryName,
+    `${canonicalLogical.slice(0, 30)}-${canonicalCreation.projectId.replaceAll("-", "")}`,
+  );
+  assert.equal(canonicalCreation.repositoryName.length, 63);
+  assert.equal((await calls("/api/repositories/create", "POST"))[0].body.name, canonicalLogical);
+  await open("Canonical display");
+  await includes(`Repository name: ${canonicalLogical}`);
+  await includes(`Physical name: ${canonicalCreation.repositoryName}`);
+  assert.equal(
+    await evaluate(`(${labelSource("Repository name", "Canonical display")}).value`),
+    canonicalLogical,
+  );
+  assert.equal(
+    await evaluate(
+      `(${scopeSource("Canonical display")}).querySelector('dl').innerText.includes(${JSON.stringify(canonicalCreation.repositoryName)})`,
+    ),
+    true,
+  );
+  assert.equal(
+    await evaluate(
+      `(${scopeSource("Canonical display")}).querySelector('dl').innerText.includes('Physical repository name (permanent)')`,
+    ),
+    true,
+  );
+  assert.equal(
+    await evaluate(
+      `[...(${scopeSource("Canonical display")}).querySelectorAll('input,textarea')].some(field=>!field.readOnly && field.value===${JSON.stringify(canonicalCreation.repositoryName)})`,
+    ),
+    false,
+  );
+  await fill("Repository name", canonicalLogical.toUpperCase());
+  await checkbox();
+  assert.equal(await disabled("Create empty repository"), true);
+  assert.equal((await calls("/api/repositories/create", "POST")).length, 1);
+  await screenshot("07-logical-and-physical-names");
+  pass(
+    "Canonical logical slug and readonly generated physical identity",
+    "Invalid punctuation, non-ASCII Kelvin sign, and 64-character logical names are blocked; mixed case and whitespace canonicalize to a 63-character slug. The persisted project UUID generates a separate 63-character physical name, rendered read-only; known same-owner case duplicate is blocked.",
+  );
+  await navigate();
+  await control("seed-ready", {
+    logicalName: "shared-logical",
+    displayName: "First client display",
+  });
+  const existingIntent = (await state()).creations[0];
+  await fill("Repository name", "SHARED-LOGICAL");
+  await fill("Display name (optional)", "Ignored second client label");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("First client display");
+  assert.equal((await state()).creations.length, 1);
+  assert.equal((await state()).creations[0].projectId, existingIntent.projectId);
+  assert.equal((await state()).creations[0].repositoryName, existingIntent.repositoryName);
+  assert.equal((await calls("/api/repositories/create", "POST")).length, 1);
+  pass(
+    "Same-owner concurrent ready intent is recovered through HTTP 200",
+    "A synthetic other tab completes an active intent after initial discovery. Creating the same canonical name reuses its existing UUID, physical identity, and metadata without allocating a second repository.",
+  );
+  await navigate("registration-recovery");
+  await fill("Repository name", "Recover-Logical");
+  await fill("Display name (optional)", "Recovered display");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("The repository needs registration");
+  const partialIntent = (await state()).creations[0];
+  const partialProject = (await state()).pendingProjects[partialIntent.repositoryName];
+  assert.equal(partialIntent.status, "registration_required");
+  await clickElement(
+    `document.querySelector('section[aria-label="Repository creation recover-logical"] input[type=checkbox]')`,
+  );
+  await click("Recover repository creation");
+  await includes("Recovered display");
+  assert.equal((await state()).creations.length, 1);
+  assert.equal((await state()).creations[0].repositoryName, partialIntent.repositoryName);
+  assert.equal((await state()).creations[0].projectId, partialProject.projectId);
+  assert.deepEqual((await calls("/api/repositories/create", "POST"))[1].body, {
+    name: "recover-logical",
+    credentialConsent: true,
+  });
+  pass(
+    "Same-resource partial creation recovery preserves persisted physical identity",
+    "Explicit credential-consented recovery reuses the UUID/physical identity allocated before the simulated provider result and preserves the original display metadata.",
+  );
+  await navigate();
+  await fill("Repository name", "same-owner-name");
+  await fill("Display name (optional)", "Shared display label");
+  await fill("Description (optional)", "Repeated description");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("Shared display label");
+  const firstOwnerCreation = (await state()).creations[0];
+  await fill("Repository name", "another-owner-name");
+  await fill("Display name (optional)", "Shared display label");
+  await fill("Description (optional)", "Repeated description");
+  await checkbox();
+  await click("Create empty repository");
+  await wait(
+    async () => (await state()).creations.length === 2,
+    "same-owner duplicate display label accepted",
+  );
+  await wait(
+    async () => !String(await text()).includes("Creating repository…"),
+    "second same-owner create completed",
+  );
+  assert.equal(
+    (await state()).repositories.filter(
+      (item) => item.name === "Shared display label" && item.description === "Repeated description",
+    ).length,
+    2,
+  );
+  await control("switch");
+  await click("Switch fixture account");
+  await includes("Second account repository");
+  await fill("Repository name", "SAME-OWNER-NAME");
+  await fill("Display name (optional)", "Shared display label");
+  await fill("Description (optional)", "Repeated description");
+  await checkbox();
+  await click("Create empty repository");
+  await includes("Shared display label");
+  const secondOwnerCreation = (await state()).creations.at(-1);
+  assert.equal(secondOwnerCreation.logicalName, firstOwnerCreation.logicalName);
+  assert.notEqual(secondOwnerCreation.projectId, firstOwnerCreation.projectId);
+  assert.notEqual(secondOwnerCreation.repositoryName, firstOwnerCreation.repositoryName);
+  assert.equal(secondOwnerCreation.name, firstOwnerCreation.name);
+  await screenshot("08-owner-scoped-logical-name");
+  pass(
+    "Different owners can use the same logical name and display label",
+    "One synthetic account creates two different slugs with identical display labels/descriptions. A second account creates the same canonical slug/display label with a different UUID and physical name, and sees its own repository.",
+  );
+  await navigate();
+  await open();
+  await fill("Repository name", "ReNaMeD-Logical", "Owner display");
+  await click("Save repository details", "Owner display");
+  await includes("Repository name: renamed-logical");
+  const renamed = (await state()).repositories[0];
+  assert.equal(renamed.logicalName, "renamed-logical");
+  assert.equal(renamed.repositoryName, "owner-physical");
+  assert.equal(renamed.repositoryId, "qa-repository-id");
+  await open();
+  await fill("Repository name", "Kelvin", "Owner display");
+  assert.equal(await disabled("Save repository details", "Owner display"), true);
+  await fill("Repository name", "\u00a0name\u00a0", "Owner display");
+  assert.equal(await disabled("Save repository details", "Owner display"), true);
+  assert.equal((await calls("/api/projects/qa-owner/repository", "PATCH")).length, 1);
+  await fill("Repository name", "external-logical", "Owner display");
+  await click("Save repository details", "Owner display");
+  await includes("This repository name is already used in your account.");
+  assert.equal((await state()).repositories[0].logicalName, "renamed-logical");
+  assert.equal((await state()).repositories[0].repositoryName, "owner-physical");
+  await fill("Repository name", "another-logical", "Owner display");
+  await click("Save repository details", "Owner display");
+  await includes("Repository name: another-logical");
+  assert.equal((await state()).repositories[0].repositoryName, "owner-physical");
+  pass(
+    "Logical rename and owner collision preserve physical identity",
+    "Case-normalized logical rename leaves physical name/provider ID unchanged. Non-ASCII Kelvin/NBSP rename drafts send no PATCH. HTTP 409 collision preserves identity and allows correction to an available owner-scoped name.",
+  );
+  await navigate("legacy-approved");
+  await includes("Create approved empty repository");
+  await clickElement(
+    `document.querySelector('section[aria-label="Approved empty repository legacy-approved-physical"] input[type=checkbox]')`,
+  );
+  await click("Create empty repository");
+  await includes("legacy-approved-physical");
+  await wait(
+    async () =>
+      (await state()).creations.some((record) => record.name === "legacy-approved-physical"),
+    "approved legacy create completed",
+  );
+  assert.equal((await state()).repositories.at(-1).repositoryName, "legacy-approved-physical");
+  assert.equal((await state()).creations[0].repositoryName, undefined);
+  assert.deepEqual((await calls("/api/repositories/create", "POST"))[0].body, {
+    name: "legacy-approved-physical",
+    credentialConsent: true,
+  });
+  pass(
+    "Legacy exact-approved creation retains its physical name",
+    "With broad create/manage off, exact-approved creation emits the unchanged legacy body and preserves the exact approved physical name rather than generating a new namespace.",
   );
   await navigate();
   await open();
@@ -356,9 +560,9 @@ try {
   await open();
   await click("Review deletion", "Owner display");
   await includes("permanently removes");
-  await fill("Type the permanent repository name to confirm", "Owner display", "Owner display");
+  await fill("Type the physical repository name to confirm", "Owner display", "Owner display");
   assert.equal(await disabled("Permanently delete repository", "Owner display"), true);
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   await click("Permanently delete repository", "Owner display");
   await observePendingDeletion();
   await delay(350);
@@ -372,7 +576,7 @@ try {
   await click("Refresh deletion status", "Owner display");
   await includes("Confirm the permanent name to recover");
   assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 1);
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   await click("Recover repository deletion", "Owner display");
   await wait(async () => !String(await text()).includes("Owner display"), "deleted row removed");
   assert.deepEqual(
@@ -387,17 +591,18 @@ try {
     "No automatic POST retry; GET preceded fresh typed confirmation and second explicit POST; deleted row removed.",
   );
   await navigate("normal", true);
-  await fill("Permanent repository name", "qa-lifecycle-slug");
+  await fill("Repository name", "qa-lifecycle-slug");
   await fill("Display name (optional)", "Lifecycle display");
   await checkbox();
   await click("Create empty repository");
   await includes("Lifecycle display");
   assert.equal((await state()).creations[0].status, "ready");
+  const originalLifecycle = (await state()).creations[0];
   await open("Lifecycle display");
   await click("Review deletion", "Lifecycle display");
   await fill(
-    "Type the permanent repository name to confirm",
-    "qa-lifecycle-slug",
+    "Type the physical repository name to confirm",
+    originalLifecycle.repositoryName,
     "Lifecycle display",
   );
   await click("Permanently delete repository", "Lifecycle display");
@@ -411,12 +616,15 @@ try {
     true,
   );
   assert.equal(await evaluate("document.querySelectorAll('button[aria-expanded]').length"), 3);
+  await fill("Repository name", "qa-lifecycle-slug");
+  await checkbox();
+  assert.equal(await disabled("Create empty repository"), true);
   await open("Lifecycle display");
   await click("Refresh deletion status", "Lifecycle display");
   await includes("Confirm the permanent name to recover");
   await fill(
-    "Type the permanent repository name to confirm",
-    "qa-lifecycle-slug",
+    "Type the physical repository name to confirm",
+    originalLifecycle.repositoryName,
     "Lifecycle display",
   );
   await click("Recover repository deletion", "Lifecycle display");
@@ -434,22 +642,24 @@ try {
   await fill("Display name", "Owner after tombstone", "Owner display");
   await click("Save repository details", "Owner display");
   await includes("Owner after tombstone");
-  await fill("Permanent repository name", "qa-lifecycle-slug");
+  await fill("Repository name", "qa-lifecycle-slug");
   await checkbox();
-  assert.equal(await disabled("Create empty repository"), true);
-  await fill("Permanent repository name", "qa-after-tombstone");
+  assert.equal(await disabled("Create empty repository"), false);
   await fill("Display name (optional)", "Created after tombstone");
-  await checkbox();
   await click("Create empty repository");
   await includes("Created after tombstone");
   assert.deepEqual(
     (await state()).creations.map((record) => record.status),
     ["deleted", "ready"],
   );
+  const freshLifecycle = (await state()).creations[1];
+  assert.equal(freshLifecycle.logicalName, originalLifecycle.logicalName);
+  assert.notEqual(freshLifecycle.repositoryName, originalLifecycle.repositoryName);
+  assert.notEqual(freshLifecycle.projectId, originalLifecycle.projectId);
   await screenshot("05-lifecycle-tombstone-directory");
   pass(
     "Native creation discovery survives deleting and deleted lifecycle records",
-    "Created resource record transitions ready→deleting on HTTP 202→deleted on HTTP 200. Directory refresh preserves create/manage capabilities, unrelated owner metadata remains editable, deleted physical name cannot be reused, and a different repository can be created after the tombstone.",
+    "Created resource record transitions ready→deleting on HTTP 202→deleted on HTTP 200. Deleting reserves the logical name. Directory refresh preserves create/manage capabilities and unrelated edits. Confirmed deletion permits the same logical name with a fresh project UUID/physical name; the old physical identity stays retired.",
   );
   await navigate("edit-conflict");
   await open();
@@ -461,7 +671,7 @@ try {
   await navigate("delete-failure", true);
   await open();
   await click("Review deletion", "Owner display");
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   await click("Permanently delete repository", "Owner display");
   await includes("The deletion result is unknown.");
   assert.equal(await disabled("Permanently delete repository", "Owner display"), true);
@@ -474,12 +684,12 @@ try {
   await navigate("wrong-delete-target", true);
   await open();
   await click("Review deletion", "Owner display");
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   await click("Permanently delete repository", "Owner display");
   await observePendingDeletion();
   await click("Refresh deletion status", "Owner display");
   await includes("Could not check deletion status.");
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   assert.equal(await disabled("Recover repository deletion", "Owner display"), true);
   assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 1);
   pass(
@@ -498,7 +708,7 @@ try {
     "Creation disabled after uncertain result until access is refreshed.",
   );
   await navigate("create-failure");
-  await fill("Permanent repository name", "uncertain-create");
+  await fill("Repository name", "uncertain-create");
   await checkbox();
   await click("Create empty repository");
   await includes("The creation result is unknown.");
@@ -523,7 +733,7 @@ try {
   await fill("Invitation recipient email", "guest@example.test", "Owner without delete");
   await click("Create invitation link", "Owner without delete");
   await includes("Invitation created.");
-  await fill("Permanent repository name", "qa-delete-disabled");
+  await fill("Repository name", "qa-delete-disabled");
   await fill("Display name (optional)", "Created without delete");
   await checkbox();
   await click("Create empty repository");
@@ -550,7 +760,7 @@ try {
   await navigate("normal", true);
   await open();
   await click("Review deletion", "Owner display");
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   assert.equal(await disabled("Permanently delete repository", "Owner display"), false);
   await control("delete-capability", { enabled: false });
   await click("Refresh");
@@ -560,12 +770,12 @@ try {
   await navigate("normal", true);
   await open();
   await click("Review deletion", "Owner display");
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   await click("Permanently delete repository", "Owner display");
   await observePendingDeletion();
   await click("Refresh deletion status", "Owner display");
   await includes("Confirm the permanent name to recover");
-  await fill("Type the permanent repository name to confirm", "owner-physical", "Owner display");
+  await fill("Type the physical repository name to confirm", "owner-physical", "Owner display");
   assert.equal(await disabled("Recover repository deletion", "Owner display"), false);
   await control("delete-capability", { enabled: false });
   await click("Refresh");
@@ -573,7 +783,7 @@ try {
   assert.equal(await disabled("Recover repository deletion", "Owner display"), true);
   assert.equal(
     await evaluate(
-      `(${labelSource("Type the permanent repository name to confirm", "Owner display")}).disabled`,
+      `(${labelSource("Type the physical repository name to confirm", "Owner display")}).disabled`,
     ),
     true,
   );
@@ -770,6 +980,6 @@ try {
   await new Promise((done) => (chrome.exitCode !== null ? done() : chrome.once("exit", done)));
   server.closeAllConnections();
   await new Promise((done) => server.close(done));
-  await rm(profile, { recursive: true, force: true });
+  await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await rm(buildDir, { recursive: true, force: true });
 }

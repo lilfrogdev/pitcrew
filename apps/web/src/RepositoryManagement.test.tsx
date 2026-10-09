@@ -89,11 +89,11 @@ it("creates the selected permanent name with optional metadata only after consen
   const user = userEvent.setup();
   render(<AccountRepositories api={api} />);
   const form = await screen.findByRole("form", { name: "Create repository" });
-  await user.type(within(form).getByLabelText("Permanent repository name"), "Invalid_Name");
+  await user.type(within(form).getByLabelText("Repository name"), "Invalid_Name");
   await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
-  await user.clear(within(form).getByLabelText("Permanent repository name"));
-  await user.type(within(form).getByLabelText("Permanent repository name"), "new-physical");
+  await user.clear(within(form).getByLabelText("Repository name"));
+  await user.type(within(form).getByLabelText("Repository name"), "new-physical");
   await user.type(within(form).getByLabelText("Display name (optional)"), " Friendly name ");
   await user.type(within(form).getByLabelText("Description (optional)"), " A description ");
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
@@ -134,6 +134,7 @@ it("saves only metadata with the discovered revision, without changing the physi
   await user.type(screen.getByLabelText("Display name"), " New label ");
   await user.click(screen.getByRole("button", { name: "Save repository details" }));
   expect(api.updateRepository).toHaveBeenCalledExactlyOnceWith(repository.projectId, {
+    logicalName: repository.repositoryName,
     displayName: "New label",
     description: "Existing description",
     expectedRevision: 3,
@@ -146,7 +147,7 @@ it("requires the exact permanent name for deletion, and only recovers after a GE
   const { user } = await open(api);
   await user.click(screen.getByRole("button", { name: "Review deletion" }));
   expect(screen.getByText(/permanently removes.*stored files and history/)).toBeTruthy();
-  let confirmation = screen.getByLabelText("Type the permanent repository name to confirm");
+  let confirmation = screen.getByLabelText("Type the physical repository name to confirm");
   await user.type(confirmation, repository.name);
   expect(screen.getByRole("button", { name: "Permanently delete repository" })).toHaveProperty(
     "disabled",
@@ -159,7 +160,7 @@ it("requires the exact permanent name for deletion, and only recovers after a GE
   fireEvent.click(deletion);
   await user.click(await screen.findByRole("button", { name: "Manage repository" }));
   await screen.findByRole("button", { name: "Recover repository deletion" });
-  confirmation = screen.getByLabelText("Type the permanent repository name to confirm");
+  confirmation = screen.getByLabelText("Type the physical repository name to confirm");
   expect(api.deleteRepository).toHaveBeenCalledExactlyOnceWith(repository.projectId, {
     confirmation: repository.repositoryName,
     repositoryId: repository.repositoryId,
@@ -184,7 +185,7 @@ it("quarantines unknown deletion results, never displays diagnostics, and refres
   const { user } = await open(api);
   await user.click(screen.getByRole("button", { name: "Review deletion" }));
   await user.type(
-    screen.getByLabelText("Type the permanent repository name to confirm"),
+    screen.getByLabelText("Type the physical repository name to confirm"),
     repository.repositoryName!,
   );
   await user.click(screen.getByRole("button", { name: "Permanently delete repository" }));
@@ -302,15 +303,15 @@ it("keeps an unresolved creation quarantined across refresh and cannot create a 
   const user = userEvent.setup();
   render(<AccountRepositories api={api} />);
   let form = await screen.findByRole("form", { name: "Create repository" });
-  await user.type(within(form).getByLabelText("Permanent repository name"), "unknown-target");
+  await user.type(within(form).getByLabelText("Repository name"), "unknown-target");
   await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   await screen.findByText(/creation result is unknown/i);
   await user.click(screen.getByRole("button", { name: "Refresh" }));
   await screen.findByText(/creation result for unknown-target is unknown/i);
   form = screen.getByRole("form", { name: "Create repository" });
-  await user.clear(within(form).getByLabelText("Permanent repository name"));
-  await user.type(within(form).getByLabelText("Permanent repository name"), "other-target");
+  await user.clear(within(form).getByLabelText("Repository name"));
+  await user.type(within(form).getByLabelText("Repository name"), "other-target");
   await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   expect(api.createRepository).toHaveBeenCalledOnce();
@@ -370,7 +371,7 @@ it.each(["projectId", "repositoryName", "repositoryId"])(
     const { user } = await open(api);
     await user.click(screen.getByRole("button", { name: "Review deletion" }));
     await user.type(
-      screen.getByLabelText("Type the permanent repository name to confirm"),
+      screen.getByLabelText("Type the physical repository name to confirm"),
       repository.repositoryName!,
     );
     await user.click(screen.getByRole("button", { name: "Permanently delete repository" }));
@@ -384,7 +385,7 @@ it.each(["projectId", "repositoryName", "repositoryId"])(
   },
 );
 
-it("keeps live directory management and new creation usable after another repository is deleted, while refusing retired names", async () => {
+it("keeps live directory management and new creation usable after another repository is deleted, while keeping deleting names reserved", async () => {
   const fetch = vi.fn(async (path: string) => {
     if (path === "/api/repositories") return Response.json({ repositories: [repository] });
     if (path === "/api/repository-creations")
@@ -407,7 +408,7 @@ it("keeps live directory management and new creation usable after another reposi
   vi.stubGlobal("fetch", fetch);
   const user = userEvent.setup();
   render(<AccountRepositories api={httpApi.collaboration!} />);
-  await screen.findByText(/This repository was deleted.*permanent name is retired/);
+  await screen.findByText(/This repository was deleted.*reuse its repository name/);
   expect(screen.getByText(/This repository is being deleted/)).toBeTruthy();
   expect(screen.queryByText(/Could not check repository creation status/)).toBeNull();
   expect(screen.queryByText(/needs registration to this account/)).toBeNull();
@@ -418,15 +419,15 @@ it("keeps live directory management and new creation usable after another reposi
     false,
   );
   const form = screen.getByRole("form", { name: "Create repository" });
-  const name = within(form).getByLabelText("Permanent repository name");
-  for (const retiredName of ["retired-repo", "retiring-repo"]) {
+  const name = within(form).getByLabelText("Repository name");
+  for (const retiredName of ["retiring-repo"]) {
     await user.clear(name);
     await user.type(name, retiredName);
     await user.click(within(form).getByRole("checkbox"));
     expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   }
   await user.clear(name);
-  await user.type(name, "different-new-repo");
+  await user.type(name, "retired-repo");
   await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", false);
   expect(fetch.mock.calls.some(([path]) => path.endsWith("/create"))).toBe(false);
@@ -440,7 +441,7 @@ it("refreshes Work and the directory as soon as a validated deletion is accepted
   await user.click(await screen.findByRole("button", { name: "Manage repository" }));
   await user.click(screen.getByRole("button", { name: "Review deletion" }));
   await user.type(
-    screen.getByLabelText("Type the permanent repository name to confirm"),
+    screen.getByLabelText("Type the physical repository name to confirm"),
     repository.repositoryName!,
   );
   await user.click(screen.getByRole("button", { name: "Permanently delete repository" }));
@@ -491,7 +492,7 @@ it("denies an already open, typed deletion when capability disappears, without r
   await user.click(screen.getByRole("button", { name: "Manage repository" }));
   await user.click(screen.getByRole("button", { name: "Review deletion" }));
   await user.type(
-    screen.getByLabelText("Type the permanent repository name to confirm"),
+    screen.getByLabelText("Type the physical repository name to confirm"),
     repository.repositoryName!,
   );
   const deletion = screen.getByRole("button", { name: "Permanently delete repository" });
@@ -526,7 +527,7 @@ it("keeps pending status GET available but denies verified recovery when deletio
   await user.click(screen.getByRole("button", { name: "Refresh deletion status" }));
   await screen.findByText(/Confirm the permanent name to recover/);
   await user.type(
-    screen.getByLabelText("Type the permanent repository name to confirm"),
+    screen.getByLabelText("Type the physical repository name to confirm"),
     repository.repositoryName!,
   );
   const recovery = screen.getByRole("button", { name: "Recover repository deletion" });
@@ -549,3 +550,173 @@ it("defaults direct management deletion to disabled when no independent capabili
   expect(screen.getByRole("button", { name: "Review deletion" })).toHaveProperty("disabled", true);
   expect(api.deleteRepository).not.toHaveBeenCalled();
 });
+
+it("creates a canonical logical name from mixed case and ASCII padding while showing its distinct permanent physical name", async () => {
+  const api = managementApi();
+  const physical = `new-project-${"b".repeat(32)}`;
+  vi.mocked(api.createRepository!).mockResolvedValue({
+    name: "new-project",
+    logicalName: "new-project",
+    repositoryName: physical,
+    status: "pending",
+  });
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} />);
+  const form = await screen.findByRole("form", { name: "Create repository" });
+  await user.type(within(form).getByLabelText("Repository name"), "  New-PrOjEcT  ");
+  await user.click(within(form).getByRole("checkbox"));
+  await user.click(within(form).getByRole("button"));
+  expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("new-project", true, {
+    displayName: "new-project",
+    description: "",
+  });
+  expect(await screen.findByText(`Physical name: ${physical}`)).toBeTruthy();
+});
+it("allows an owner to use the same logical name as a shared repository from another owner", async () => {
+  const api = managementApi();
+  vi.mocked(api.repositories).mockResolvedValue([
+    {
+      ...repository,
+      role: "editor",
+      logicalName: "sample",
+      repositoryName: `sample-${"a".repeat(32)}`,
+      deletable: false,
+    },
+  ]);
+  vi.mocked(api.createRepository!).mockResolvedValue({
+    name: "sample",
+    logicalName: "sample",
+    repositoryName: `sample-${"b".repeat(32)}`,
+    status: "pending",
+  });
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} />);
+  const form = await screen.findByRole("form", { name: "Create repository" });
+  await user.type(within(form).getByLabelText("Repository name"), "SAMPLE");
+  await user.click(within(form).getByRole("checkbox"));
+  await user.click(within(form).getByRole("button"));
+  expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("sample", true, {
+    displayName: "sample",
+    description: "",
+  });
+  expect(await screen.findByText(`Physical name: sample-${"b".repeat(32)}`)).toBeTruthy();
+  expect(screen.getByText(`Physical name: sample-${"a".repeat(32)}`)).toBeTruthy();
+});
+it("recovers an owner logical-name collision by choosing another name, preserving physical identity and revision", async () => {
+  const api = managementApi();
+  vi.mocked(api.repositories).mockResolvedValue([
+    { ...repository, logicalName: "original-logical" },
+  ]);
+  vi.mocked(api.updateRepository!)
+    .mockRejectedValueOnce(new ApiError(409, "repository_exists"))
+    .mockResolvedValueOnce({
+      id: repository.projectId,
+      repository: `artifact:${repository.repositoryName}`,
+    } as never);
+  const { user } = await open(api);
+  const panel = screen.getByRole("region", { name: `Manage ${repository.name}` });
+  const logical = within(panel).getByLabelText("Repository name");
+  expect(logical).toHaveProperty("value", "original-logical");
+  expect(within(panel).getByText("Physical repository name (permanent)")).toBeTruthy();
+  await user.clear(logical);
+  await user.type(logical, " Taken-Name ");
+  await user.click(screen.getByRole("button", { name: "Save repository details" }));
+  await screen.findByText(/already used in your account.*Choose another name/);
+  expect(api.repositories).toHaveBeenCalledOnce();
+  await user.clear(logical);
+  await user.type(logical, " Available-Name ");
+  await user.click(screen.getByRole("button", { name: "Save repository details" }));
+  expect(api.updateRepository).toHaveBeenNthCalledWith(2, repository.projectId, {
+    logicalName: "available-name",
+    displayName: repository.name,
+    description: repository.description,
+    expectedRevision: 3,
+  });
+  expect(api.deleteRepository).not.toHaveBeenCalled();
+  await waitFor(() => expect(api.repositories).toHaveBeenCalledTimes(2));
+});
+it("keeps an unknown reused-name creation quarantined when refresh finds only the earlier deleted physical identity", async () => {
+  const api = managementApi();
+  vi.mocked(api.repositoryCreations!).mockResolvedValue({
+    approval: null,
+    capabilities: { create: true, manage: true, delete: false },
+    creations: [
+      {
+        name: "reusable",
+        logicalName: "reusable",
+        repositoryName: `reusable-${"a".repeat(32)}`,
+        repositoryId: "old-immutable",
+        status: "deleted",
+      },
+    ],
+  });
+  vi.mocked(api.createRepository!).mockRejectedValue(new ApiError(0));
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} />);
+  let form = await screen.findByRole("form", { name: "Create repository" });
+  await user.type(within(form).getByLabelText("Repository name"), "reusable");
+  await user.click(within(form).getByRole("checkbox"));
+  await user.click(within(form).getByRole("button"));
+  await screen.findByText(/creation result is unknown/);
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await screen.findByText(/creation result for reusable is unknown/);
+  form = screen.getByRole("form", { name: "Create repository" });
+  await user.click(within(form).getByRole("checkbox"));
+  expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
+  expect(api.createRepository).toHaveBeenCalledOnce();
+});
+it("keeps credential-cleanup recovery bound to its original physical identity even when logical names can be reused", async () => {
+  const api = managementApi();
+  const physical = `recoverable-${"c".repeat(32)}`;
+  vi.mocked(api.repositoryCreations!).mockResolvedValue({
+    approval: null,
+    capabilities: { create: true, manage: true, delete: false },
+    creations: [
+      {
+        name: "recoverable",
+        logicalName: "recoverable",
+        repositoryName: physical,
+        repositoryId: "recovery-immutable",
+        status: "cleanup_required",
+      },
+    ],
+  });
+  vi.mocked(api.createRepository!).mockResolvedValue({
+    name: "recoverable",
+    logicalName: "recoverable",
+    repositoryName: `recoverable-${"d".repeat(32)}`,
+    repositoryId: "recovery-immutable",
+    projectId: "wrong-new-project",
+    status: "ready",
+  });
+  const user = userEvent.setup();
+  render(<AccountRepositories api={api} />);
+  const section = await screen.findByRole("region", { name: "Repository creation recoverable" });
+  await user.click(within(section).getByRole("checkbox"));
+  await user.click(within(section).getByRole("button", { name: "Recover repository creation" }));
+  await screen.findByText(/creation result is unknown/);
+  expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("recoverable", true);
+  expect(screen.queryByText(/is ready in your repositories/)).toBeNull();
+});
+it.each(["Kelvin", "\u00a0Sample\u00a0"])(
+  "rejects non-ASCII repository input %s before normalization in creation and rename controls",
+  async (name) => {
+    const api = managementApi();
+    const { user } = await open(api);
+    const form = screen.getByRole("form", { name: "Create repository" });
+    await user.type(within(form).getByLabelText("Repository name"), name);
+    await user.click(within(form).getByRole("checkbox"));
+    const create = within(form).getByRole("button");
+    expect(create).toHaveProperty("disabled", true);
+    fireEvent.click(create);
+    const panel = screen.getByRole("region", { name: `Manage ${repository.name}` });
+    const rename = within(panel).getByLabelText("Repository name");
+    await user.clear(rename);
+    await user.type(rename, name);
+    const save = within(panel).getByRole("button", { name: "Save repository details" });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.click(save);
+    expect(api.createRepository).not.toHaveBeenCalled();
+    expect(api.updateRepository).not.toHaveBeenCalled();
+  },
+);

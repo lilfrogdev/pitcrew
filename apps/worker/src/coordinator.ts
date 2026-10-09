@@ -1,3 +1,4 @@
+import { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
 import { validateMentions } from "./mentions";
 import type { ConversationTurn, ConversationInput } from "./conversation";
 import type { ModelCatalog } from "./model-selection";
@@ -181,17 +182,35 @@ export class Coordinator {
     email: string,
     configuration?: Pick<Project, "baseSha" | "configurationRevision">,
     profile?: import("./collaboration").Identity,
-    metadata?: { displayName: string; description: string },
+    metadata?: { displayName: string; description: string; logicalName?: string },
+    projectId?: string,
   ) {
     return this.durableUpdate(() => {
       const directory = (this.state.ownedProjects ??= {});
-      if (Object.values(directory).some((entry) => entry.sourceId === sourceId))
+      if (
+        Object.values(directory).some(
+          (entry) => entry.sourceId === sourceId || entry.sourceName === sourceName,
+        )
+      )
         throw new AdmissionError("repository_already_registered", 409);
+      const logicalName = logicalRepositoryName(metadata?.logicalName ?? sourceName);
+      if (
+        Object.values(directory).some(
+          (entry) =>
+            entry.ownerActor === actor &&
+            entry.state.repositoryLifecycle !== "deleted" &&
+            (entry.state.project.logicalName ?? logicalRepositoryName(entry.sourceName)) ===
+              logicalName,
+        )
+      )
+        throw new AdmissionError("repository_exists", 409);
       if (Object.keys(directory).length >= 20) throw new AdmissionError("capacity", 429);
-      const id = this.id();
+      const id = projectId ?? this.id();
+      if (directory[id]) throw new AdmissionError("repository_identity_changed", 409);
       const projectState = initialState({
         id,
         name: metadata?.displayName ?? sourceName,
+        ...(metadata?.logicalName ? { logicalName } : {}),
         ...(metadata ? { description: metadata.description, metadataRevision: 0 } : {}),
         repository: `artifact:${sourceName}`,
         // An empty source has no commit. Execution remains gated until an
@@ -233,11 +252,18 @@ export class Coordinator {
         throw new AdmissionError("repository_storage_limit", 413);
     });
   }
-  updateRepositoryMetadata(displayName: string, description: string, expectedRevision?: number) {
+  updateRepositoryMetadata(
+    displayName: string,
+    description: string,
+    expectedRevision?: number,
+    logicalName?: string,
+  ) {
     return this.durableUpdate(() => {
       const revision = this.state.project.metadataRevision ?? 0;
       if (expectedRevision !== undefined && expectedRevision !== revision)
         throw new AdmissionError("revision_conflict", 409);
+      if (logicalName !== undefined)
+        this.state.project.logicalName = logicalRepositoryName(logicalName);
       this.state.project.name = displayName;
       this.state.project.description = description;
       this.state.project.metadataRevision = revision + 1;

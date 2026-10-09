@@ -11,7 +11,7 @@ type FakeRepository = {
   tokens: { id: string; state: "active" | "revoked" }[];
 };
 type Behavior = {
-  create?: "ambiguous" | "wrong_name" | "error";
+  create?: "ambiguous" | "wrong_name" | "error" | "already_exists";
   infoError?: boolean;
   logError?: boolean;
   emptyHeadNotFound?: boolean;
@@ -36,6 +36,10 @@ export class RepositoryManagementFixture extends PasswordRepositoryFixture {
     );
     const approval = this.read<{ actor?: string; name?: string }>("approval");
     if (approval) this.applyApproval(approval.actor, approval.name);
+    const adoption = this.read<{ actor: string; name: string; repositoryId: string }>(
+      "adoption_approval",
+    );
+    if (adoption) this.applyAdoption(adoption.actor, adoption.name, adoption.repositoryId);
     this.management(this.read<boolean>("management") ?? false);
     this.deletion(this.read<boolean | "disabled">("deletion_enabled") ?? false);
     const source = this.read<string>("configured_root_source");
@@ -51,6 +55,18 @@ export class RepositoryManagementFixture extends PasswordRepositoryFixture {
         await this.wait("create");
         const behavior = this.behavior();
         if (behavior.create === "error") throw new Error("synthetic_create_failed");
+        if (behavior.create === "already_exists") {
+          this.write("repo:" + name, {
+            id: "synthetic-foreign-existing_" + name,
+            name,
+            readOnly: false,
+            defaultBranch: "main",
+            tokens: [{ id: "foreign-sole-token", state: "active" }],
+          } satisfies FakeRepository);
+          throw Object.assign(Error("ALREADY_EXISTS: synthetic physical conflict"), {
+            code: "ALREADY_EXISTS",
+          });
+        }
         if (this.read<FakeRepository>("repo:" + name))
           throw Object.assign(new Error("ALREADY_EXISTS"), { code: "ALREADY_EXISTS" });
         const repo: FakeRepository = {
@@ -170,6 +186,15 @@ export class RepositoryManagementFixture extends PasswordRepositoryFixture {
   approve(actor?: string, name = "approved-new-repo") {
     this.write("approval", { actor, name });
     this.applyApproval(actor, name);
+  }
+  private applyAdoption(actor: string, name: string, repositoryId: string) {
+    this.env.ADOPT_ACCOUNT_ACTOR = actor;
+    this.env.ADOPT_REPOSITORY_NAME = name;
+    this.env.ADOPT_REPOSITORY_ID = repositoryId;
+  }
+  approveAdoption(actor: string, name: string, repositoryId: string) {
+    this.write("adoption_approval", { actor, name, repositoryId });
+    this.applyAdoption(actor, name, repositoryId);
   }
   physicalRepository(name: string, id = "external-immutable-id") {
     this.write("repo:" + name, {

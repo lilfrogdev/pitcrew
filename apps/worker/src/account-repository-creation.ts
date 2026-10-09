@@ -1,4 +1,8 @@
-import { repositoryName, type LifecycleRecord } from "./repository-lifecycle";
+import {
+  repositoryName,
+  logicalRepositoryName,
+  type LifecycleRecord,
+} from "./repository-lifecycle";
 
 export class RepositoryCreationError extends Error {
   constructor(
@@ -140,7 +144,7 @@ export async function readRepositoryCreation(request: Request, broad = false) {
     throw new RepositoryCreationError("credential_consent_required", 400);
   let name: string;
   try {
-    name = repositoryName(body.name);
+    name = broad ? logicalRepositoryName(body.name) : repositoryName(body.name);
   } catch {
     throw new RepositoryCreationError("invalid_name", 400);
   }
@@ -165,7 +169,8 @@ export function creationProjection(record: LifecycleRecord, projectId?: string) 
           ? "cleanup_required"
           : "pending";
   return {
-    name: record.name,
+    name: record.logicalName ?? record.name,
+    ...(record.logicalName ? { logicalName: record.logicalName, repositoryName: record.name } : {}),
     status,
     ...(record.id ? { repositoryId: record.id } : {}),
     ...(status === "ready" ? { projectId } : {}),

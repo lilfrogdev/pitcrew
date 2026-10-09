@@ -1,8 +1,11 @@
 // Bounded synthetic transport for the real browser HTTP adapter. No cloud calls.
+import { randomUUID } from "node:crypto";
+
 export function createFixture() {
   const owner = {
     projectId: "qa-owner",
     name: "Owner display",
+    logicalName: "owner-logical",
     repositoryName: "owner-physical",
     repositoryId: "qa-repository-id",
     description: "Original description",
@@ -16,6 +19,7 @@ export function createFixture() {
     ...owner,
     projectId: "qa-editor",
     name: "Editor display",
+    logicalName: "editor-logical",
     repositoryName: "editor-physical",
     repositoryId: "qa-editor-id",
     role: "editor",
@@ -25,6 +29,7 @@ export function createFixture() {
     ...owner,
     projectId: "qa-external",
     name: "External display",
+    logicalName: "external-logical",
     repositoryName: "external-physical",
     repositoryId: "qa-external-id",
     deletable: false,
@@ -41,6 +46,10 @@ export function createFixture() {
   const reset = (scenario = "normal", deleteEnabled = false) =>
     (state = {
       scenario,
+      activeOwner: "a",
+      projectOwners: { "qa-owner": "a", "qa-editor": "a", "qa-external": "a" },
+      creationOwners: {},
+      pendingProjects: {},
       deleteCapability:
         deleteEnabled === true && scenario !== "delete-off" && scenario !== "gate-off",
       repositories: structuredClone([owner, editor, external]),
@@ -52,6 +61,7 @@ export function createFixture() {
       ],
       calls: [],
       deletes: 0,
+      deleteCounts: {},
       held: [],
     });
   reset();
@@ -84,16 +94,47 @@ export function createFixture() {
         state.deleteCapability = body.enabled === true;
         return json(res, { ok: true });
       }
+      if (path === "/fixture/seed-ready") {
+        // Another synthetic tab completed an intent after this UI's prior discovery.
+        const logicalName = body.logicalName.trim().toLowerCase();
+        const projectId = randomUUID();
+        const repositoryName = `${logicalName.slice(0, 30)}-${projectId.replaceAll("-", "")}`;
+        const item = {
+          ...owner,
+          projectId,
+          logicalName,
+          repositoryName,
+          repositoryId: `qa-provider-${projectId}`,
+          name: body.displayName,
+          description: "Synthetic concurrent intent",
+        };
+        state.repositories.push(item);
+        state.projectOwners[projectId] = state.activeOwner;
+        state.pendingProjects[repositoryName] = structuredClone(item);
+        state.creationOwners[repositoryName] = state.activeOwner;
+        state.creations.push({
+          name: logicalName,
+          logicalName,
+          repositoryName,
+          repositoryId: item.repositoryId,
+          projectId,
+          status: "ready",
+        });
+        return json(res, { ok: true });
+      }
       if (path === "/fixture/switch") {
-        state.repositories = [
-          {
+        state.activeOwner = body.owner ?? "b";
+        if (state.activeOwner === "b" && !state.projectOwners["qa-second-account"]) {
+          state.repositories.push({
             ...owner,
             projectId: "qa-second-account",
             name: "Second account repository",
+            logicalName: "second-account-logical",
             repositoryName: "second-account-physical",
             repositoryId: "qa-second-account-id",
-          },
-        ];
+          });
+          state.projectOwners["qa-second-account"] = "b";
+        }
         return json(res, { ok: true });
       }
       if (path === "/fixture/state") return json(res, { ...state, held: state.held.length });
@@ -103,16 +144,24 @@ export function createFixture() {
       if (path === "/api/project-adoptions") return json(res, []);
       if (path === "/api/repository-creations")
         return json(res, {
-          approval: null,
-          creations: state.creations,
+          approval:
+            state.scenario === "legacy-approved" ? { name: "legacy-approved-physical" } : null,
+          creations: state.creations.filter(
+            (record) =>
+              state.creationOwners[record.repositoryName ?? record.name] === state.activeOwner,
+          ),
           capabilities: {
-            create: state.scenario !== "gate-off",
-            manage: state.scenario !== "gate-off",
+            create: !["gate-off", "legacy-approved"].includes(state.scenario),
+            manage: !["gate-off", "legacy-approved"].includes(state.scenario),
             ...(state.scenario === "delete-omitted" ? {} : { delete: state.deleteCapability }),
           },
         });
       if (path === "/api/repositories") {
-        const snapshot = structuredClone(state.repositories.filter((x) => x.status !== "deleted"));
+        const snapshot = structuredClone(
+          state.repositories.filter(
+            (x) => x.status !== "deleted" && state.projectOwners[x.projectId] === state.activeOwner,
+          ),
+        );
         if (state.scenario === "late-read") {
           state.scenario = "normal";
           // Send no-store admission immediately; hold only the JSON body. Otherwise
@@ -129,23 +178,62 @@ export function createFixture() {
       if (path === "/api/repositories/create") {
         if (state.scenario === "create-failure")
           return json(res, { diagnostic: "private-provider-diagnostic" }, 503);
-        const suffix = state.creations.length ? `-${state.creations.length + 1}` : "";
+        const proposedName = body.name.trim();
+        if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(proposedName)) return json(res, {}, 400);
+        const logicalName = proposedName.toLowerCase();
+        const activeCreation = state.creations.find(
+          (record) =>
+            (record.logicalName ?? record.name) === logicalName &&
+            record.status !== "deleted" &&
+            state.creationOwners[record.repositoryName ?? record.name] === state.activeOwner,
+        );
+        if (activeCreation?.status === "deleting")
+          return json(res, { error: "repository_exists" }, 409);
+        if (activeCreation?.status === "ready") return json(res, activeCreation, 200);
+        if (
+          state.repositories.some(
+            (item) =>
+              state.projectOwners[item.projectId] === state.activeOwner &&
+              item.logicalName === logicalName &&
+              item.status !== "deleted",
+          ) &&
+          !activeCreation
+        )
+          return json(res, { error: "repository_exists" }, 409);
+        const prior = activeCreation && state.pendingProjects[activeCreation.repositoryName];
+        // Persist a stable intent before simulating any provider result.
+        const projectId = prior?.projectId ?? randomUUID();
+        const repositoryName =
+          prior?.repositoryName ?? `${logicalName.slice(0, 30)}-${projectId.replaceAll("-", "")}`;
+        const legacy = state.scenario === "legacy-approved";
         const item = {
           ...owner,
-          projectId: `qa-created${suffix}`,
-          repositoryId: `qa-created-id${suffix}`,
-          repositoryName: body.name,
-          name: body.displayName,
-          description: body.description,
+          projectId,
+          repositoryId: prior?.repositoryId ?? `qa-provider-${projectId}`,
+          logicalName,
+          repositoryName: legacy ? logicalName : repositoryName,
+          name: prior?.name ?? body.displayName ?? logicalName,
+          description: prior?.description ?? body.description ?? "",
         };
-        state.repositories.push(item);
         const creation = {
-          name: body.name,
+          name: logicalName,
+          ...(!legacy ? { logicalName, repositoryName: item.repositoryName } : {}),
           repositoryId: item.repositoryId,
-          projectId: item.projectId,
           status: "ready",
+          projectId: item.projectId,
         };
-        state.creations.push(creation);
+        state.pendingProjects[item.repositoryName] = structuredClone(item);
+        state.creationOwners[item.repositoryName] = state.activeOwner;
+        if (state.scenario === "registration-recovery" && !activeCreation) {
+          creation.status = "registration_required";
+          delete creation.projectId;
+          state.creations.push(creation);
+          return json(res, creation, 202);
+        }
+        if (activeCreation) state.creations[state.creations.indexOf(activeCreation)] = creation;
+        else state.creations.push(creation);
+        state.repositories.push(item);
+        state.projectOwners[item.projectId] = state.activeOwner;
         return json(res, creation, 200);
       }
       const match = path.match(/^\/api\/projects\/([^/]+)\/(.*)$/);
@@ -156,12 +244,44 @@ export function createFixture() {
       if (tail === "repository" && req.method === "PATCH") {
         if (state.scenario === "edit-conflict")
           return json(res, { diagnostic: "private-provider-diagnostic" }, 409);
+        const proposedName = (body.logicalName ?? item.logicalName).trim();
+        if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(proposedName)) return json(res, {}, 400);
+        const logicalName = proposedName.toLowerCase();
+        if (
+          state.repositories.some(
+            (other) =>
+              other.projectId !== item.projectId &&
+              state.projectOwners[other.projectId] === state.activeOwner &&
+              other.logicalName === logicalName &&
+              other.status !== "deleted",
+          )
+        )
+          return json(res, { error: "repository_exists" }, 409);
+        if (
+          state.creations.some(
+            (record) =>
+              record.repositoryName !== item.repositoryName &&
+              state.creationOwners[record.repositoryName ?? record.name] === state.activeOwner &&
+              (record.logicalName ?? record.name) === logicalName &&
+              record.status !== "deleted",
+          )
+        )
+          return json(res, { error: "repository_exists" }, 409);
+        item.logicalName = logicalName;
+        const creation = state.creations.find(
+          (record) => record.repositoryName === item.repositoryName,
+        );
+        if (creation) {
+          creation.logicalName = logicalName;
+          creation.name = logicalName;
+        }
         item.name = body.displayName;
         item.description = body.description;
         item.metadataRevision++;
         return json(res, {
           id: item.projectId,
           name: item.name,
+          logicalName: item.logicalName,
           description: item.description,
           metadataRevision: item.metadataRevision,
           repository: `artifact:${item.repositoryName}`,
@@ -171,12 +291,15 @@ export function createFixture() {
         state.deletes++;
         if (state.scenario === "delete-failure")
           return json(res, { diagnostic: "private-provider-diagnostic" }, 503);
-        item.status = state.deletes === 1 ? "deleting" : "deleted";
+        state.deleteCounts[item.repositoryName] =
+          (state.deleteCounts[item.repositoryName] ?? 0) + 1;
+        item.status = state.deleteCounts[item.repositoryName] === 1 ? "deleting" : "deleted";
         item.lifecycle = item.status;
         item.deletable = false;
         const creation = state.creations.find(
           (record) =>
-            record.name === item.repositoryName && record.repositoryId === item.repositoryId,
+            (record.repositoryName ?? record.name) === item.repositoryName &&
+            record.repositoryId === item.repositoryId,
         );
         if (creation) creation.status = item.status;
         return json(res, item, item.status === "deleting" ? 202 : 200);

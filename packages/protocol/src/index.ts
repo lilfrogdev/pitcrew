@@ -13,6 +13,8 @@ import type { ModelSelection, ModelSettings, FrozenRunModels } from "./models.ts
 import type { MessageAttachment, SubmittedAttachment } from "./attachments.ts";
 import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
 export interface Project {
+  /** Canonical account-local name; provider identity is kept separately. */
+  logicalName?: string;
   /** Local labels; the physical repository identity remains immutable. */
   description?: string;
   metadataRevision?: number;

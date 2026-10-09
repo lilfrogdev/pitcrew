@@ -1,8 +1,14 @@
+import { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
+export { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
 import { normalizePublicRepositoryImportUrl } from "../../../packages/protocol/src/repository-import-url.mjs";
 
 /** Metadata only. No creation token is stored, returned, or used for Git. */
 export type LifecycleRecord = {
   ownerActor?: string;
+  /** Account-local canonical name; `name` remains the immutable provider name. */
+  logicalName?: string;
+  /** Allocated before provisioning and reused by project registration. */
+  projectId?: string;
   displayName?: string;
   description?: string;
   name: string;
@@ -39,6 +45,13 @@ export class RepositoryLifecycle {
     private binding: Binding,
     private store: LifecycleStore,
     private referenced: (name: string) => boolean,
+    private registrations: () => {
+      ownerActor: string;
+      name: string;
+      logicalName: string;
+      projectId?: string;
+      deleted: boolean;
+    }[] = () => [],
   ) {}
   /** Native discovery never lists namespace-wide or another account's records. */
   ownedCreations(ownerActor: string) {
@@ -251,91 +264,227 @@ export class RepositoryLifecycle {
     this.store.put(record);
     return record;
   }
+  logicalCreation(ownerActor: string, logicalName: string) {
+    return this.store
+      .list()
+      .find(
+        (record) =>
+          record.ownerActor === ownerActor &&
+          record.operation === "create" &&
+          record.status !== "deleted" &&
+          (record.logicalName ?? logicalRepositoryName(record.name)) === logicalName,
+      );
+  }
+  /** Called synchronously at admission/registration, inside their authority transaction. */
+  assertLogicalNameAvailable(ownerActor: string, logicalName: string, exceptName?: string) {
+    logicalName = logicalRepositoryName(logicalName);
+    const occupied =
+      this.store
+        .list()
+        .some(
+          (record) =>
+            record.ownerActor === ownerActor &&
+            record.name !== exceptName &&
+            record.status !== "deleted" &&
+            (record.logicalName ?? logicalRepositoryName(record.name)) === logicalName,
+        ) ||
+      this.registrations().some(
+        (record) =>
+          record.ownerActor === ownerActor &&
+          record.name !== exceptName &&
+          !record.deleted &&
+          record.logicalName === logicalName,
+      );
+    if (occupied) throw Error("repository_exists");
+  }
+  provisionLogical(
+    logicalName: string,
+    ownerActor: string,
+    metadata: { displayName: string; description: string },
+    admission: (commit: () => void) => Promise<void>,
+  ) {
+    logicalName = logicalRepositoryName(logicalName);
+    return this.exclusive(async () => {
+      const existing = this.logicalCreation(ownerActor, logicalName);
+      if (existing) {
+        await admission(() => {});
+        if (existing.status === "deleting") throw Error("deletion_pending");
+        return existing;
+      }
+      this.assertLogicalNameAvailable(ownerActor, logicalName);
+      const projectId = crypto.randomUUID();
+      if (
+        this.store.list().some((record) => record.projectId === projectId) ||
+        this.registrations().some((record) => record.projectId === projectId)
+      )
+        throw Error("repository_identity_changed");
+      const name = `${logicalName.slice(0, 30)}-${projectId.replaceAll("-", "")}`;
+      return this.provisionInside(
+        name,
+        "create",
+        undefined,
+        ownerActor,
+        undefined,
+        { ...metadata, logicalName, projectId },
+        admission,
+      );
+    });
+  }
+  renameLogical<T>(
+    name: string,
+    id: string,
+    ownerActor: string,
+    logicalName: string,
+    admission: (commit: () => void) => Promise<T>,
+  ) {
+    logicalName = logicalRepositoryName(logicalName);
+    return this.exclusive(async () => {
+      const record = this.store.get(name);
+      if (
+        record &&
+        (record.ownerActor !== ownerActor || record.id !== id || record.status !== "ready")
+      )
+        throw Error("repository_protected");
+      if (!record && this.store.list().length >= 200) throw Error("lifecycle_limit");
+      return admission(() => {
+        this.assertLogicalNameAvailable(ownerActor, logicalName, name);
+        this.store.put({
+          ...(record ?? {
+            name,
+            id,
+            ownerActor,
+            operation: "adopt" as const,
+            status: "ready" as const,
+          }),
+          logicalName,
+        });
+      });
+    });
+  }
   provision(
     name: string,
     operation: "create" | "import",
     source?: string,
     ownerActor?: string,
     beforeCreate?: () => Promise<void>,
-    metadata?: { displayName: string; description: string },
+    metadata?: {
+      displayName: string;
+      description: string;
+      logicalName?: string;
+      projectId?: string;
+    },
   ) {
-    return this.exclusive(async () => {
-      const existing = this.store.get(name);
-      if (existing && existing.ownerActor !== ownerActor) throw Error("not_found");
-      // Never retry an ambiguous creation or replace a deleted/existing name.
-      if (existing) {
-        if (existing.status === "deleted") throw Error("repository_name_retired");
-        if (existing.status === "deleting") throw Error("deletion_pending");
-        if (existing.operation !== operation || existing.source !== source)
-          throw Error("repository_exists");
-        return existing;
-      }
-      if (this.referenced(name)) throw Error("repository_protected");
-      if (this.store.list().length >= 200) throw Error("lifecycle_limit");
-      let cursor: string | undefined;
-      for (let page = 0; page < 20; page++) {
-        const listed = await this.binding.list({ limit: 200, cursor });
-        if (listed.repos.some((repo) => repo.name === name)) throw Error("repository_exists");
-        cursor = listed.cursor;
-        if (!cursor) break;
-      }
-      if (cursor) throw Error("namespace_limit");
-      // Session/approval may be revoked while collision metadata is awaited.
-      // Fence before the durable pending intent and the one external create.
-      await beforeCreate?.();
-      const record: LifecycleRecord = {
-        name,
-        operation,
-        ...(ownerActor ? { ownerActor } : {}),
-        ...(source ? { source } : {}),
-        ...metadata,
-        status: "pending",
-      };
-      this.store.put(record);
-      try {
-        let created: ArtifactsCreateRepoResult;
-        if (operation === "import") {
-          // Public GitHub URL only, depth one, read-only; no credentials accepted.
-          created = await this.binding.import({
-            source: { url: source!, depth: 1 },
-            target: { name, opts: { readOnly: true } },
-          });
-        } else {
-          created = await this.binding.create(name, { readOnly: true, setDefaultBranch: "main" });
-        }
-        if (
-          created.name !== name ||
-          typeof created.id !== "string" ||
-          !/^[A-Za-z0-9_-]{1,128}$/.test(created.id)
-        )
-          throw Error();
-        record.id = created.id;
-        record.status = "cleanup_required";
-        this.store.put(record);
-      } catch (error) {
-        const code = serviceCode(error);
-        const issue =
-          code === "ALREADY_EXISTS"
-            ? "repository_exists"
-            : operation === "import"
-              ? (
-                  {
-                    REMOTE_AUTH_REQUIRED: "import_source_authentication_required",
-                    NOT_FOUND: "import_source_not_found",
-                    MEMORY_LIMIT: "import_limit_exceeded",
-                  } as Record<string, string>
-                )[code ?? ""]
-              : undefined;
-        // Even a recognized error may follow partial provisioning. Preserve
-        // quarantine and require investigation; do not resubmit or infer ownership.
-        if (issue) record.issue = issue;
-        // Outcome may be ambiguous. Do not clean up an existing external repo.
-        this.store.put({ ...record, status: "pending" });
-        return { ...record, status: "pending" as const };
-      }
-      return this.cleanup(record);
-    });
+    return this.exclusive(() =>
+      this.provisionInside(name, operation, source, ownerActor, beforeCreate, metadata),
+    );
   }
+  private async provisionInside(
+    name: string,
+    operation: "create" | "import",
+    source?: string,
+    ownerActor?: string,
+    beforeCreate?: () => Promise<void>,
+    metadata?: {
+      displayName: string;
+      description: string;
+      logicalName?: string;
+      projectId?: string;
+    },
+    authoritativeAdmission?: (commit: () => void) => Promise<void>,
+  ) {
+    const existing = this.store.get(name);
+    if (existing && existing.ownerActor !== ownerActor) throw Error("not_found");
+    // Never retry an ambiguous creation or replace a deleted/existing name.
+    if (existing) {
+      if (
+        metadata?.projectId &&
+        (existing.projectId !== metadata.projectId || existing.logicalName !== metadata.logicalName)
+      )
+        throw Error("repository_identity_changed");
+      if (existing.status === "deleted") throw Error("repository_name_retired");
+      if (existing.status === "deleting") throw Error("deletion_pending");
+      if (existing.operation !== operation || existing.source !== source)
+        throw Error("repository_exists");
+      return existing;
+    }
+    if (this.referenced(name)) throw Error("repository_protected");
+    if (this.store.list().length >= 200) throw Error("lifecycle_limit");
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const listed = await this.binding.list({ limit: 200, cursor });
+      if (listed.repos.some((repo) => repo.name === name)) throw Error("repository_exists");
+      cursor = listed.cursor;
+      if (!cursor) break;
+    }
+    if (cursor) throw Error("namespace_limit");
+    // Session/approval may be revoked while collision metadata is awaited.
+    // Fence before the durable pending intent and the one external create.
+    const record: LifecycleRecord = {
+      name,
+      operation,
+      ...(ownerActor ? { ownerActor } : {}),
+      ...(source ? { source } : {}),
+      ...metadata,
+      status: "pending",
+    };
+    const commit = () => {
+      if (ownerActor?.startsWith("account:"))
+        this.assertLogicalNameAvailable(
+          ownerActor,
+          record.logicalName ?? logicalRepositoryName(name),
+          name,
+        );
+      this.store.put(record);
+    };
+    if (authoritativeAdmission) await authoritativeAdmission(commit);
+    else {
+      await beforeCreate?.();
+      commit();
+    }
+    try {
+      let created: ArtifactsCreateRepoResult;
+      if (operation === "import") {
+        // Public GitHub URL only, depth one, read-only; no credentials accepted.
+        created = await this.binding.import({
+          source: { url: source!, depth: 1 },
+          target: { name, opts: { readOnly: true } },
+        });
+      } else {
+        created = await this.binding.create(name, { readOnly: true, setDefaultBranch: "main" });
+      }
+      if (
+        created.name !== name ||
+        typeof created.id !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(created.id)
+      )
+        throw Error();
+      record.id = created.id;
+      record.status = "cleanup_required";
+      this.store.put(record);
+    } catch (error) {
+      const code = serviceCode(error);
+      const issue =
+        code === "ALREADY_EXISTS"
+          ? "repository_exists"
+          : operation === "import"
+            ? (
+                {
+                  REMOTE_AUTH_REQUIRED: "import_source_authentication_required",
+                  NOT_FOUND: "import_source_not_found",
+                  MEMORY_LIMIT: "import_limit_exceeded",
+                } as Record<string, string>
+              )[code ?? ""]
+            : undefined;
+      // Even a recognized error may follow partial provisioning. Preserve
+      // quarantine and require investigation; do not resubmit or infer ownership.
+      if (issue) record.issue = issue;
+      // Outcome may be ambiguous. Do not clean up an existing external repo.
+      this.store.put({ ...record, status: "pending" });
+      return { ...record, status: "pending" as const };
+    }
+    return this.cleanup(record);
+  }
+
   reconcile(name: string, ownerActor?: string) {
     return this.exclusive(async () => {
       const record = this.store.get(name);

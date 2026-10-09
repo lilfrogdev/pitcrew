@@ -905,3 +905,151 @@ it("defaults an omitted independent delete capability to false and rejects malfo
     await expect(httpApi.collaboration!.repositoryCreations!()).rejects.toEqual(new ApiError(0));
   }
 });
+
+it("normalizes broad logical creation names while preserving the generated physical identity and safe namespace metadata", async () => {
+  const result = {
+    ...createdRepository,
+    name: "sample",
+    logicalName: "sample",
+    repositoryName: `sample-${"a".repeat(32)}`,
+  };
+  const fetch = vi.fn(async (path: string) =>
+    path === "/api/local-session"
+      ? Response.json({ nonce: null })
+      : Response.json({ ...result, token: "private" }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect(
+    await httpApi.collaboration!.createRepository!("  SaMpLe  ", true, {
+      displayName: "Label",
+      description: "",
+    }),
+  ).toEqual(result);
+  expect(fetch.mock.calls.at(-1)).toEqual([
+    "/api/repositories/create",
+    expect.objectContaining({
+      body: JSON.stringify({
+        name: "sample",
+        credentialConsent: true,
+        displayName: "Label",
+        description: "",
+      }),
+    }),
+  ]);
+});
+it("keeps retired and recreated logical names distinct by physical identity and rejects inconsistent logical metadata", async () => {
+  const old = {
+    name: "sample",
+    logicalName: "sample",
+    repositoryName: `sample-${"a".repeat(32)}`,
+    repositoryId: "old-provider",
+    status: "deleted",
+  };
+  const active = {
+    ...createdRepository,
+    name: "sample",
+    logicalName: "sample",
+    repositoryName: `sample-${"b".repeat(32)}`,
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        approval: null,
+        capabilities: { create: true, manage: true, delete: false },
+        creations: [old, active],
+      }),
+    ),
+  );
+  expect((await httpApi.collaboration!.repositoryCreations!()).creations).toEqual([old, active]);
+  for (const creations of [
+    [old, { ...active, repositoryName: old.repositoryName }],
+    [{ ...active, logicalName: "different" }],
+    [{ ...active, repositoryName: undefined }],
+    [{ ...active, logicalName: "SAMPLE" }],
+  ]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ approval: null, creations })),
+    );
+    await expect(httpApi.collaboration!.repositoryCreations!()).rejects.toEqual(new ApiError(0));
+  }
+});
+it("normalizes logical rename PATCH input and surfaces only recognized conflict codes", async () => {
+  const fetch = vi.fn(async (path: string) =>
+    path === "/api/local-session"
+      ? Response.json({ nonce: null })
+      : Response.json({
+          id: "project",
+          logicalName: "new-name",
+          repository: "artifact:unchanged-physical",
+        }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  await httpApi.collaboration!.updateRepository!("project", {
+    logicalName: " New-Name ",
+    displayName: "Display",
+    description: "",
+    expectedRevision: 2,
+  });
+  expect(fetch.mock.calls.at(-1)).toEqual([
+    "/api/projects/project/repository",
+    expect.objectContaining({
+      method: "PATCH",
+      body: JSON.stringify({
+        logicalName: "new-name",
+        displayName: "Display",
+        description: "",
+        expectedRevision: 2,
+      }),
+    }),
+  ]);
+  for (const code of ["repository_exists", "revision_conflict", "private provider diagnostic"]) {
+    withSession(async () => Response.json({ error: code, token: "private" }, { status: 409 }));
+    await expect(
+      httpApi.collaboration!.updateRepository!("project", {
+        logicalName: "new-name",
+        displayName: "Display",
+        description: "",
+      }),
+    ).rejects.toEqual(
+      new ApiError(
+        409,
+        code === "private provider diagnostic" ? undefined : (code as ApiError["code"]),
+      ),
+    );
+  }
+});
+it("rejects invalid logical names before create or rename admission", async () => {
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  for (const name of ["a_b", "-start", "x".repeat(64), "\u00a0sample\u00a0", "éclair", "Kelvin"]) {
+    await expect(
+      httpApi.collaboration!.createRepository!(name, true, {
+        displayName: "Display",
+        description: "",
+      }),
+    ).rejects.toEqual(new ApiError(400));
+    await expect(
+      httpApi.collaboration!.updateRepository!("project", {
+        logicalName: name,
+        displayName: "Display",
+        description: "",
+      }),
+    ).rejects.toEqual(new ApiError(400));
+  }
+  expect(fetch).not.toHaveBeenCalled();
+});
+it("reads canonical logical names in directory and status while continuing to accept legacy physical fallbacks", async () => {
+  const status = { ...repositoryTargetStatus, logicalName: "logical-sample" };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) =>
+      Response.json(path.endsWith("/repository") ? status : { repositories: [status] }),
+    ),
+  );
+  expect((await httpApi.collaboration!.repositories())[0].logicalName).toBe("logical-sample");
+  expect((await httpApi.collaboration!.repositoryStatus!("project/id")).logicalName).toBe(
+    "logical-sample",
+  );
+});

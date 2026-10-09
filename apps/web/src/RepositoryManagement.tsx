@@ -6,6 +6,7 @@ import {
   type Member,
   type SharedRepository,
 } from "./api";
+import { canonicalRepositoryName } from "./repository-names";
 import styles from "./Repositories.module.css";
 
 /** One resource owns its drafts, ephemeral invitation link, and mutation guard. */
@@ -21,6 +22,8 @@ export function RepositoryManagement({
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [logicalName, setLogicalName] = useState(item.logicalName ?? item.repositoryName ?? "");
+  const canonicalName = canonicalRepositoryName(logicalName);
   const [displayName, setDisplayName] = useState(item.name);
   const [description, setDescription] = useState(item.description ?? "");
   const [confirmation, setConfirmation] = useState("");
@@ -58,6 +61,7 @@ export function RepositoryManagement({
     setNotice("");
     setConfirmation("");
     setDeleteOpen(false);
+    setLogicalName(item.logicalName ?? item.repositoryName ?? "");
     setDisplayName(item.name);
     setDescription(item.description ?? "");
     setDeleting(item.status === "deleting");
@@ -75,6 +79,7 @@ export function RepositoryManagement({
     item.projectId,
     item.repositoryId,
     item.repositoryName,
+    item.logicalName,
     item.name,
     item.description,
     item.status,
@@ -115,9 +120,11 @@ export function RepositoryManagement({
     } catch (cause) {
       if (alive(version))
         setError(
-          cause instanceof ApiError && cause.status === 409
-            ? "This repository changed. Refresh repositories before trying again."
-            : failure,
+          cause instanceof ApiError && cause.code === "repository_exists"
+            ? "This repository name is already used in your account. Choose another name, then save again."
+            : cause instanceof ApiError && cause.status === 409
+              ? "This repository changed. Refresh repositories before trying again."
+              : failure,
         );
     } finally {
       if (alive(version)) {
@@ -231,7 +238,7 @@ export function RepositoryManagement({
         <div className={styles.form}>
           <h3>Repository settings</h3>
           <dl className={styles.approvalTarget}>
-            <dt>Permanent repository name</dt>
+            <dt>Physical repository name (permanent)</dt>
             <dd>{item.repositoryName ?? "Unavailable"}</dd>
             <dt>Repository ID</dt>
             <dd>{item.repositoryId ?? "Unavailable"}</dd>
@@ -246,11 +253,18 @@ export function RepositoryManagement({
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
-                  if (unavailable || !displayName.trim() || !api.updateRepository || !targetReady)
+                  if (
+                    unavailable ||
+                    !canonicalName ||
+                    !displayName.trim() ||
+                    !api.updateRepository ||
+                    !targetReady
+                  )
                     return;
                   const version = generation.current;
                   void mutate(async () => {
                     const result = await api.updateRepository!(item.projectId, {
+                      logicalName: canonicalName,
                       displayName: displayName.trim(),
                       description: description.trim(),
                       expectedRevision: item.metadataRevision ?? 0,
@@ -265,6 +279,22 @@ export function RepositoryManagement({
                   });
                 }}
               >
+                <label>
+                  Repository name
+                  <input
+                    value={logicalName}
+                    required
+                    disabled={unavailable}
+                    autoCapitalize="none"
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setLogicalName(event.target.value)}
+                  />
+                </label>
+                <p className={styles.note}>
+                  Unique within your account and saved in lowercase. Renaming keeps the physical
+                  name, repository ID and history.
+                </p>
                 <label>
                   Display name
                   <input
@@ -285,12 +315,16 @@ export function RepositoryManagement({
                   />
                 </label>
                 <p className={styles.note}>
-                  Changing the display name keeps the permanent repository name and ID.
+                  Display names are labels and do not need to be unique.
                 </p>
                 <button
                   type="submit"
                   disabled={
-                    unavailable || !targetReady || !api.updateRepository || !displayName.trim()
+                    unavailable ||
+                    !canonicalName ||
+                    !targetReady ||
+                    !api.updateRepository ||
+                    !displayName.trim()
                   }
                 >
                   Save repository details
@@ -515,8 +549,9 @@ export function RepositoryManagement({
             <div>
               <p>
                 Deletion permanently removes this repository's stored files and history. Members
-                lose access, and its conversations become inaccessible. The permanent repository
-                name cannot be reused.
+                lose access, and its conversations become inaccessible. The physical name cannot be
+                reused. After deletion is confirmed, you can reuse the repository name for a new
+                repository.
               </p>
               <p>
                 Target: <strong>{item.repositoryName}</strong> · ID:{" "}
@@ -539,7 +574,7 @@ export function RepositoryManagement({
                 </>
               )}
               <label>
-                Type the permanent repository name to confirm
+                Type the physical repository name to confirm
                 <input
                   value={confirmation}
                   disabled={busy || deletionUnknown || !deletionAvailable}

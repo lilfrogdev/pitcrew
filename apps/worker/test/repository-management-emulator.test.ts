@@ -23,7 +23,17 @@ async function createOwned(
 ) {
   const record = await readyCreation(f, await f.create(name, email), name, email);
   expect(record.projectId).toEqual(expect.any(String));
-  expect(record.repositoryId).toBe("immutable-created_" + name);
+  expect(record.repositoryId).toBe("immutable-created_" + record.repositoryName);
+  if (record.logicalName !== undefined) {
+    expect(record.logicalName).toBe(name.trim().toLowerCase());
+    expect(record.projectId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(record.repositoryName).toBe(
+      record.logicalName.slice(0, 30) + "-" + record.projectId!.replaceAll("-", ""),
+    );
+    expect(record.repositoryName.length).toBeLessThanOrEqual(63);
+  }
   return record as typeof record & { projectId: string; repositoryId: string };
 }
 async function invite(
@@ -76,7 +86,7 @@ it("broad capability is off by default and does not expand the exact legacy appr
     expect(
       (
         await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, {
-          confirmation: targetName,
+          confirmation: own.repositoryName,
           repositoryId: own.repositoryId,
         })
       ).status,
@@ -112,7 +122,7 @@ it("two real accounts create independent repositories with stable ownership, ide
     const secondEntry = state.ownedProjects![second.projectId];
     expect(firstEntry.ownerActor).toBe(actors[0]);
     expect(secondEntry.ownerActor).toBe(actors[1]);
-    expect(firstEntry.sourceName).toBe(targetName);
+    expect(firstEntry.sourceName).toBe(own.repositoryName);
     expect(firstEntry.sourceId).toBe(own.repositoryId);
     expect((await f.discovery()).creations.map((record) => record.name)).toEqual([targetName]);
     expect((await f.discovery(colleagueEmail)).creations.map((record) => record.name)).toEqual([
@@ -283,7 +293,7 @@ it("only the account owner edits display metadata; concurrent revisions preserve
     expect(directory).toContainEqual(
       expect.objectContaining({
         name: winner.name,
-        repositoryName: targetName,
+        repositoryName: own.repositoryName,
         repositoryId: own.repositoryId,
         metadataRevision: 1,
       }),
@@ -372,7 +382,7 @@ it("explicit deletion freezes descendants and pending invitations, retains histo
     });
     expect(message.status).toBe(201);
     const before = await f.repository.storedState();
-    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const body = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     for (const invalid of [
       { ...body, confirmation: "Friendly initial title" },
       { ...body, actor: owner },
@@ -422,17 +432,19 @@ it("explicit deletion freezes descendants and pending invitations, retains histo
     await f.repository.releaseTransport();
     expect((await deletion).status).toBe(200);
     expect(
-      (await f.repository.repositories()).find((repo) => repo.name === targetName),
+      (await f.repository.repositories()).find((repo) => repo.name === own.repositoryName),
     ).toBeUndefined();
     const after = await f.repository.storedState();
     expect(after.ownedProjects![own.projectId].state.messages).toEqual(
       before.ownedProjects![own.projectId].state.messages,
     );
     expect(after.ownedProjects![own.projectId].state.messages[0].author!.actor).toBe(editor);
-    expect((await f.create()).status).toBe(409);
+    const recreated = await createOwned(f);
+    expect(recreated.projectId).not.toBe(own.projectId);
+    expect(recreated.repositoryName).not.toBe(own.repositoryName);
     await f.restart();
     expect((await f.request(`/threads/${child.id}/messages`)).status).toBe(404);
-    expect((await f.create()).status).toBe(409);
+    expect(await createOwned(f)).toEqual(recreated);
     expect(
       (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
     ).toBe(1);
@@ -447,21 +459,21 @@ it("cleanup failures quarantine deletion; explicit recovery cannot delete a repl
     await f.enroll();
     const own = await createOwned(f);
     // A new provider credential may be issued after creation. Deletion must clean it.
-    await f.repository.replaceRepositoryWithToken(targetName, own.repositoryId);
+    await f.repository.replaceRepositoryWithToken(own.repositoryName, own.repositoryId);
     await f.repository.configure({ revokeFailure: true });
-    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const body = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     const failed = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
     expect(failed.status, await failed.clone().text()).toBe(202);
     expect(
       (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
     ).toBe(0);
     expect((await f.request(`/projects/${own.projectId}/context`)).status).toBe(404);
-    await f.repository.replaceRepositoryWithToken(targetName, "replacement-immutable-id");
+    await f.repository.replaceRepositoryWithToken(own.repositoryName, "replacement-immutable-id");
     await f.repository.configure({});
     const recovery = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
     expect([202, 409], await recovery.clone().text()).toContain(recovery.status);
     const replacement = (await f.repository.repositories()).find(
-      (repo) => repo.name === targetName,
+      (repo) => repo.name === own.repositoryName,
     )!;
     expect(replacement.id).toBe("replacement-immutable-id");
     expect(replacement.tokens).toEqual([{ id: "replacement-sole-credential", state: "active" }]);
@@ -521,9 +533,7 @@ it("ambiguous creation never repeats the provider mutation and only explicit obs
     const retry = await f.create();
     expect([200, 202], await retry.clone().text()).toContain(retry.status);
     expect((await transportCounts(f)).creates).toBe(1);
-    expect(
-      (await f.repository.repositories()).filter((repo) => repo.name === targetName),
-    ).toHaveLength(1);
+    expect(await f.repository.repositories()).toHaveLength(1);
     expect(JSON.stringify(await f.repository.lifecycleRows())).not.toContain(
       "synthetic-creation-token-never-retain",
     );
@@ -537,7 +547,7 @@ it("failed deletion requires explicit retry and lost success can be reconciled w
   try {
     await f.enroll();
     const own = await createOwned(f);
-    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const body = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     await f.repository.configure({ deleteFailure: true });
     const failed = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
     expect(failed.status, await failed.clone().text()).toBe(202);
@@ -555,7 +565,7 @@ it("failed deletion requires explicit retry and lost success can be reconciled w
     const recovery = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
     expect([200, 202], await recovery.clone().text()).toContain(recovery.status);
     expect(
-      (await f.repository.repositories()).find((repo) => repo.name === targetName),
+      (await f.repository.repositories()).find((repo) => repo.name === own.repositoryName),
     ).toBeUndefined();
     const beforeAbsentRetry = (await transportCounts(f)).calls.filter((call) =>
       call.startsWith("delete:"),
@@ -566,17 +576,21 @@ it("failed deletion requires explicit retry and lost success can be reconciled w
     expect(
       (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
     ).toBe(beforeAbsentRetry);
-    await f.repository.physicalRepository(targetName, "privileged-replacement");
+    await f.repository.physicalRepository(own.repositoryName, "privileged-replacement");
     expect(
       (await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body)).status,
     ).toBe(200);
-    expect((await f.repository.repositories()).find((repo) => repo.name === targetName)?.id).toBe(
-      "privileged-replacement",
-    );
+    expect(
+      (await f.repository.repositories()).find((repo) => repo.name === own.repositoryName)?.id,
+    ).toBe("privileged-replacement");
     expect(
       (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
     ).toBe(beforeAbsentRetry);
-    expect((await f.create()).status).toBe(409);
+    const recreated = await createOwned(f);
+    expect(recreated.repositoryName).not.toBe(own.repositoryName);
+    expect(
+      (await f.repository.repositories()).find((repo) => repo.name === own.repositoryName)?.id,
+    ).toBe("privileged-replacement");
   } finally {
     await close(f);
   }
@@ -709,9 +723,9 @@ it("owner-session revocation during deletion token discovery leaves a frozen res
   try {
     const owner = await f.enroll();
     const own = await createOwned(f);
-    await f.repository.replaceRepositoryWithToken(targetName, own.repositoryId);
+    await f.repository.replaceRepositoryWithToken(own.repositoryName, own.repositoryId);
     await f.repository.pause("tokens");
-    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const body = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     const deletion = f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
     await f.waitPaused();
     expect((await f.request("/auth/sign-out", ownerEmail, {})).status).toBe(200);
@@ -723,7 +737,7 @@ it("owner-session revocation during deletion token discovery leaves a frozen res
       (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
     ).toBe(0);
     expect(
-      (await f.repository.repositories()).find((repo) => repo.name === targetName)?.tokens,
+      (await f.repository.repositories()).find((repo) => repo.name === own.repositoryName)?.tokens,
     ).toEqual([{ id: "replacement-sole-credential", state: "active" }]);
     expect((await f.request(`/projects/${own.projectId}/context`)).status).toBe(404);
     const recovery = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
@@ -741,7 +755,7 @@ it("active repository work blocks deletion before provider mutation and remains 
   try {
     await f.enroll();
     const own = await createOwned(f);
-    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const body = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     for (const kind of ["run", "conversation"] as const) {
       await f.repository.syntheticActiveWork(own.projectId, kind, true);
       const blocked = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
@@ -799,15 +813,15 @@ it("missing-token provider errors cannot falsely certify repository absence or u
   try {
     await f.enroll();
     const own = await createOwned(f);
-    await f.repository.replaceRepositoryWithToken(targetName, own.repositoryId);
+    await f.repository.replaceRepositoryWithToken(own.repositoryName, own.repositoryId);
     await f.repository.configure({ revokeNotFound: true });
-    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const body = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     const deletion = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
     expect(deletion.status, await deletion.clone().text()).toBe(202);
     expect(await deletion.json()).toMatchObject({
       projectId: own.projectId,
       name: targetName,
-      repositoryName: targetName,
+      repositoryName: own.repositoryName,
       repositoryId: own.repositoryId,
       description: "",
       metadataRevision: 0,
@@ -816,11 +830,11 @@ it("missing-token provider errors cannot falsely certify repository absence or u
       lifecycle: "deleting",
       deletable: false,
     });
-    expect((await f.repository.repositories()).find((repo) => repo.name === targetName)?.id).toBe(
-      own.repositoryId,
-    );
+    expect(
+      (await f.repository.repositories()).find((repo) => repo.name === own.repositoryName)?.id,
+    ).toBe(own.repositoryId);
     expect(await f.repository.lifecycleRows()).toContainEqual(
-      expect.objectContaining({ name: targetName, status: "deleting" }),
+      expect.objectContaining({ name: own.repositoryName, status: "deleting" }),
     );
     expect(
       (await transportCounts(f)).calls.filter((call) => call.startsWith("delete:")).length,
@@ -1010,7 +1024,7 @@ it("management alone permits creation metadata and safe invitation work while ph
     expect(observation.status).toBe(200);
     expect(await observation.json()).toMatchObject({
       name: "Delete disabled display label",
-      repositoryName: targetName,
+      repositoryName: own.repositoryName,
       repositoryId: own.repositoryId,
       status: "present",
       deletable: false,
@@ -1022,7 +1036,7 @@ it("management alone permits creation metadata and safe invitation work while ph
     expect(repositories[0].deletable).toBe(false);
     const before = await f.repository.storedState();
     const callsBefore = (await transportCounts(f)).calls;
-    const valid = { confirmation: targetName, repositoryId: own.repositoryId };
+    const valid = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     for (const body of [
       valid,
       {},
@@ -1053,13 +1067,13 @@ it("management alone permits creation metadata and safe invitation work while ph
     }
     const namespaceDelete = await f.request("/repositories/delete", ownerEmail, {
       name: targetName,
-      confirmation: targetName,
+      confirmation: own.repositoryName,
     });
     expect([403, 404], await namespaceDelete.clone().text()).toContain(namespaceDelete.status);
     expect((await transportCounts(f)).calls).toEqual(callsBefore);
     expect(await f.repository.storedState()).toEqual(before);
     expect(await f.repository.lifecycleRows()).toContainEqual(
-      expect.objectContaining({ name: targetName, status: "ready" }),
+      expect.objectContaining({ name: own.repositoryName, status: "ready" }),
     );
     await f.restart();
     expect(await f.discovery()).toMatchObject({ capabilities: { delete: false } });
@@ -1094,7 +1108,7 @@ it("the delete switch alone cannot expand legacy creation approval or enable man
     expect(
       (
         await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, {
-          confirmation: targetName,
+          confirmation: own.repositoryName,
           repositoryId: own.repositoryId,
         })
       ).status,
@@ -1114,9 +1128,9 @@ it("disabling physical deletion fences provider awaits and recovery while allowi
       capabilities: { create: true, manage: true, delete: true },
     });
     const own = await createOwned(f);
-    await f.repository.replaceRepositoryWithToken(targetName, own.repositoryId);
+    await f.repository.replaceRepositoryWithToken(own.repositoryName, own.repositoryId);
     await f.repository.pause("tokens");
-    const body = { confirmation: targetName, repositoryId: own.repositoryId };
+    const body = { confirmation: own.repositoryName, repositoryId: own.repositoryId };
     const deletion = f.request(projectRoute(own.projectId) + "/delete", ownerEmail, body);
     await f.waitPaused();
     await f.repository.deletion(false);
@@ -1128,7 +1142,7 @@ it("disabling physical deletion fences provider awaits and recovery while allowi
     ).toBe(0);
     expect((await transportCounts(f)).revokes).toBe(1); // only the initial creation cleanup
     expect(
-      (await f.repository.repositories()).find((repo) => repo.name === targetName)?.tokens,
+      (await f.repository.repositories()).find((repo) => repo.name === own.repositoryName)?.tokens,
     ).toEqual([{ id: "replacement-sole-credential", state: "active" }]);
     const frozen = await f.repository.storedState();
     expect(frozen.ownedProjects![own.projectId].state.repositoryLifecycle).toBe("deleting");
@@ -1148,7 +1162,7 @@ it("disabling physical deletion fences provider awaits and recovery while allowi
     expect(await observed.json()).toMatchObject({
       status: "deleting",
       deletable: false,
-      repositoryName: targetName,
+      repositoryName: own.repositoryName,
       repositoryId: own.repositoryId,
     });
     expect(
@@ -1184,7 +1198,7 @@ it("an explicitly disabled delete flag has the same native refusal as an absent 
     const before = await f.repository.storedState();
     const callsBefore = (await transportCounts(f)).calls;
     const result = await f.request(projectRoute(own.projectId) + "/delete", ownerEmail, {
-      confirmation: targetName,
+      confirmation: own.repositoryName,
       repositoryId: own.repositoryId,
     });
     expect(result.status, await result.clone().text()).toBe(404);
