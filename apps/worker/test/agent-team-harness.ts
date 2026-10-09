@@ -39,6 +39,7 @@ export type AgentTeamFixtureOptions = {
   worker?: { entryPoint: string; className: string };
   memoryEnabled?: boolean;
   executionMode?: "disabled" | "fake";
+  model?: string;
 };
 export async function fixture(
   enabled = true,
@@ -94,7 +95,7 @@ export async function fixture(
       MODEL_CONFIGURATION: JSON.stringify({
         provider: "byok",
         providerId: "openrouter",
-        model: "openai/gpt-5.1-codex",
+        model: fixtureOptions.model ?? "openai/gpt-5.1-codex",
         secretBinding: "OPENROUTER_API_KEY",
       }),
       REPOSITORY_LIFECYCLE: "disabled",

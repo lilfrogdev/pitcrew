@@ -1,5 +1,6 @@
 import { resolveInvitationRecipient } from "./invitation-recipient";
 import { providerConnectionRequest, userCredential, userModelEnv } from "./user-credentials";
+import { canaryScope, ConversationCanary } from "./conversation-canary";
 export { UserCredentials } from "./user-credentials-agent";
 import {
   RepositoryLifecycle,
@@ -137,6 +138,7 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   REPOSITORY_LIFECYCLE?: string;
   INFRASTRUCTURE_ADMISSION_ENABLED?: string;
   CLOUD_CONVERSATION_ENABLED?: string;
+  CLOUD_CONVERSATION_CANARY?: string;
   ADOPT_REPOSITORY_NAME?: string;
   ADOPT_REPOSITORY_ID?: string;
   ADOPT_ACCOUNT_ACTOR?: string;
@@ -146,6 +148,27 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   ACCOUNT_REPOSITORY_DELETE?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
+  private conversationCanary?: ConversationCanary;
+  private getConversationCanary() {
+    return (this.conversationCanary ??= new ConversationCanary(this.ctx.storage.sql));
+  }
+  private assertConversationCanary(core: Coordinator, turnId: string) {
+    this.getConversationCanary().assertTurn(
+      this.env,
+      core.state.project.id,
+      core.conversationTurn(turnId),
+    );
+  }
+  private async freshConversationCanary(turnId: string) {
+    const core = this.turnCoordinator(turnId);
+    if (!core) throw Error("conversation_access_revoked");
+    this.assertConversationCanary(core, turnId);
+    if (!canaryScope(this.env)) return;
+    const grant = this.getVisualizationGrants().get(turnId);
+    if (!grant || !this.env.AUTH_DB) throw Error("conversation_access_revoked");
+    await requireVisualizationSession(this.env.AUTH_DB, grant);
+    this.assertConversationCanary(core, turnId);
+  }
   private repoMemory?: RepoMemory;
   private getRepoMemory() {
     if (this.env.REPO_MEMORY_ENABLED !== "true") throw Error("repo_memory_disabled");
@@ -157,6 +180,7 @@ export class RepositoryAgent extends Agent<Env> {
     const core = this.turnCoordinator(turnId);
     if (!core || !this.conversationsEnabled()) throw Error("memory_access_revoked");
     const turn = core.conversationTurn(turnId);
+    this.assertConversationCanary(core, turnId);
     if (
       turn.status !== "running" ||
       !turn.input ||
@@ -222,8 +246,18 @@ export class RepositoryAgent extends Agent<Env> {
       : undefined;
   }
   protected async compressRepoMemory(input: ConversationInput, job: RepoMemoryCompression) {
+    await this.freshConversationCanary(input.turnId);
+    const modelEnv = userModelEnv(conversationModelEnv(this.env), input.credentialActor);
     const { models, model, selection } = configureSelectedModels(
-      userModelEnv(conversationModelEnv(this.env), input.credentialActor),
+      {
+        ...modelEnv,
+        openRouterKey: async () => {
+          await this.freshConversationCanary(input.turnId);
+          const key = await modelEnv.openRouterKey();
+          await this.freshConversationCanary(input.turnId);
+          return key;
+        },
+      },
       input.models.repoAgent,
       input.models.catalogRevision,
     );
@@ -416,6 +450,7 @@ export class RepositoryAgent extends Agent<Env> {
     const core = this.turnCoordinator(turnId);
     if (!core || !this.conversationsEnabled()) throw Error("conversation_access_revoked");
     const turn = core.conversationTurn(turnId);
+    this.assertConversationCanary(core, turnId);
     if (
       turn.status !== "running" ||
       !turn.input ||
@@ -558,6 +593,7 @@ export class RepositoryAgent extends Agent<Env> {
     nativeInputBytes = 0,
   ) {
     await this.freshConversationMemory(turnId);
+    if (canaryScope(this.env) && nativeInputBytes > 0) throw Error("conversation_canary_denied");
     const core = this.turnCoordinator(turnId)!;
     const memoryEnabled = !!core.conversationTurn(turnId).input!.memoryEnabled;
     const maximumInput = Math.max(
@@ -691,6 +727,9 @@ export class RepositoryAgent extends Agent<Env> {
     return this.conversationJobs.enqueue(id, { turnId: id });
   }
   async publishConversationVisualization(turnId: string, invocationId: string, content: unknown) {
+    const core = this.turnCoordinator(turnId);
+    if (canaryScope(this.env) || core?.conversationTurn(turnId).canaryId)
+      throw Error("conversation_canary_denied");
     // Bound and copy pending payloads before retaining them in the FIFO.
     const bounded = readVisualizationContent(content);
     if (bounded.kind === "document") documentFragment(bounded);
@@ -1085,6 +1124,8 @@ export class RepositoryAgent extends Agent<Env> {
     if (!codingEnabled(this.env)) throw new AdmissionError("execution_disabled", 503);
     const core = this.turnCoordinator(turnId);
     if (!core) throw Error("turn_not_found");
+    if (core.conversationTurn(turnId).canaryId || canaryScope(this.env))
+      throw new AdmissionError("execution_disabled", 503);
     if (callId) await this.authorizeConversationTool(turnId, `delegate:${callId}`);
     await this.freshConversationMemory(turnId);
     const run = core.delegateConversation(turnId);
@@ -1096,6 +1137,9 @@ export class RepositoryAgent extends Agent<Env> {
     if (!core) throw Error("turn_not_found");
     await this.freshConversationMemory(turnId);
     const turn = core.conversationTurn(turnId);
+    // Reject native images while building the prompt as well as at dispatch,
+    // so restored/historical images settle a failed turn without a Pi task.
+    if (turn.canaryId) throw Error("conversation_canary_denied");
     if (
       !core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId) ||
       !turn.input ||
@@ -1784,6 +1828,8 @@ export class RepositoryAgent extends Agent<Env> {
         const firstAdmission = turn.status === "queued";
         let input;
         try {
+          // Old global turns have no scoped receipt and cannot enter the canary.
+          this.assertConversationCanary(core, id);
           input = core.beginConversation(id);
           if (input?.memoryEnabled) {
             await this.prepareRepoMemory(core, id);
@@ -1816,6 +1862,7 @@ export class RepositoryAgent extends Agent<Env> {
           // Credential/catalog lookups yield; revocation must fence child startup too.
           if (!core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId))
             return { rescheduleAt: Date.now() };
+          await this.freshConversationMemory(id);
           const worker = await getAgentByName(
             this.env.CONVERSATION,
             `repo:${input.projectId}:${input.turnId}`,
@@ -1823,6 +1870,7 @@ export class RepositoryAgent extends Agent<Env> {
           );
           if (!core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId))
             return { rescheduleAt: Date.now() };
+          await this.freshConversationMemory(id);
           await worker.start(input);
           const receipt = await worker.result(id);
           if (receipt.status === "completed") {
@@ -2929,7 +2977,15 @@ export class RepositoryAgent extends Agent<Env> {
             },
             admit: async () => {
               if (!this.conversationsEnabled()) throw new AdmissionError("execution_disabled", 503);
-              if (requiresUserOpenRouter(this.env)) {
+              this.getConversationCanary().preflight(
+                this.env,
+                identity.actor,
+                coordinator.state.project.id,
+                path.split("/")[3],
+              );
+              // Canary slots are committed before any provider-status read. Failed
+              // or uncertain provider admission remains charged, without refunds.
+              if (!canaryScope(this.env) && requiresUserOpenRouter(this.env)) {
                 try {
                   if (
                     !(await userCredential(this.env, credentialActor).configured(credentialActor))
@@ -2951,6 +3007,9 @@ export class RepositoryAgent extends Agent<Env> {
               }
             },
             bind: (turn) => {
+              if (canaryScope(this.env) && (!auth || !user || !originalMessageGrant))
+                throw new AdmissionError("conversation_canary_denied", 403);
+              this.getConversationCanary().claim(this.env, coordinator.state.project.id, turn);
               if (!auth || !user) return;
               const grant = originalMessageGrant;
               if (

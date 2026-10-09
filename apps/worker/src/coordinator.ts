@@ -1418,6 +1418,7 @@ export class Coordinator {
             }
           : {}),
         memoryEnabled: memoryEnabled || undefined,
+        ...(turn.canaryId ? { canaryId: turn.canaryId } : {}),
         credentialActor: turn.actor,
         turnId: id,
         threadId: turn.threadId,
@@ -1428,7 +1429,7 @@ export class Coordinator {
         configurationRevision: turn.configurationRevision,
         repositoryContext: this.repositoryContext(
           turn.membershipActor ?? turn.actor,
-          memoryEnabled ? turn.threadId : undefined,
+          turn.threadId,
         ),
         messages: structuredClone(admittedMessages),
       };

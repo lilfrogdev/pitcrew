@@ -125,23 +125,24 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
               }),
             ],
           });
-          if (codingEnabled(env))
+          if (!input.canaryId && codingEnabled(env))
             this.registry.install(
               repositoryConversationTools((callId) => {
                 this.assertConversationAllowed();
                 return this.repository().delegateRepoTurn(this.input().turnId, callId);
               }),
             );
-          this.registry.install(
-            visualizationRpcTools((invocationId, content) => {
-              this.assertConversationAllowed();
-              return this.repository().publishConversationVisualization(
-                this.input().turnId,
-                invocationId,
-                content,
-              );
-            }),
-          );
+          if (!input.canaryId)
+            this.registry.install(
+              visualizationRpcTools((invocationId, content) => {
+                this.assertConversationAllowed();
+                return this.repository().publishConversationVisualization(
+                  this.input().turnId,
+                  invocationId,
+                  content,
+                );
+              }),
+            );
           const harness = await this.openHarness(
             storage,
             {
