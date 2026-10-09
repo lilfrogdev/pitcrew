@@ -28,6 +28,10 @@
         "name": "REVIEW",
         "class_name": "ReviewAgent",
       },
+      {
+        "name": "PLAN",
+        "class_name": "PlanAgent",
+      },
     ],
   },
   "migrations": [
@@ -42,6 +46,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["RepoConversationAgent"],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["PlanAgent"],
     },
   ],
   "vars": {
@@ -73,6 +81,10 @@
           {
             "name": "REVIEW",
             "class_name": "ReviewAgent",
+          },
+          {
+            "name": "PLAN",
+            "class_name": "PlanAgent",
           },
         ],
       },

@@ -12,7 +12,13 @@ export * from "./uploads.ts";
 export * from "./models.ts";
 import type { ModelSelection, ModelSettings, FrozenRunModels } from "./models.ts";
 import type { MessageAttachment, SubmittedAttachment } from "./attachments.ts";
-import type { VerificationPlan, CheckOutcome } from "../../verification/src/index.ts";
+import type {
+  VerificationPlan,
+  CheckOutcome,
+  ContractSnapshot,
+  Check,
+  AcceptanceCriteria,
+} from "../../verification/src/index.ts";
 export interface Project {
   /** Canonical account-local name; provider identity is kept separately. */
   logicalName?: string;
@@ -66,6 +72,15 @@ export interface AgentMention {
   start: number;
   end: number;
 }
+export type CrewRole =
+  | "repository"
+  | "planner"
+  | "coordinator"
+  | "implementer"
+  | "test_runner"
+  | "test_agent"
+  | "reviewer";
+export type TraceStatus = "waiting" | "active" | "passed" | "failed" | "skipped" | "stopped";
 export interface Message {
   /** Server-validated explicit routing; legacy history may omit it. */
   destination?: MessageDestination;
@@ -80,11 +95,61 @@ export interface Message {
     avatar?: string | null;
   };
   attachments?: MessageAttachment[];
+  /** Stable crew identity. Legacy messages omit it and keep their original role label. */
+  crew?: CrewRole;
   id: string;
   threadId: string;
   role: "user" | "coordinator" | "worker" | "reviewer";
   content: string;
   createdAt: string;
+}
+export interface TraceNode {
+  id: string;
+  threadId: string;
+  runId?: string;
+  missionId?: string;
+  role: CrewRole;
+  stage: string;
+  status: TraceStatus;
+  title: string;
+  summary: string;
+  sequence: number;
+  createdAt: string;
+  updatedAt: string;
+  revision?: string;
+  candidateSha?: string;
+}
+export interface TraceEdge {
+  id: string;
+  threadId: string;
+  runId?: string;
+  from: string;
+  to: string;
+  label: string;
+  sequence: number;
+  createdAt: string;
+}
+export interface ProbeEvidence {
+  id: string;
+  threadId: string;
+  runId: string;
+  purpose: string;
+  command: string[];
+  candidateSha: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  reproducible: boolean;
+  blocking: boolean;
+}
+export interface OrchestrationTrace {
+  nodes: TraceNode[];
+  edges: TraceEdge[];
+  /** Ordered status snapshots so replay can show thinking → passed for the same stage. */
+  steps: TraceNode[];
+  probes: ProbeEvidence[];
+  sequence: number;
 }
 export type RunStatus =
   | "queued"
@@ -157,9 +222,47 @@ export interface Event {
     | "run.awaiting_review"
     | "run.completed"
     | "run.failed"
-    | "review.created";
+    | "review.created"
+    | "mission.updated"
+    | "orchestration.updated";
   entityId: string;
   createdAt: string;
+}
+export type MissionStatus =
+  | "clarifying"
+  | "proposed"
+  | "approved"
+  | "running"
+  | "awaiting_review"
+  | "completed"
+  | "failed"
+  | "stopped";
+export interface MissionQuestion {
+  id: string;
+  prompt: string;
+  answer?: string;
+}
+export interface MissionProposal {
+  revision: string;
+  summary: string;
+  affectedArea: string;
+  acceptance: AcceptanceCriteria;
+  checks: Check[];
+  digest: string;
+}
+export interface Mission {
+  id: string;
+  projectId: string;
+  threadId: string;
+  messageId: string;
+  status: MissionStatus;
+  request: string;
+  questions: MissionQuestion[];
+  proposal?: MissionProposal;
+  approvedRevision?: string;
+  changeId?: string;
+  runId?: string;
+  contract?: ContractSnapshot;
 }
 export interface SubmitMessage {
   /** Omitted destinations are human Team notes. */
@@ -191,6 +294,7 @@ export interface ExecutionInput {
   runModels?: FrozenRunModels;
   knowledgeContext?: WorkerKnowledgeContext;
   verificationPlan?: VerificationPlan;
+  contractSnapshot?: ContractSnapshot;
   changeId?: string;
   repositoryContext?: RepositoryContext;
   runId: string;

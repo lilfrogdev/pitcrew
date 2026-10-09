@@ -38,6 +38,8 @@ import { configureSelectedModels } from "./model-selection";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { RepoConversationAgent } from "./repo-conversation-agent";
 export { RepoConversationAgent };
+import { PlanAgent } from "./plan-agent";
+export { PlanAgent };
 import {
   resolveCatalog,
   validateFrozenModels,
@@ -127,6 +129,7 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   PROJECT_BASE_SHA?: string;
   CHANGE: DurableObjectNamespace<ChangeAgent>;
   CONVERSATION?: DurableObjectNamespace<RepoConversationAgent>;
+  PLAN?: DurableObjectNamespace<PlanAgent>;
   ARTIFACT_REPOSITORY?: string;
   ARTIFACT_REPOSITORY_ID?: string;
   REPOSITORY: DurableObjectNamespace<RepositoryAgent>;
@@ -726,6 +729,29 @@ export class RepositoryAgent extends Agent<Env> {
   }
   protected enqueueConversation(id: string) {
     return this.conversationJobs.enqueue(id, { turnId: id });
+  }
+  askMission(turnId: string, prompts: string[]) {
+    return this.getCoordinator().askMission(turnId, prompts);
+  }
+  proposeMission(
+    turnId: string,
+    input: { summary: string; affectedArea: string; criterion: string },
+  ) {
+    return this.getCoordinator().proposeMission(turnId, input);
+  }
+  planFromTurn(turnId: string) {
+    return this.getCoordinator().ensureChatProposal(turnId);
+  }
+  async planMission(turnId: string) {
+    if (!this.env.PLAN) return this.planFromTurn(turnId);
+    const planner = await getAgentByName(this.env.PLAN, `plan:${turnId}`);
+    return planner.start(turnId);
+  }
+  recordStage(input: Parameters<Coordinator["recordStage"]>[0]) {
+    return this.getCoordinator().recordStage(input);
+  }
+  recordProbes(threadId: string, runId: string, probes: Parameters<Coordinator["recordProbes"]>[2]) {
+    return this.getCoordinator().recordProbes(threadId, runId, probes);
   }
   private async stopConversationChild(core: Coordinator, turnId: string) {
     const turn = core.conversationTurn(turnId);
@@ -1900,6 +1926,8 @@ export class RepositoryAgent extends Agent<Env> {
           const receipt = await worker.result(id);
           if (receipt.status === "completed") {
             await this.freshConversationMemory(id);
+            const mission = core.threadMission(turn.threadId);
+            if (mission?.status === "clarifying" && !mission.proposal) await this.planMission(id);
             core.completeConversation(id, receipt.text);
             if (input.memoryEnabled) {
               const reply = core.state.messages.find(
@@ -1916,7 +1944,10 @@ export class RepositoryAgent extends Agent<Env> {
             return;
           }
           if (receipt.status === "failed") {
-            core.completeConversation(id, undefined, receipt.error);
+            const mission = core.threadMission(turn.threadId);
+            if (mission?.status === "proposed" && mission.proposal?.summary)
+              core.completeConversation(id, mission.proposal.summary);
+            else core.completeConversation(id, undefined, receipt.error);
             return;
           }
         } catch {

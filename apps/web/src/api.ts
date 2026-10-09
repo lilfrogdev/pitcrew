@@ -8,6 +8,7 @@ import type {
   Project,
   Thread,
   Message,
+  Mission,
   Run,
   Review,
   RunEvidence,
@@ -20,6 +21,7 @@ import type {
   ModelChoice,
   ModelSelection,
   ModelSettings,
+  OrchestrationTrace,
 } from "@pitcrew/protocol";
 import type { SourceApi } from "@pitcrew/protocol";
 import type { OpenRouterConnectionApi, OpenRouterStatus } from "./openrouter-types";
@@ -198,6 +200,19 @@ export interface Api {
   ): Promise<Thread>;
   setModelSettings?(projectId: string, settings: ModelSettings): Promise<ModelSettings>;
   attachmentUrl?(threadId: string, attachmentId: string): string;
+  trace(threadId: string, after?: number): Promise<OrchestrationTrace>;
+  missions: {
+    current(threadId: string): Promise<Mission | null>;
+    create(projectId: string, threadId: string, request: string, key: string): Promise<Mission>;
+    answer(missionId: string, questionId: string, answer: string, key: string): Promise<Mission>;
+    revise(
+      missionId: string,
+      input: { summary: string; affectedArea: string; criterion: string },
+      key: string,
+    ): Promise<Mission>;
+    approve(missionId: string, revision: string, key: string): Promise<Mission>;
+    start(missionId: string, key: string): Promise<{ mission: Mission; run: Run }>;
+  };
   send(
     threadId: string,
     content: string,
@@ -935,6 +950,34 @@ export const httpApi: Api = {
       { archived },
     ),
   latestRun: async (id) => (await request<Run[]>(`/threads/${encodeURIComponent(id)}/runs`)).at(-1),
+  trace: (id, after = 0) =>
+    request(`/threads/${encodeURIComponent(id)}/trace?after=${encodeURIComponent(String(after))}`),
+  missions: {
+    current: async (threadId) =>
+      (
+        await request<{ mission: Mission | null }>(
+          `/threads/${encodeURIComponent(threadId)}/mission`,
+        )
+      ).mission,
+    create: (projectId, threadId, featureRequest, idempotencyKey) =>
+      request(`/projects/${encodeURIComponent(projectId)}/missions`, {
+        threadId,
+        request: featureRequest,
+        idempotencyKey,
+      }),
+    answer: (missionId, questionId, answer, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/answers`, {
+        questionId,
+        answer,
+        idempotencyKey,
+      }),
+    revise: (missionId, input, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/proposal`, { ...input, idempotencyKey }),
+    approve: (missionId, revision, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/approval`, { revision, idempotencyKey }),
+    start: (missionId, idempotencyKey) =>
+      request(`/missions/${encodeURIComponent(missionId)}/start`, { idempotencyKey }),
+  },
   snapshot: async (id) => {
     const path = `/threads/${encodeURIComponent(id)}`;
     const [messages, runs, turns] = await Promise.all([
