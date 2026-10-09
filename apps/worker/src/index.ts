@@ -2034,6 +2034,8 @@ export class RepositoryAgent extends Agent<Env> {
             return Response.json(project, { status: 201 });
           });
         } catch (error) {
+          if (error instanceof Error && error.message === "repository_exists")
+            return Response.json({ error: "repository_exists" }, { status: 409 });
           return Response.json(
             {
               error:
@@ -2095,6 +2097,11 @@ export class RepositoryAgent extends Agent<Env> {
         if (head && !/^[a-f0-9]{40}$/.test(head.hash)) throw Error("invalid_head");
         if (rootAccess.projectRole() !== "owner")
           return Response.json({ error: "not_found" }, { status: 404 });
+        this.getLifecycle()?.assertLogicalNameAvailable(
+          identity.actor,
+          logicalRepositoryName(name),
+          name,
+        );
         const project = root.addOwnedProject(
           name,
           info.id,
