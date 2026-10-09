@@ -216,7 +216,8 @@ export async function readyCreation(
 ) {
   expect([200, 202], await response.clone().text()).toContain(response.status);
   const record = (await response.json()) as Discovery["creations"][number];
-  expect(record.name).toBe(f.managementEnabled ? name.trim().toLowerCase() : name);
+  const expectedName = f.managementEnabled ? name.trim().toLowerCase() : name;
+  expect(record.name).toBe(expectedName);
   if (response.status === 200) {
     expect(record.status).toBe("ready");
     return { ...record, repositoryName: record.repositoryName ?? record.name };
@@ -225,7 +226,7 @@ export async function readyCreation(
   // The admitted operation continues; observe its durable result without a POST retry.
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const saved = (await f.discovery(email)).creations.find((entry) => entry.name === name);
+    const saved = (await f.discovery(email)).creations.find((entry) => entry.name === expectedName);
     if (saved?.status === "ready")
       return { ...saved, repositoryName: saved.repositoryName ?? saved.name };
     await new Promise((resolve) => setTimeout(resolve, 25));
