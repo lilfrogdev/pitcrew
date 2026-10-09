@@ -38,7 +38,7 @@ export function repositoryName(value: unknown): string {
 }
 export function logicalRepositoryName(value: unknown): string {
   if (typeof value !== "string") throw Error("invalid_name");
-  const trimmed = value.trim();
+  const trimmed = value.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(trimmed)) throw Error("invalid_name");
   return trimmed.toLowerCase();
 }
@@ -53,6 +53,7 @@ export class RepositoryLifecycle {
       ownerActor: string;
       name: string;
       logicalName: string;
+      projectId?: string;
       deleted: boolean;
     }[] = () => [],
   ) {}
@@ -316,6 +317,11 @@ export class RepositoryLifecycle {
       }
       this.assertLogicalNameAvailable(ownerActor, logicalName);
       const projectId = crypto.randomUUID();
+      if (
+        this.store.list().some((record) => record.projectId === projectId) ||
+        this.registrations().some((record) => record.projectId === projectId)
+      )
+        throw Error("repository_identity_changed");
       const name = `${logicalName.slice(0, 30)}-${projectId.replaceAll("-", "")}`;
       return this.provisionInside(
         name,
@@ -394,6 +400,11 @@ export class RepositoryLifecycle {
     if (existing && existing.ownerActor !== ownerActor) throw Error("not_found");
     // Never retry an ambiguous creation or replace a deleted/existing name.
     if (existing) {
+      if (
+        metadata?.projectId &&
+        (existing.projectId !== metadata.projectId || existing.logicalName !== metadata.logicalName)
+      )
+        throw Error("repository_identity_changed");
       if (existing.status === "deleted") throw Error("repository_name_retired");
       if (existing.status === "deleting") throw Error("deletion_pending");
       if (existing.operation !== operation || existing.source !== source)

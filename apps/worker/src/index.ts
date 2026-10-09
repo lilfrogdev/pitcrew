@@ -375,6 +375,7 @@ export class RepositoryAgent extends Agent<Env> {
           Object.values(this.getCoordinator().state.ownedProjects ?? {}).map((entry) => ({
             ownerActor: entry.ownerActor,
             name: entry.sourceName,
+            projectId: entry.state.project.id,
             logicalName: entry.state.project.logicalName ?? logicalRepositoryName(entry.sourceName),
             deleted: entry.state.repositoryLifecycle === "deleted",
           })),
@@ -1899,6 +1900,7 @@ export class RepositoryAgent extends Agent<Env> {
       } catch (error) {
         const safe = [
           "repository_exists",
+          "repository_identity_changed",
           "repository_name_retired",
           "deletion_pending",
           "namespace_limit",

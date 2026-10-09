@@ -537,6 +537,7 @@ function logicalFixture() {
     ownerActor: string;
     name: string;
     logicalName: string;
+    projectId?: string;
     deleted: boolean;
   }[] = [];
   const binding = {
@@ -600,7 +601,18 @@ function logicalFixture() {
 
 it("canonicalizes account-local ASCII slugs without accepting non-ASCII names or separators", () => {
   expect(logicalRepositoryName(" Acme-Website ")).toBe("acme-website");
-  for (const value of ["", "-name", "folder/name", "has space", "KK", "é", "a".repeat(64), null])
+  expect(logicalRepositoryName("\t\nAcme-Website\r\v\f ")).toBe("acme-website");
+  for (const value of [
+    "",
+    "-name",
+    "folder/name",
+    "has space",
+    "KK",
+    "é",
+    "a".repeat(64),
+    null,
+    "\u00a0not-ascii-trim\u00a0",
+  ])
     expect(() => logicalRepositoryName(value)).toThrow("invalid_name");
 });
 
@@ -734,4 +746,77 @@ it("checks adopted legacy registrations and session admission before persisting 
   ).rejects.toThrow("unauthorized");
   expect(f.records.size).toBe(0);
   expect(f.binding.create).not.toHaveBeenCalled();
+});
+
+it("rejects injected project UUID collisions before provisioning even when logical prefixes differ", async () => {
+  for (const secondName of ["a".repeat(30) + "-two", "different-prefix"]) {
+    const f = logicalFixture();
+    const first = await f.create("a".repeat(30) + "-one");
+    const before = f.binding.list.mock.calls.length;
+    const uuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValue(first.projectId as ReturnType<typeof crypto.randomUUID>);
+    try {
+      await expect(f.create(secondName)).rejects.toThrow("repository_identity_changed");
+      expect(f.binding.create).toHaveBeenCalledTimes(1);
+      expect(f.binding.list.mock.calls.length).toBe(before);
+      expect(f.records.size).toBe(1);
+    } finally {
+      uuid.mockRestore();
+    }
+  }
+});
+
+it("retired and registered project UUIDs cannot be reused for a new physical repository", async () => {
+  for (const source of ["retired", "registered"]) {
+    const f = logicalFixture();
+    const projectId = crypto.randomUUID();
+    if (source === "retired")
+      f.records.set("old-physical", {
+        name: "old-physical",
+        logicalName: "old",
+        projectId,
+        ownerActor: "account:other",
+        operation: "create",
+        status: "deleted",
+      });
+    else
+      f.registrations.push({
+        name: "legacy-physical",
+        logicalName: "legacy",
+        projectId,
+        ownerActor: "account:other",
+        deleted: true,
+      });
+    const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(projectId);
+    try {
+      await expect(f.create("new")).rejects.toThrow("repository_identity_changed");
+      expect(f.binding.create).not.toHaveBeenCalled();
+      expect(f.binding.list).not.toHaveBeenCalled();
+    } finally {
+      uuid.mockRestore();
+    }
+  }
+});
+
+it("a generated managed physical-name collision cannot borrow a legacy intent lacking its UUID mapping", async () => {
+  const f = logicalFixture();
+  const projectId = crypto.randomUUID();
+  const physical = `acme-${projectId.replaceAll("-", "")}`;
+  f.records.set(physical, {
+    name: physical,
+    ownerActor: "account:owner",
+    operation: "create",
+    id: "legacy-id",
+    status: "ready",
+  });
+  const uuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(projectId);
+  try {
+    await expect(f.create("acme")).rejects.toThrow("repository_identity_changed");
+    expect(f.binding.create).not.toHaveBeenCalled();
+    expect(f.records.get(physical)?.id).toBe("legacy-id");
+    expect(f.records.get(physical)?.projectId).toBeUndefined();
+  } finally {
+    uuid.mockRestore();
+  }
 });
