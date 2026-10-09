@@ -1749,7 +1749,16 @@ test("native logical names preserve separate immutable physical identities acros
   assert.equal(renamed.json.repository, `artifact:${physicalName}`);
   assert.deepEqual(JSON.parse(forwarded[1].init.body), edit);
   assert.ok(!renamed.text.includes("private-provider-value"));
-  for (const logicalName of [null, "", "-bad", "bad/name", "bad_name", "x".repeat(64)]) {
+  for (const logicalName of [
+    null,
+    "",
+    "-bad",
+    "bad/name",
+    "bad_name",
+    "x".repeat(64),
+    "Kelvin",
+    "\u00a0not-ascii\u00a0",
+  ]) {
     assert.equal(
       (
         await request(f.handler, path, {

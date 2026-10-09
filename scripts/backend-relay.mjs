@@ -351,7 +351,8 @@ const safeText = (value, limit, multiline = false) =>
   !(multiline ? /[\x00-\x08\x0b-\x1f\x7f]/ : /[\x00-\x1f\x7f]/).test(value);
 const resourceId = /^[A-Za-z0-9:_-]{1,128}$/;
 const validLogicalName = (value) =>
-  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(value.trim());
+  typeof value === "string" &&
+  /^[\t\n\r\f\v ]*[A-Za-z0-9][A-Za-z0-9-]{0,62}[\t\n\r\f\v ]*$/.test(value);
 function normalizeNativeManagement(path, method, value) {
   const keys = Object.keys(value);
   if (path === "/api/repositories/create") {
