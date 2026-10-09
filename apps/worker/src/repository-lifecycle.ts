@@ -1,3 +1,5 @@
+import { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
+export { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
 import { normalizePublicRepositoryImportUrl } from "../../../packages/protocol/src/repository-import-url.mjs";
 
 /** Metadata only. No creation token is stored, returned, or used for Git. */
@@ -35,12 +37,6 @@ const namePattern = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export function repositoryName(value: unknown): string {
   if (typeof value !== "string" || !namePattern.test(value)) throw Error("invalid_name");
   return value;
-}
-export function logicalRepositoryName(value: unknown): string {
-  if (typeof value !== "string") throw Error("invalid_name");
-  const trimmed = value.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
-  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(trimmed)) throw Error("invalid_name");
-  return trimmed.toLowerCase();
 }
 export const publicImportUrl = normalizePublicRepositoryImportUrl;
 export class RepositoryLifecycle {

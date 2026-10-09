@@ -1,4 +1,4 @@
-import { logicalRepositoryName } from "./repository-lifecycle";
+import { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
 import { validateMentions } from "./mentions";
 import type { ConversationTurn, ConversationInput } from "./conversation";
 import type { ModelCatalog } from "./model-selection";
