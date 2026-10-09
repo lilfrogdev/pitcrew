@@ -108,8 +108,8 @@ import {
   privateIngressResponse,
 } from "./password-ingress";
 import { Agent, getAgentByName } from "agents";
-import { ChangeAgent, ReviewAgent, type PiEnv } from "./pi-agents";
-export { ChangeAgent, ReviewAgent };
+import { ChangeAgent, ReviewAgent, TestAgent, type PiEnv } from "./pi-agents";
+export { ChangeAgent, ReviewAgent, TestAgent };
 import { DurableJobs } from "./durable-jobs";
 import {
   InfrastructureAdmission,
