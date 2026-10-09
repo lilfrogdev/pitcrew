@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -111,35 +111,21 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
           </label>
         )}
         {mode === "replay" && (
-          <label>
-            Replay position
-            <input
-              aria-label="Replay position"
-              type="range"
-              min={0}
-              max={Math.max(view.total, 1)}
-              step={1}
-              value={Math.min(cursor, view.total)}
-              onChange={(event) => {
-                setCursor(Number(event.target.value));
-                setSelected("");
-              }}
-            />
-            <span>
-              {Math.min(cursor, view.total)} of {view.total}
-              {stepLabel ? ` · ${stepLabel.title}` : ""}
-            </span>
-          </label>
+          <ReplayScrubber
+            total={view.total}
+            value={Math.min(cursor, view.total)}
+            label={stepLabel?.title ?? ""}
+            onChange={(step) => {
+              setCursor((current) => (current === step ? current : step));
+              setSelected("");
+            }}
+          />
         )}
       </div>
-      {view.nodes.length === 0 ? (
+      {trace.nodes.length === 0 ? (
         <div className="workspace-empty">
           <h2>Flow</h2>
-          <p>
-            {trace.nodes.length
-              ? "Move replay position to reveal each handoff."
-              : "Agent handoffs appear here as the crew works, and stay available to replay."}
-          </p>
+          <p>Agent handoffs appear here as the crew works, and stay available to replay.</p>
         </div>
       ) : typeof ResizeObserver === "undefined" ? (
         <ol aria-label="Agent flow">
@@ -157,10 +143,12 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
           <div
             className="flow-canvas"
             aria-label="Agent flow"
-            style={{ height: Math.max(520, view.nodes.length * 128 + 80) }}
+            style={{ height: Math.max(520, view.total * 128 + 80) }}
           >
+            {view.nodes.length === 0 && (
+              <p className="flow-replay-empty">Move replay position to reveal each handoff.</p>
+            )}
             <ReactFlow
-              key={nodes.map((node) => node.id).join("|")}
               nodes={nodes}
               edges={edges}
               minZoom={0.6}
@@ -178,6 +166,83 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
           {current && <FlowDetails node={current} probes={view.probes} />}
         </div>
       )}
+    </div>
+  );
+}
+
+function ReplayScrubber({
+  total,
+  value,
+  label,
+  onChange,
+}: {
+  total: number;
+  value: number;
+  label: string;
+  onChange: (step: number) => void;
+}) {
+  const track = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  const choose = (clientX: number) => {
+    const rect = track.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    onChange(Math.round(ratio * total));
+  };
+  useEffect(() => {
+    const element = track.current;
+    if (!element) return;
+    const ignoreScroll = (event: WheelEvent) => event.preventDefault();
+    element.addEventListener("wheel", ignoreScroll, { passive: false });
+    return () => element.removeEventListener("wheel", ignoreScroll);
+  }, []);
+  return (
+    <div className="replay-scrubber">
+      <div className="replay-controls">
+        <span id="replay-position-label">Replay position</span>
+        <button type="button" aria-label="Previous handoff" onClick={() => onChange(Math.max(0, value - 1))}>
+          −
+        </button>
+        <button type="button" aria-label="Next handoff" onClick={() => onChange(Math.min(total, value + 1))}>
+          +
+        </button>
+        <span className="replay-readout">
+          {value} of {total}
+          {label ? ` · ${label}` : ""}
+        </span>
+      </div>
+      <div
+        ref={track}
+        className="replay-track"
+        role="slider"
+        aria-labelledby="replay-position-label"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={value}
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowRight" || event.key === "ArrowUp")
+            onChange(Math.min(total, value + 1));
+          if (event.key === "ArrowLeft" || event.key === "ArrowDown")
+            onChange(Math.max(0, value - 1));
+        }}
+        onPointerDown={(event) => {
+          dragging.current = true;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          choose(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if (dragging.current) choose(event.clientX);
+        }}
+        onPointerUp={() => {
+          dragging.current = false;
+        }}
+        onPointerCancel={() => {
+          dragging.current = false;
+        }}
+      >
+        <div className="replay-fill" style={{ width: `${total ? (value / total) * 100 : 0}%` }} />
+      </div>
     </div>
   );
 }
