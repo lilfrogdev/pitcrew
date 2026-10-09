@@ -33,7 +33,17 @@ capability gate-off, late private responses after account switch/unmount, mobile
 overflow, keyboard activation, and accessible action names.
 Native creation records transition through `ready`, `deleting`, and `deleted`.
 Directory discovery at both deletion stages must preserve unrelated management
-and creation; a tombstoned physical name remains unavailable for reuse.
+and creation. Deleting reserves the owner-scoped logical name; confirmed deletion
+allows that logical name to be recreated with a fresh project UUID and physical
+name. A tombstoned physical identity remains retired.
+Additional naming cases cover ASCII bounds and case/whitespace normalization,
+the distinct logical/display/physical labels, readonly physical identity,
+same-owner known duplicates and concurrent ready intent reuse, explicit partial
+creation recovery, different owners using the same logical name, logical rename
+and owner-scoped collision, and unchanged exact-approved legacy physical names.
+New physical fixture names use the agreed 30-character logical prefix plus the
+32 hexadecimal digits of the project UUID that is persisted before the synthetic
+provider result. Display labels and descriptions remain nonunique.
 Deletion is an independent `capabilities.delete` boolean: positive destructive
 scenarios explicitly enable it. Separate cases exercise deletion off and absent
 while create/manage remain on, stale `deletable:true` rows, and a false capability
@@ -42,7 +52,7 @@ checks verify UI behavior after discovery refresh; they do not establish an
 external administrator protection change cannot race an in-flight delete.
 
 Evidence is written to the requested directory: `results.json`,
-`accessible-names.json`, and six desktop/mobile PNG screenshots. Failure evidence
+`accessible-names.json`, and eight desktop/mobile PNG screenshots. Failure evidence
 is written as `failure.json` and `failure.png` when applicable. A successful run
 verifies the UI and real client contract against the synthetic transport; it does
 not verify Codex in-app browser behavior, real authentication, live provider
