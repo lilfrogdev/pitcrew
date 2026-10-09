@@ -30,7 +30,12 @@ export function api(
   dispatch: (id: string) => void | Promise<void>,
   landing?: LandingApi,
   identity: { actor: string } = { actor: "local-fixture" },
-  conversation?: { catalog: ModelCatalog; dispatch: (id: string) => void | Promise<void> },
+  conversation?: {
+    catalog: ModelCatalog;
+    admit?: () => Promise<ModelCatalog>;
+    bind?: (turn: import("./conversation").ConversationTurn) => void;
+    dispatch: (id: string) => void | Promise<void>;
+  },
   access?: Collaboration,
   executionDisabled = false,
   sourceReader?: {
@@ -45,6 +50,7 @@ export function api(
   uploads?: UploadStore,
   uploadAuthority?: UploadAuthority,
   collaborationAuthority?: CollaborationAuthority,
+  stopConversation?: (turnId: string) => Promise<void>,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
@@ -503,15 +509,42 @@ export function api(
     };
     return uploadAuthority ? uploadAuthority(download) : download();
   });
+  const publicTurn = ({
+    input: _input,
+    actor: _actor,
+    membershipActor: _member,
+    ...turn
+  }: import("./conversation").ConversationTurn) => ({
+    ...turn,
+    canStop:
+      (_member ?? _actor) === (access?.identity.actor ?? identity.actor) &&
+      ["queued", "running"].includes(turn.status),
+  });
   app.get("/api/threads/:threadId/turns", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(
       (coordinator.state.conversationTurns ?? [])
         .filter((turn) => turn.threadId === c.req.param("threadId"))
-        .map(
-          ({ input: _input, actor: _actor, membershipActor: _member, ...publicTurn }) => publicTurn,
-        ),
+        .map(publicTurn),
     );
+  });
+  app.post("/api/threads/:threadId/turns/:turnId/stop", async (c) => {
+    if (Object.keys(c.get("body")).length) throw new AdmissionError("invalid_request", 400);
+    const stop = () => {
+      access?.requireThread(c.req.param("threadId"));
+      const turn = coordinator.conversationTurn(c.req.param("turnId"));
+      if (
+        turn.threadId !== c.req.param("threadId") ||
+        (turn.membershipActor ?? turn.actor) !== (access?.identity.actor ?? identity.actor)
+      )
+        throw new AdmissionError("not_found", 404);
+      coordinator.completeConversation(turn.id, undefined, "conversation_cancelled");
+      return publicTurn(coordinator.conversationTurn(turn.id));
+    };
+    // The authority rechecks the original session before the terminal commit.
+    const turn = await (uploadAuthority ? uploadAuthority(stop) : stop());
+    if (turn.error === "conversation_cancelled") await stopConversation?.(turn.id);
+    return c.json(turn);
   });
   app.get("/api/threads/:threadId/messages", (c) => {
     coordinator.thread(c.req.param("threadId"));
@@ -539,68 +572,69 @@ export function api(
             return operation();
           })
         : operation();
-    if (executionDisabled) {
-      if (
-        !uploads &&
-        body.attachments !== undefined &&
-        (!Array.isArray(body.attachments) || body.attachments.length)
-      )
-        throw new AdmissionError("note_attachments_unavailable");
-      return c.json(
-        publicMessage(
-          await admit(() =>
-            coordinator.appendNote(
-              c.req.param("threadId"),
-              body.content as string,
-              body.idempotencyKey as string,
-              identity.actor,
-              access?.identity,
-              body.attachments,
-              body.mentions,
-            ),
-          ),
-        ),
-        201,
+    const result = await admit(async () => {
+      const inspected = coordinator.inspectMessageAdmission(
+        c.req.param("threadId"),
+        body,
+        identity.actor,
       );
-    }
-    if (conversation) {
-      const result = await admit(() =>
-        coordinator.queueTurn(
+      if (inspected.replay) return inspected.replay;
+      if (!inspected.invokeAgent) {
+        return coordinator.appendNote(
           c.req.param("threadId"),
           body.content as string,
           body.idempotencyKey as string,
           identity.actor,
-          conversation.catalog,
-          body.modelSelection,
-          body.attachments,
           access?.identity,
+          body.attachments,
           body.mentions,
-        ),
-      );
-      await conversation.dispatch(result.turn.id);
-      return c.json({ ...result, message: publicMessage(result.message) }, 201);
-    }
-    const result = await admit(() =>
-      coordinator.submit(
+          inspected.admission,
+        );
+      }
+      if (!conversation) throw new AdmissionError("execution_disabled", 503);
+      const catalog = conversation.admit ? await conversation.admit() : conversation.catalog;
+      if (!catalog) throw new AdmissionError("model_not_configured", 503);
+      access?.requireThread(c.req.param("threadId"));
+      inspected.admission.bindTurn = conversation.bind;
+      return coordinator.queueTurn(
         c.req.param("threadId"),
         body.content as string,
         body.idempotencyKey as string,
         identity.actor,
+        catalog,
+        body.modelSelection,
         body.attachments,
         access?.identity,
         body.mentions,
-      ),
-    );
-    await dispatch(result.run.id);
-    return c.json({ ...result, message: publicMessage(result.message) }, 201);
+        inspected.admission,
+      );
+    });
+    if ("turn" in result) {
+      if (conversation) await conversation.dispatch(result.turn.id);
+      return c.json(
+        { ...result, invocation: "queued" as const, message: publicMessage(result.message) },
+        201,
+      );
+    }
+    return c.json({ ...publicMessage(result), invocation: "none" as const }, 201);
   });
+  // Source-scoped internal briefs are reauthorized only inside agent orchestration.
+  // Public change readers must never receive a saved brief via destination-thread access.
+  const publicChange = ({
+    memoryBrief: _memoryBrief,
+    ...change
+  }: import("@pitcrew/protocol").Change) => change;
   app.get("/api/threads/:threadId/changes", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(
-      coordinator.state.changes!.filter((change) => change.threadId === c.req.param("threadId")),
+      coordinator.state
+        .changes!.filter((change) => change.threadId === c.req.param("threadId"))
+        .map(publicChange),
     );
   });
-  app.get("/api/changes/:changeId", (c) => c.json(coordinator.change(c.req.param("changeId"))));
+  app.get("/api/changes/:changeId", (c) =>
+    c.json(publicChange(coordinator.change(c.req.param("changeId")))),
+  );
   app.get("/api/changes/:changeId/runs", (c) => {
     coordinator.change(c.req.param("changeId"));
     return c.json(coordinator.state.runs.filter((run) => run.changeId === c.req.param("changeId")));
@@ -640,32 +674,34 @@ export function api(
     c.header("X-Next-Sequence", String(scanned.at(-1)?.sequence ?? after));
     return c.json(page);
   });
-  app.get("/api/capabilities", (c) =>
-    c.json({
+  app.get("/api/capabilities", (c) => {
+    let catalog: ModelCatalog | undefined;
+    try {
+      catalog = conversation?.catalog;
+    } catch {
+      /* Notes remain available without a configured model. */
+    }
+    return c.json({
       landing: { enabled: !!landing, backend: landing?.backend ?? null },
       ...(uploads && access && uploadAuthority ? { uploads: UPLOAD_LIMITS } : {}),
-      ...(executionDisabled ? { notesEnabled: true } : {}),
-      ...(conversation
+      notesEnabled: true,
+      ...(catalog
         ? {
             composer: {
               conversation: true,
-              models: conversation.catalog.choices,
+              models: catalog.choices,
               settings: coordinator.state.project.modelSettings ?? {
-                default: conversation.catalog.defaultSelection,
+                default: catalog.defaultSelection,
               },
               attachments: selectionAttachmentCapabilities(
-                conversation.catalog.choices,
-                resolveRunModels(
-                  conversation.catalog,
-                  undefined,
-                  coordinator.state.project.modelSettings,
-                ),
+                catalog.choices,
+                resolveRunModels(catalog, undefined, coordinator.state.project.modelSettings),
               ),
             },
           }
         : {}),
-    }),
-  );
+    });
+  });
   const configured = () => {
     if (!landing) throw new AdmissionError("landing_unconfigured", 503);
     return landing;

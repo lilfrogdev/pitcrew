@@ -210,6 +210,7 @@ it("replays an uncertain send unchanged after polling, expiry and sending in ano
     .mockResolvedValue(undefined);
   render(<App api={api} demo />);
   await screen.findByText("Initial reference");
+  fireEvent.click(screen.getByRole("button", { name: "Agent" }));
   fireEvent.change(screen.getByLabelText("Choose attachments"), {
     target: { files: [new File(["x".repeat(65536)], "synthetic.txt", { type: "text/plain" })] },
   });
@@ -266,6 +267,7 @@ it("accepts image/video/PDF/text through one picker, preserves drafts across thr
   api.send = vi.fn(async () => {});
   render(<App api={api} demo />);
   await screen.findByText("Show the work behind a change, from delegation to review.");
+  fireEvent.click(screen.getByRole("button", { name: "Agent" }));
   const input = screen.getByLabelText("Choose attachments");
   expect(input.hasAttribute("accept")).toBe(false);
   const files = [

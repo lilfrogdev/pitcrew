@@ -2,7 +2,7 @@ import { expect, it } from "vite-plus/test";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 
-it("gates existing conversation recovery and saved Pi wake jobs on both cloud switches", async () => {
+it("gates conversation recovery on the independent chat switch while coding switches stay disabled", async () => {
   const bundle = await build({
     entryPoints: [new URL("../test/cold-conversation-worker.ts", import.meta.url).pathname],
     bundle: true,
@@ -74,10 +74,18 @@ it("gates existing conversation recovery and saved Pi wake jobs on both cloud sw
     });
     // Positive control: the real async RPC starts Pi and resumes pending tasks.
     expect((await call("observed", "awaken")).snapshot).toMatchObject({ opens: 1, resumes: 1 });
+    // Chat remains admitted independently when sandbox/infrastructure execution is off.
     for (const [name, bindings] of [
       ["infra-off", { INFRASTRUCTURE_ADMISSION_ENABLED: "false" }],
-      ["conversation-off", { CLOUD_CONVERSATION_ENABLED: "false" }],
       ["execution-off", { EXECUTION_MODE: "disabled" }],
+    ] as const) {
+      await reload();
+      await call(name, "seed");
+      await reload(bindings);
+      expect((await call(name, "awaken")).snapshot).toMatchObject({ opens: 1, resumes: 1 });
+    }
+    for (const [name, bindings] of [
+      ["conversation-off", { CLOUD_CONVERSATION_ENABLED: "false" }],
     ] as const) {
       await reload();
       await call(name, "seed");

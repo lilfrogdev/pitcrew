@@ -92,7 +92,7 @@ describe("conversation read ordering", () => {
     await waitFor(() => expect(create.hasAttribute("disabled")).toBe(false));
     fireEvent.click(create);
     await screen.findByRole("heading", { name: "Created after load" });
-    await screen.findByText("Start with the outcome");
+    await screen.findByText("Start the conversation");
     expect(api.createThread).toHaveBeenCalledTimes(1);
   });
   it("keeps send disabled while a retried snapshot is pending, even after lists succeed", async () => {

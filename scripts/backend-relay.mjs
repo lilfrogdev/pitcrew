@@ -70,6 +70,8 @@ const safeErrors = new Set([
   "invalid_role",
   "invalid_member",
   "invalid_mentions",
+  "invalid_destination",
+  "invalid_agent_mentions",
   "already_member",
   "capacity",
   "idempotency_conflict",
@@ -122,6 +124,7 @@ function sharedRoute(path, method, passwordMode = false) {
       "projects",
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/(?:move|dispatch)|threads/${id}/(?:archive|model-selection)|model-settings)`,
       `threads/${id}/(?:messages|invitations|model-selection|presence)`,
+      `threads/${id}/turns/${id}/stop`,
       `changes/${id}/runs`,
       `runs/${id}/(?:merge-approval|landing(?:/reconcile)?)`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
@@ -140,6 +143,7 @@ function sharedRoute(path, method, passwordMode = false) {
       `projects/${id}/invitations/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/revoke`,
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
       `threads/${id}/(?:messages|invitations|presence)`,
+      `threads/${id}/turns/${id}/stop`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
     ];
   if (passwordMode) {
@@ -365,6 +369,8 @@ const safeText = (value, limit, multiline = false) =>
   // eslint-disable-next-line no-control-regex -- Plain labels reject controls; descriptions permit LF and tab.
   !(multiline ? /[\x00-\x08\x0b-\x1f\x7f]/ : /[\x00-\x1f\x7f]/).test(value);
 const resourceId = /^[A-Za-z0-9:_-]{1,128}$/;
+const conversationStop =
+  /^\/api\/threads\/[A-Za-z0-9:_-]{1,128}\/turns\/[A-Za-z0-9:_-]{1,128}\/stop$/;
 const validLogicalName = (value) =>
   typeof value === "string" &&
   /^[\t\n\r\f\v ]*[A-Za-z0-9][A-Za-z0-9-]{0,62}[\t\n\r\f\v ]*$/.test(value);
@@ -963,8 +969,9 @@ export function createBackendRelayMiddleware({
         nativeProjectInvitations.test(decodedPath) ||
         nativeInvitationCreate.test(decodedPath) ||
         nativeInvitationToken.test(decodedPath));
-    const accountBoundWrite = uploadWrite || (passwordMode && shared && write);
     const presenceWrite = shared && write && url.pathname.endsWith("/presence");
+    const stopWrite = shared && write && conversationStop.test(decodedPath);
+    const accountBoundWrite = uploadWrite || stopWrite || (passwordMode && shared && write);
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
     if (
       ((provider || models) && url.search) ||
@@ -1035,23 +1042,25 @@ export function createBackendRelayMiddleware({
                   ? 8388608
                   : shared && url.pathname.endsWith("/presence")
                     ? 512
-                    : shared && url.pathname.endsWith("/messages")
-                      ? 2097152
-                      : shared
-                        ? creationWrite
-                          ? 8192
-                          : nativeManagementWrite
-                            ? decodedPath.endsWith("/repository/delete")
-                              ? 2048
-                              : nativeProjectInvitations.test(decodedPath) ||
-                                  nativeInvitationCreate.test(decodedPath) ||
-                                  nativeInvitationToken.test(decodedPath)
-                                ? decodedPath.endsWith("/revoke")
-                                  ? 512
-                                  : 1024
-                                : 8192
-                            : 16384
-                        : 8192,
+                    : stopWrite
+                      ? 512
+                      : shared && url.pathname.endsWith("/messages")
+                        ? 2097152
+                        : shared
+                          ? creationWrite
+                            ? 8192
+                            : nativeManagementWrite
+                              ? decodedPath.endsWith("/repository/delete")
+                                ? 2048
+                                : nativeProjectInvitations.test(decodedPath) ||
+                                    nativeInvitationCreate.test(decodedPath) ||
+                                    nativeInvitationToken.test(decodedPath)
+                                  ? decodedPath.endsWith("/revoke")
+                                    ? 512
+                                    : 1024
+                                  : 8192
+                              : 16384
+                          : 8192,
                 uploadWrite,
               );
         if (
@@ -1076,6 +1085,8 @@ export function createBackendRelayMiddleware({
             throw Error();
         } else if (creationWrite || nativeManagementWrite) {
           if (!normalizeNativeManagement(decodedPath, req.method, content)) throw Error();
+        } else if (stopWrite) {
+          if (Object.keys(content).length !== 0) throw Error();
         } else if (shared && url.pathname.endsWith("/presence")) {
           if (
             Object.keys(content).sort().join(",") !== "active,clientId,sequence" ||
@@ -1090,14 +1101,14 @@ export function createBackendRelayMiddleware({
       } catch (error) {
         return reply(res, error.status ?? 400, { error: "invalid_repository_request" });
       }
-      if (busy && !presenceWrite && !uploadCancel && !uploadWrite)
+      if (busy && !presenceWrite && !uploadCancel && !uploadWrite && !stopWrite)
         return reply(res, 409, { error: "backend_relay_busy" });
     }
     // Ephemeral writes do not lock message/approval writes, and leave their last slot free.
     if (active >= (presenceWrite || uploadWrite ? 3 : 4))
       return reply(res, 429, { error: "backend_relay_capacity" });
     active++;
-    if (write && !presenceWrite && !uploadCancel && !uploadWrite) busy = true;
+    if (write && !presenceWrite && !uploadCancel && !uploadWrite && !stopWrite) busy = true;
     try {
       // This explicit mode never probes Access or touches a cloudflared cache.
       const access = uploadAccess ?? (passwordMode ? "" : await token());
@@ -1239,7 +1250,7 @@ export function createBackendRelayMiddleware({
       return reply(res, 503, { error: "repository_backend_unavailable" });
     } finally {
       active--;
-      if (write && !presenceWrite && !uploadCancel && !uploadWrite) busy = false;
+      if (write && !presenceWrite && !uploadCancel && !uploadWrite && !stopWrite) busy = false;
     }
   };
 }

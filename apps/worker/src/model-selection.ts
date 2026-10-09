@@ -243,3 +243,25 @@ export function requiresUserOpenRouter(env: ModelEnv) {
     return true;
   }
 }
+
+/** Chat admission is independent of sandbox/infrastructure execution admission. */
+export function conversationsEnabled(env: ModelEnv & { CLOUD_CONVERSATION_ENABLED?: string }) {
+  return env.EXECUTION_MODE === "fake" || env.CLOUD_CONVERSATION_ENABLED === "true";
+}
+export function codingEnabled(
+  env: ModelEnv & { INFRASTRUCTURE_ADMISSION_ENABLED?: string; AUTH_MODE?: string },
+) {
+  return (
+    env.AUTH_MODE !== "password-only" &&
+    (env.EXECUTION_MODE === "fake" ||
+      (env.EXECUTION_MODE === "cloud" && env.INFRASTRUCTURE_ADMISSION_ENABLED === "true"))
+  );
+}
+/** Narrow resolver view only: callers must never pass this environment to a worker. */
+export function conversationModelEnv<T extends ModelEnv & { CLOUD_CONVERSATION_ENABLED?: string }>(
+  env: T,
+): T {
+  return env.EXECUTION_MODE === "fake" || !conversationsEnabled(env)
+    ? env
+    : { ...env, EXECUTION_MODE: "cloud" };
+}

@@ -27,6 +27,7 @@ import { UploadDrafts } from "./uploads/drafts";
 import { StoredFile } from "./uploads/Preview";
 import { Composer, readAttachment, attachmentError, type AttachmentDraft } from "./Composer";
 import {
+  ATTACHMENT_LIMITS,
   validateMessageAttachments,
   isStoredFile,
   type UploadSubmission,
@@ -34,9 +35,9 @@ import {
   TEXT_ATTACHMENT_CAPABILITIES,
   type SubmittedAttachment,
   type ModelSelection,
+  type MessageDestination,
 } from "@pitcrew/protocol";
 import { ModelPicker } from "./ModelPicker";
-import { PermissionsMenu } from "./PermissionsMenu";
 import { useKeyboardFocus } from "./useKeyboardFocus";
 import { ProfileProviders } from "./ProfileProviders";
 import { Collaborators, InvitationGate } from "./Collaboration";
@@ -46,6 +47,7 @@ import type { AuthUser } from "./auth-api";
 import { Avatar } from "./Avatar";
 import { useThreadPresence } from "./useThreadPresence";
 import { ComposerStatus } from "./ComposerStatus";
+import { AgentTurnControls } from "./AgentTurnControls";
 import { landingApprovalPending } from "./landing-approval";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
@@ -81,7 +83,6 @@ export function App({
   const [providersLoading, setProvidersLoading] = useState(true);
   const [composerCapabilities, setComposerCapabilities] =
     useState<LandingCapabilities["composer"]>();
-  const [notesEnabled, setNotesEnabled] = useState(false);
   const [selections, setSelections] = useState<Record<string, ModelSelection>>({});
   const [selectionSaving, setSelectionSaving] = useState<Record<string, boolean>>({});
   const landingAccount = viewer?.id ?? (demo ? "fixture-local" : undefined);
@@ -96,8 +97,13 @@ export function App({
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadId, setThreadId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
+  const [snapshotSession, setSnapshotSession] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [destinations, setDestinations] = useState<Record<string, MessageDestination>>({});
+  const destination = destinations[threadId] ?? "team";
   const mentionDraft = useMentionDrafts(threadId, drafts[threadId] ?? "");
+  const submittedAgentMentions = mentionDraft.submittedAgents();
+  const invoking = destination === "agent" || submittedAgentMentions.length > 0;
   const [attachments, setAttachments] = useState<Record<string, AttachmentDraft[]>>({});
   const attachmentDrafts = useRef<Record<string, AttachmentDraft[]>>({});
   const uploadManager = useMemo(
@@ -157,6 +163,8 @@ export function App({
         submitted: (SubmittedAttachment | UploadSubmission)[];
         selection: string;
         mentions: string;
+        destination: MessageDestination;
+        agentMentions: string;
         key: string;
       }
     >
@@ -192,7 +200,6 @@ export function App({
     setLandingBackend(null);
     setProvidersLoading(true);
     setComposerCapabilities(undefined);
-    setNotesEnabled(false);
     setUploadsEnabled(false);
     if (api.collaboration && !projectId) {
       setProvidersLoading(false);
@@ -203,7 +210,6 @@ export function App({
       .then((capabilities) => {
         if (!cancelled) {
           setComposerCapabilities(capabilities.composer);
-          setNotesEnabled(capabilities.notesEnabled === true);
           setUploadsEnabled(!!capabilities.uploads && !!api.uploads);
           setProvidersLoading(false);
           setLandingEnabled(
@@ -369,6 +375,7 @@ export function App({
         const next = await api.snapshot(threadId);
         if (!cancelled && current === generation.current && sequence === snapshotSequence.current) {
           setSnapshot(next);
+          setSnapshotSession(`${viewer?.id ?? ""}:${threadId}`);
           setSnapshotLoading(false);
           setSnapshotError("");
           setConnectionFailed(false);
@@ -405,13 +412,13 @@ export function App({
       window.clearInterval(timer);
       window.removeEventListener("online", onOnline);
     };
-  }, [api, threadId, revision, accessLost]);
+  }, [api, threadId, revision, accessLost, viewer?.id]);
 
   const displayOnly = composerCapabilities?.displayOnly === true;
   const executionEnabled =
     !displayOnly &&
     (composerCapabilities?.executionEnabled ?? composerCapabilities?.conversation ?? false);
-  const humanMessages = notesEnabled && !executionEnabled;
+  const humanMessages = !invoking;
   const usableModels =
     composerCapabilities?.conversation || displayOnly
       ? composerCapabilities.models.filter(
@@ -441,8 +448,9 @@ export function App({
     usableModels.some(
       (model) => model.id === selection.modelId && model.efforts.includes(selection.effort),
     );
-  const attachmentCapabilities =
-    providerConnected && composerCapabilities?.conversation && selection
+  const attachmentCapabilities = !invoking
+    ? { ...TEXT_ATTACHMENT_CAPABILITIES, images: true, maxImages: ATTACHMENT_LIMITS.count }
+    : providerConnected && composerCapabilities?.conversation && selection
       ? selectionAttachmentCapabilities(usableModels, {
           repoAgent: selection,
           implementer: composerCapabilities.settings.roles?.implementer ?? selection,
@@ -458,7 +466,10 @@ export function App({
       prior &&
       prior.threadId === threadId &&
       prior.content === (drafts[threadId] ?? "").trim() &&
-      prior.selection === JSON.stringify(selection) &&
+      prior.selection === JSON.stringify(invoking ? selection : undefined) &&
+      prior.destination === destination &&
+      prior.agentMentions === JSON.stringify(submittedAgentMentions) &&
+      prior.mentions === JSON.stringify(mentionDraft.submitted()) &&
       prior.drafts === draftFingerprint(files)
     ) {
       // A refreshed transcript may include this very submission. Keep its exact
@@ -596,11 +607,10 @@ export function App({
       content.length > 8000 ||
       mutation.current ||
       loading ||
-      !(humanMessages || executionEnabled) ||
+      (invoking && !executionEnabled) ||
       !threadId ||
-      selectionSaving[threadId] ||
-      (!humanMessages && !modelValid) ||
-      (humanMessages && files.length > 0 && !uploadsEnabled) ||
+      (invoking && selectionSaving[threadId]) ||
+      (invoking && !modelValid) ||
       files.some((item) => item.status !== "ready")
     )
       return;
@@ -620,7 +630,9 @@ export function App({
     const submittedMentions = mentionDraft.submitted();
     const mentionFingerprint = JSON.stringify(submittedMentions);
     const attachmentFingerprint = JSON.stringify(submittedAttachments);
-    const selectionFingerprint = JSON.stringify(selection);
+    const sendSelection = invoking ? selection : undefined;
+    const selectionFingerprint = JSON.stringify(sendSelection);
+    const agentFingerprint = JSON.stringify(submittedAgentMentions);
     const selected = threadId;
     const selectedGeneration = generation.current;
     // Supersede any poll started before this write; it may contain an older transcript.
@@ -631,7 +643,9 @@ export function App({
       existing.content !== content ||
       existing.attachments !== attachmentFingerprint ||
       existing.selection !== selectionFingerprint ||
-      existing.mentions !== mentionFingerprint
+      existing.mentions !== mentionFingerprint ||
+      existing.destination !== destination ||
+      existing.agentMentions !== agentFingerprint
     )
       pending.current[selected] = {
         threadId: selected,
@@ -641,6 +655,8 @@ export function App({
         submitted: structuredClone(submittedAttachments),
         selection: selectionFingerprint,
         mentions: mentionFingerprint,
+        destination,
+        agentMentions: agentFingerprint,
         key: crypto.randomUUID(),
       };
     uploadManager?.freezeExpiry(files.map((file) => file.id));
@@ -648,13 +664,15 @@ export function App({
     setBusy(true);
     setMutationError("");
     try {
-      await api.send(
+      const result = await api.send(
         selected,
         content,
         pending.current[selected].key,
         submittedAttachments,
-        selection,
+        sendSelection,
         submittedMentions.length ? submittedMentions : undefined,
+        destination,
+        submittedAgentMentions.length ? submittedAgentMentions : undefined,
       );
       delete pending.current[selected];
       mentionDraft.clear();
@@ -662,13 +680,11 @@ export function App({
       files.forEach((file) => uploadManager?.remove(file.id, false));
       updateAttachments(selected, () => []);
       setAttachmentErrors((all) => ({ ...all, [selected]: "" }));
-      setAnnouncement(
-        humanMessages
-          ? "Message sent."
-          : composerCapabilities?.conversation
-            ? "Message sent and repository agent reply queued."
-            : "Message sent and change queued.",
-      );
+      const admitted =
+        result && typeof result === "object" && "invocation" in result
+          ? result.invocation === "queued"
+          : invoking;
+      setAnnouncement(admitted ? "Message sent and agent reply queued." : "Team message sent.");
       try {
         const next = await api.snapshot(selected);
         if (
@@ -676,6 +692,7 @@ export function App({
           selectedSequence === snapshotSequence.current
         ) {
           setSnapshot(next);
+          setSnapshotSession(`${viewer?.id ?? ""}:${selected}`);
           setSnapshotError("");
           setConnectionFailed(false);
         }
@@ -998,29 +1015,27 @@ export function App({
               {attachmentErrors[threadId]}
             </p>
           )}
-          {snapshot.turns?.some(
-            (turn) => turn.status === "queued" || turn.status === "running",
-          ) && (
-            <p className="composer-hint" role="status">
-              Repository agent replies are queued or running. New messages join the conversation
-              queue.
-            </p>
-          )}
           {snapshot.turns
-            ?.filter((turn) => turn.status === "failed")
+            ?.filter((turn) => turn.status === "failed" && turn.error !== "conversation_cancelled")
             .map((turn) => (
               <p key={turn.id} className="composer-error" role="alert">
                 Repository agent reply failed: {turn.error ?? "Execution unavailable"}. No work was
                 silently replayed.
               </p>
             ))}
+          {viewer && !loading && snapshotSession === `${viewer.id}:${threadId}` && api.stopTurn && (
+            <AgentTurnControls
+              key={`${viewer.id}:${threadId}`}
+              threadId={threadId}
+              turns={snapshot.turns ?? []}
+              stopTurn={api.stopTurn}
+              onAccessLost={accessLost}
+            />
+          )}
           {attachmentCompatibilityError && (
             <p className="composer-error" role="alert">
               {attachmentCompatibilityError}
             </p>
-          )}
-          {humanMessages && (
-            <p className="composer-hint">Messages are shared. Agent runs are disabled.</p>
           )}
           <ComposerStatus
             onReconnect={error && error !== snapshotError ? undefined : refresh}
@@ -1035,12 +1050,19 @@ export function App({
             dictationEnabled={section === "work"}
             draft={drafts[threadId] ?? ""}
             mentionMembers={mentionMembers}
+            destination={destination}
+            invoking={invoking}
+            onDestination={(next) => setDestinations((all) => ({ ...all, [threadId]: next }))}
+            onAgentMention={(text, mention) => {
+              mentionDraft.change(text, undefined, mention);
+              setDrafts((all) => ({ ...all, [threadId]: text }));
+            }}
             onMention={(text, mention) => {
               mentionDraft.change(text, mention);
               setDrafts((all) => ({ ...all, [threadId]: text }));
             }}
-            onDraft={(text) => {
-              mentionDraft.change(text);
+            onDraft={(text, typed, replaced) => {
+              mentionDraft.change(text, undefined, undefined, typed, replaced);
               setDrafts((all) => ({ ...all, [threadId]: text }));
             }}
             attachments={preparedAttachments}
@@ -1054,16 +1076,13 @@ export function App({
             }}
             onSend={send}
             disabled={!threadId || busy}
-            attachmentsEnabled={uploadsEnabled || !humanMessages}
+            attachmentsEnabled
             sending={busy}
             canSend={
               !!threadId &&
               !busy &&
               !loading &&
-              (humanMessages || executionEnabled) &&
-              !selectionSaving[threadId] &&
-              (humanMessages || modelValid) &&
-              (!humanMessages || uploadsEnabled || !(attachments[threadId] ?? []).length) &&
+              (!invoking || (executionEnabled && modelValid && !selectionSaving[threadId])) &&
               !attachmentCompatibilityError &&
               !!(drafts[threadId] ?? "").trim() &&
               (drafts[threadId] ?? "").length <= 8000 &&
@@ -1079,9 +1098,7 @@ export function App({
                   disabled={!threadId || busy || !!selectionSaving[threadId]}
                   executionEnabled={composerCapabilities ? executionEnabled : null}
                 />
-              ) : !projectId ? null : humanMessages ? (
-                <PermissionsMenu executionEnabled={false} />
-              ) : providersLoading ? (
+              ) : !projectId ? null : providersLoading ? (
                 <span className="provider-setup" role="status">
                   Checking providers…
                 </span>

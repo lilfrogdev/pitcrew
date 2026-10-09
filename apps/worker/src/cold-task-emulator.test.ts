@@ -356,7 +356,11 @@ it("cold native observations, Stop, denied grants and saved wake jobs never resu
       effects: 0,
     });
     expect(await call("completed", "mismatch")).toMatchObject({ error: "idempotency_conflict" });
-    expect((await call("completed", "result")).result.stage).toBe("done");
+    expect((await call("completed", "result")).result).toMatchObject({
+      stage: "done",
+      cleanupVerified: true,
+      result: { summary: "pinned successful result", candidateSha: "b".repeat(40) },
+    });
     await reload({
       INFRASTRUCTURE_ADMISSION_ENABLED: "true",
       EXECUTION_MODE: "cloud",

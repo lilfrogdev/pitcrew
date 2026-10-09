@@ -236,7 +236,7 @@ describe("project conversations", () => {
     await user.type(screen.getByLabelText("Conversation title"), "New change");
     await user.click(screen.getByRole("button", { name: /^Create$/ }));
     await screen.findByRole("heading", { name: "New change" });
-    await screen.findByText("Start with the outcome");
+    await screen.findByText("Start the conversation");
   });
   it("submits once and retains the idempotency key after an uncertain write", async () => {
     const api = createFixtureApi();
@@ -263,7 +263,7 @@ describe("project conversations", () => {
     );
     expect(send.mock.calls[0][2]).toBe(send.mock.calls[1][2]);
     expect(screen.getAllByText("Add a useful change")).toHaveLength(1);
-    expect(within(screen.getByLabelText("Change evidence")).getByText("Queued")).toBeTruthy();
+    expect(within(screen.getByLabelText("Change evidence")).queryByText("Queued")).toBeNull();
   });
   it("reconnects without replaying a message and keeps the selected thread", async () => {
     const api = createFixtureApi();

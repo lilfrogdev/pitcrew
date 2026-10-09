@@ -68,3 +68,9 @@ The existing [Cloudflare notes](docs/cloudflare-connection.md),
 [repository lifecycle contract](docs/repository-lifecycle.md) describe those integrations.
 They include dated setup history; verify current deployment state with the integration owner.
 Repository access and shared app access are separate onboarding steps.
+
+The [Agent/Team composer](docs/agent-team-composer.md) saves Team notes without inference and
+invokes the repository agent only for an explicit Agent destination or reserved `@agent` mention.
+The opt-in [repository-agent memory integration](docs/repository-memory.md) keeps persistent
+OptChat-style history for the main agent, with ordinary Pi compaction for implementation and
+review agents. It is disabled by default and does not enable live execution.

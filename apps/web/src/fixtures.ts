@@ -238,15 +238,27 @@ export function createFixtureApi(): Api {
       data[key] = { messages: [], runs: [], reviews: [], evidence: [] };
       return thread;
     },
-    send: async (threadId, content, key, attachments, selection = settings.default) => {
-      if (sent.has(key)) return;
+    send: async (
+      threadId,
+      content,
+      key,
+      attachments,
+      selection = settings.default,
+      mentions,
+      destination = "team",
+      agentMentions,
+    ) => {
+      const invoking = destination === "agent" || !!agentMentions?.length;
+      if (sent.has(key)) return { invocation: invoking ? "queued" : "none" };
       const validated = validateMessageAttachments(
         attachments,
-        selectionAttachmentCapabilities(models, {
-          repoAgent: selection,
-          implementer: settings.roles?.implementer ?? selection,
-          reviewer: settings.roles?.reviewer ?? selection,
-        }),
+        invoking
+          ? selectionAttachmentCapabilities(models, {
+              repoAgent: selection,
+              implementer: settings.roles?.implementer ?? selection,
+              reviewer: settings.roles?.reviewer ?? selection,
+            })
+          : undefined,
       );
       const stored: MessageAttachment[] = validated.map((attachment) => {
         if (attachment.mediaType === "text/plain") return attachment;
@@ -265,9 +277,21 @@ export function createFixtureApi(): Api {
         threadId,
         role: "user",
         content,
+        destination,
+        ...(agentMentions?.length ? { agentMentions: structuredClone(agentMentions) } : {}),
+        ...(mentions?.length
+          ? {
+              mentions: mentions.map((mention) => ({
+                ...mention,
+                username: content.slice(mention.start + 1, mention.end),
+              })),
+            }
+          : {}),
         ...(stored.length ? { attachments: structuredClone(stored) } : {}),
         createdAt: new Date().toISOString(),
       };
+      data[threadId].messages.push(message);
+      if (!invoking) return { invocation: "none" };
       const run: Run = {
         id: `run-${key}`,
         threadId,
@@ -275,7 +299,7 @@ export function createFixtureApi(): Api {
         baseSha,
         configurationRevision: "fixture-v1",
       };
-      data[threadId].messages.push(message, {
+      data[threadId].messages.push({
         ...message,
         id: `agent-${key}`,
         role: "coordinator",
@@ -284,6 +308,7 @@ export function createFixtureApi(): Api {
           "Your change is queued. This preview uses synthetic data; no cloud worker or model was called.",
       });
       data[threadId].runs.push(run);
+      return { invocation: "queued" };
     },
   };
 }

@@ -30,6 +30,7 @@ export function passwordApiRoute(path: string, method: string) {
       `projects/${id}/invitations/${upload}/revoke`,
       `projects/${id}/(?:threads|invitations|knowledge|verification-profile|reports|intake/move|threads/${id}/archive)`,
       `threads/${id}/(?:messages|invitations|presence)`,
+      `threads/${id}/turns/${id}/stop`,
       "invitations/[a-f0-9]{64}/(?:accept|revoke)",
     ],
     PATCH: [`projects/${id}/repository`],

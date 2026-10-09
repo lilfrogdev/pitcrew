@@ -6,6 +6,7 @@ export default defineConfig({
     include: [
       "apps/worker/src/**/*.test.ts",
       "apps/worker/test/repository-management*.test.ts",
+      "apps/worker/test/agent-team*.test.ts",
       "packages/**/*.test.ts",
     ],
   },

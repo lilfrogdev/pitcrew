@@ -1,5 +1,6 @@
 import { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
-import { validateMentions } from "./mentions";
+import { createHash } from "node:crypto";
+import { validateMentions, validateInvocation } from "./mentions";
 import type { ConversationTurn, ConversationInput } from "./conversation";
 import type { ModelCatalog } from "./model-selection";
 import { validateSelection, resolveRunModels } from "./model-selection";
@@ -160,7 +161,60 @@ function delegationPolicy(project: Project): KnowledgeRecord {
     configurationRevision: project.configurationRevision,
   };
 }
+export interface MessageAdmission {
+  storageKey: string;
+  fingerprint: string;
+  destination: import("@pitcrew/protocol").MessageDestination;
+  agentMentions: import("@pitcrew/protocol").AgentMention[];
+  /** Trusted synchronous grant binding inside the message/turn/receipt transaction. */
+  bindTurn?: (turn: ConversationTurn) => void;
+}
+export type MessageAdmissionResult = Message | { message: Message; turn: ConversationTurn };
 export class Coordinator {
+  /** One receipt namespace binds an authenticated request across note/turn routing and restarts. */
+  inspectMessageAdmission(threadId: string, body: Record<string, unknown>, actor: string) {
+    this.thread(threadId);
+    this.validateKey(body.idempotencyKey as string);
+    const intent = validateInvocation(body.content, body.destination, body.agentMentions);
+    const storageKey = `message_${JSON.stringify([actor, body.idempotencyKey])}`;
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          threadId,
+          content: body.content,
+          destination: intent.destination,
+          agentMentions: intent.agentMentions,
+          mentions:
+            Array.isArray(body.mentions) && !body.mentions.length ? undefined : body.mentions,
+          attachments:
+            Array.isArray(body.attachments) && !body.attachments.length
+              ? undefined
+              : body.attachments,
+          modelSelection: body.modelSelection,
+        }),
+      )
+      .digest("hex");
+    const admission: MessageAdmission = {
+      storageKey,
+      fingerprint,
+      destination: intent.destination,
+      agentMentions: intent.agentMentions,
+    };
+    const previous = this.state.keys[storageKey];
+    if (previous && previous.body !== JSON.stringify({ fingerprint }))
+      throw new AdmissionError("idempotency_conflict", 409);
+    return {
+      admission,
+      invokeAgent: intent.invokeAgent,
+      replay: previous ? (structuredClone(previous.result) as MessageAdmissionResult) : undefined,
+    };
+  }
+
+  /** Runtime-only trusted feature admission, never client-selected. */
+  repoMemoryEnabled = false;
+  /** Synchronous repository-owned source fences around durable side effects. */
+  memoryRunFence?: (runId: string) => void;
+  memoryConversationFence?: (turnId: string) => void;
   bindVerifiedAccount(accessActor: string, userId: string, email: string) {
     const bindings = this.state.identityBindings ?? {};
     const existing = bindings[accessActor];
@@ -483,6 +537,7 @@ export class Coordinator {
       return { status: "stale" };
     const currentKnowledge = this.repositoryContext(
       this.state.runActors?.[context.runId] ?? this.state.credentialActors?.[context.runId],
+      request.memoryBrief ? context.threadId : undefined,
     ).currentKnowledge!;
     this.durableUpdate(() => {
       (this.state.knowledgeObservations ??= {})[context.runId] = currentKnowledge.revision;
@@ -1069,9 +1124,10 @@ export class Coordinator {
     attachments?: unknown,
     author?: Message["author"],
     mentions?: unknown,
+    admission?: MessageAdmission,
   ) {
     this.validateKey(key);
-    const storageKey = `conversation_${JSON.stringify([actor, key])}`;
+    const storageKey = admission?.storageKey ?? `conversation_${JSON.stringify([actor, key])}`;
     // Leave room for the bounded pending replies and terminal worker/event records.
     if (
       !this.state.keys[storageKey] &&
@@ -1121,18 +1177,20 @@ export class Coordinator {
     );
     return this.transaction(
       storageKey,
-      {
-        threadId,
-        content,
-        actor,
-        selection: chosen,
-        attachments: descriptor,
-        ...(Array.isArray(mentions) && !mentions.length
-          ? {}
-          : mentions === undefined
-            ? {}
-            : { mentions }),
-      },
+      admission
+        ? { fingerprint: admission.fingerprint }
+        : {
+            threadId,
+            content,
+            actor,
+            selection: chosen,
+            attachments: descriptor,
+            ...(Array.isArray(mentions) && !mentions.length
+              ? {}
+              : mentions === undefined
+                ? {}
+                : { mentions }),
+          },
       () => {
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
           throw new AdmissionError("invalid_content");
@@ -1151,7 +1209,7 @@ export class Coordinator {
           throw new AdmissionError("capacity", 429);
         // Admit the complete preserved history against the new selection. Nothing is silently dropped.
         const historyAttachments = this.state.messages
-          .filter((m) => m.threadId === threadId)
+          .filter((m) => !this.repoMemoryEnabled && m.threadId === threadId)
           .flatMap((m) => m.attachments ?? [])
           .map((item) =>
             isStoredFile(item) ? item : "attachmentId" in item ? this.attachments!.get(item) : item,
@@ -1178,6 +1236,14 @@ export class Coordinator {
           id: "$pending",
           threadId,
           role: "user",
+          ...(admission
+            ? {
+                destination: admission.destination,
+                ...(admission.agentMentions.length
+                  ? { agentMentions: admission.agentMentions }
+                  : {}),
+              }
+            : {}),
           ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           content: content.trim(),
           attachments: accepted.map((item) =>
@@ -1195,7 +1261,12 @@ export class Coordinator {
         const contextBytes = new TextEncoder().encode(
           JSON.stringify({
             repositoryContext: this.repositoryContext(),
-            messages: [...this.state.messages.filter((m) => m.threadId === threadId), provisional],
+            messages: [
+              ...this.state.messages.filter(
+                (m) => !this.repoMemoryEnabled && m.threadId === threadId,
+              ),
+              provisional,
+            ],
           }),
         ).byteLength;
         const contextLimit = Math.min(
@@ -1224,6 +1295,14 @@ export class Coordinator {
           id: this.id(),
           threadId,
           role: "user",
+          ...(admission
+            ? {
+                destination: admission.destination,
+                ...(admission.agentMentions.length
+                  ? { agentMentions: admission.agentMentions }
+                  : {}),
+              }
+            : {}),
           ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           ...(author ? { author: structuredClone(author) } : {}),
           content: content.trim(),
@@ -1233,7 +1312,10 @@ export class Coordinator {
         if (resolved?.ids.length)
           this.uploads!.link(resolved.ids, author?.actor ?? actor, threadId, message.id);
         const history = [...this.state.messages.filter((m) => m.threadId === threadId), message];
-        if (new TextEncoder().encode(JSON.stringify(history)).byteLength > 196608)
+        if (
+          !this.repoMemoryEnabled &&
+          new TextEncoder().encode(JSON.stringify(history)).byteLength > 196608
+        )
           throw new AdmissionError("conversation_context_limit", 413);
         const turn: ConversationTurn = {
           id: this.id(),
@@ -1248,6 +1330,7 @@ export class Coordinator {
           configurationRevision: this.state.project.configurationRevision,
           createdAt: this.now(),
         };
+        admission?.bindTurn?.(turn);
         thread.modelSelection = structuredClone(chosen);
         this.state.messages.push(message);
         turns.push(turn);
@@ -1262,7 +1345,10 @@ export class Coordinator {
     if (!turn) throw new AdmissionError("not_found", 404);
     return turn;
   }
-  beginConversation(id: string): ConversationInput | undefined {
+  beginConversation(
+    id: string,
+    memoryEnabled = this.repoMemoryEnabled,
+  ): ConversationInput | undefined {
     const turn = this.conversationTurn(id);
     if (!["queued", "running"].includes(turn.status)) return;
     if (
@@ -1299,14 +1385,43 @@ export class Coordinator {
           if (item.replyMessageId) order.set(item.replyMessageId, index * 2 + 1);
         });
       messages.sort((left, right) => (order.get(left.id) ?? -1) - (order.get(right.id) ?? -1));
+      const admittedMessages = memoryEnabled
+        ? messages.filter((message) => message.id === turn.messageId)
+        : messages;
       if (
         new TextEncoder().encode(
-          JSON.stringify({ messages, repositoryContext: this.repositoryContext() }),
+          JSON.stringify({
+            messages: admittedMessages,
+            repositoryContext: this.repositoryContext(),
+          }),
         ).byteLength > (turn.contextBudgetBytes ?? 196608)
       )
         throw new AdmissionError("conversation_context_limit", 413);
       turn.status = "running";
       turn.input = {
+        ...(memoryEnabled
+          ? {
+              memoryMessageIds: this.state.messages
+                .filter(
+                  (message, index) =>
+                    message.id !== turn.messageId &&
+                    (index < origin ||
+                      this.state
+                        .conversationTurns!.slice(0, this.state.conversationTurns!.indexOf(turn))
+                        .some((earlier) => earlier.replyMessageId === message.id)),
+                )
+                .map((message) => message.id),
+              memoryEventSequence:
+                this.state.events.find(
+                  (event) => event.type === "message.created" && event.entityId === turn.messageId,
+                )?.sequence ?? 0,
+            }
+          : {}),
+        memoryEnabled: memoryEnabled || undefined,
+        ...(turn.canaryId ? { canaryId: turn.canaryId } : {}),
+        ...(turn.normalConversationScopeId
+          ? { normalConversationScopeId: turn.normalConversationScopeId }
+          : {}),
         credentialActor: turn.actor,
         turnId: id,
         threadId: turn.threadId,
@@ -1315,14 +1430,18 @@ export class Coordinator {
         models: structuredClone(turn.models),
         baseSha: turn.baseSha,
         configurationRevision: turn.configurationRevision,
-        repositoryContext: this.repositoryContext(turn.membershipActor ?? turn.actor),
-        messages: structuredClone(messages),
+        repositoryContext: this.repositoryContext(
+          turn.membershipActor ?? turn.actor,
+          turn.threadId,
+        ),
+        messages: structuredClone(admittedMessages),
       };
       this.event("conversation.started", id);
       return structuredClone(turn.input);
     });
   }
   completeConversation(id: string, text?: string, error?: string) {
+    if (!error) this.memoryConversationFence?.(id);
     const turn = this.conversationTurn(id);
     if (["completed", "failed"].includes(turn.status)) return;
     if (!error && (typeof text !== "string" || !text.trim() || text.length > 16384))
@@ -1334,9 +1453,12 @@ export class Coordinator {
         id: this.id(),
         threadId: turn.threadId,
         role: "coordinator",
-        content: error
-          ? `Repository agent could not answer: ${error}. You can send a new message to retry.`
-          : text!,
+        content:
+          error === "conversation_cancelled"
+            ? "Repository agent stopped. You can send a new message when you're ready."
+            : error
+              ? `Repository agent could not answer: ${error}. You can send a new message to retry.`
+              : text!,
         createdAt: this.now(),
       };
       turn.replyMessageId = message.id;
@@ -1353,17 +1475,12 @@ export class Coordinator {
     author?: Message["author"],
     attachments?: unknown,
     mentions?: unknown,
+    admission?: MessageAdmission,
   ): Message {
     this.validateKey(key);
-    if (
-      attachments !== undefined &&
-      (!Array.isArray(attachments) ||
-        attachments.some((item) => !item || typeof item !== "object" || !("uploadId" in item)))
-    )
-      throw new AdmissionError("note_attachments_unavailable");
     if (new TextEncoder().encode(JSON.stringify(this.state)).byteLength > 15 * 1024 * 1024)
       throw new AdmissionError("repository_storage_limit", 413);
-    const storageKey = `note_${JSON.stringify([actor, key])}`;
+    const storageKey = admission?.storageKey ?? `note_${JSON.stringify([actor, key])}`;
     const previous = this.state.keys[storageKey]?.result as Message | undefined;
     const resolved = this.uploads?.resolve(
       attachments,
@@ -1372,20 +1489,42 @@ export class Coordinator {
       undefined,
       previous?.id,
     );
-    if (!this.uploads && Array.isArray(attachments) && attachments.length)
-      throw new AdmissionError("note_attachments_unavailable");
+    const accepted = resolved?.attachments ?? validateMessageAttachments(attachments);
+    if (previous)
+      accepted.forEach((item, index) => {
+        if (!("data" in item)) return;
+        const ref = previous.attachments?.[index];
+        if (
+          !this.attachments ||
+          !ref ||
+          !("attachmentId" in ref) ||
+          isStoredFile(ref) ||
+          !this.attachments.matches(ref, item)
+        )
+          throw new AdmissionError("idempotency_conflict", 409);
+      });
     return this.transaction(
-      `note_${JSON.stringify([actor, key])}`,
-      {
-        threadId,
-        content,
-        ...(Array.isArray(mentions) && !mentions.length
-          ? {}
-          : mentions === undefined
-            ? {}
-            : { mentions }),
-        ...(resolved?.attachments.length ? { attachments: resolved.attachments } : {}),
-      },
+      storageKey,
+      admission
+        ? { fingerprint: admission.fingerprint }
+        : {
+            threadId,
+            content,
+            ...(Array.isArray(mentions) && !mentions.length
+              ? {}
+              : mentions === undefined
+                ? {}
+                : { mentions }),
+            ...(accepted.length
+              ? {
+                  attachments: accepted.map((item) =>
+                    "data" in item
+                      ? { id: item.id, name: item.name, mediaType: item.mediaType }
+                      : item,
+                  ),
+                }
+              : {}),
+          },
       () => {
         this.thread(threadId);
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
@@ -1401,12 +1540,22 @@ export class Coordinator {
           id: this.id(),
           threadId,
           role: "user",
-          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
-          ...(resolved?.attachments.length
+          ...(admission
             ? {
-                attachments: resolved.attachments.map((item) =>
-                  "data" in item ? this.attachments!.put(item) : item,
-                ),
+                destination: admission.destination,
+                ...(admission.agentMentions.length
+                  ? { agentMentions: admission.agentMentions }
+                  : {}),
+              }
+            : {}),
+          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
+          ...(accepted.length
+            ? {
+                attachments: accepted.map((item) => {
+                  if (!("data" in item)) return item;
+                  if (!this.attachments) throw new AdmissionError("image_storage_unavailable", 503);
+                  return this.attachments.put(item);
+                }),
               }
             : {}),
           content: content.trim(),
@@ -1422,6 +1571,7 @@ export class Coordinator {
     );
   }
   delegateConversation(id: string) {
+    this.memoryConversationFence?.(id);
     const turn = this.conversationTurn(id);
     if (!this.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId))
       throw new AdmissionError("not_found", 404);
@@ -1440,6 +1590,7 @@ export class Coordinator {
         id: this.id(),
         threadId: turn.threadId,
         originMessageIds: [turn.messageId],
+        memoryBrief: structuredClone(turn.input!.memoryBrief),
         conversationContext: structuredClone(
           turn.input!.messages.filter((m) => m.id !== turn.messageId),
         ),
@@ -1555,6 +1706,22 @@ export class Coordinator {
     if (!change) throw new AdmissionError("not_found", 404);
     return change;
   }
+  /** Retries share the original change's frozen memory admission, never a new turn. */
+  memoryConversationOrigin(changeId: string): ConversationTurn {
+    const change = this.change(changeId);
+    const origins = (this.state.conversationTurns ?? []).filter(
+      (turn) =>
+        turn.runId !== undefined &&
+        this.state.runs.some((run) => run.id === turn.runId && run.changeId === changeId) &&
+        turn.threadId === change.threadId &&
+        change.originMessageIds.length === 1 &&
+        change.originMessageIds[0] === turn.messageId &&
+        turn.input?.memoryEnabled === true &&
+        JSON.stringify(turn.input.memoryBrief) === JSON.stringify(change.memoryBrief),
+    );
+    if (!change.memoryBrief || origins.length !== 1) throw Error("memory_context_unavailable");
+    return origins[0];
+  }
   retryChange(
     changeId: string,
     key: string,
@@ -1606,6 +1773,7 @@ export class Coordinator {
       this.state.runs.push(run);
       (this.state.credentialActors ??= {})[run.id] = actor;
       (this.state.runActors ??= {})[run.id] = membershipActor;
+      if (change.memoryBrief) this.memoryRunFence?.(run.id);
       if (sourcePlan) (this.state.plans ??= {})[run.id] = structuredClone(sourcePlan);
       this.event("run.queued", run.id);
       return run;
@@ -1631,16 +1799,20 @@ export class Coordinator {
     }
     return structuredClone(this.state.events.slice(low, low + 256));
   }
-  repositoryContext(actor?: string): RepositoryContext {
+  repositoryContext(actor?: string, destinationThreadId?: string): RepositoryContext {
     const currentKnowledge = this.currentKnowledge();
     if (actor !== undefined)
       currentKnowledge.entries = currentKnowledge.entries.filter(
-        (entry) => !entry.threadId || this.actorAuthorized(actor, entry.threadId),
+        (entry) =>
+          !entry.threadId ||
+          ((!destinationThreadId || entry.threadId === destinationThreadId) &&
+            this.actorAuthorized(actor, entry.threadId)),
       );
     const active = this.state.runs.filter(
       (run) =>
         ["queued", "running", "waiting_user", "awaiting_review"].includes(run.status) &&
-        (actor === undefined || this.actorAuthorized(actor, run.threadId)),
+        (actor === undefined || this.actorAuthorized(actor, run.threadId)) &&
+        (!destinationThreadId || run.threadId === destinationThreadId),
     );
     return {
       revision: `${this.state.project.baseSha}:${this.state.project.configurationRevision}:${currentKnowledge.revision}`,
@@ -1685,6 +1857,11 @@ export class Coordinator {
     );
   }
   runAuthorized(runId: string) {
+    try {
+      this.memoryRunFence?.(runId);
+    } catch {
+      return false;
+    }
     const run = this.state.runs.find((item) => item.id === runId);
     return (
       !!run &&
@@ -1727,7 +1904,9 @@ export class Coordinator {
         configurationRevision: run.configurationRevision,
         repositoryContext: this.repositoryContext(
           this.state.runActors?.[runId] ?? this.state.credentialActors?.[runId],
+          this.change(run.changeId!).memoryBrief ? run.threadId : undefined,
         ),
+        memoryBrief: structuredClone(this.change(run.changeId!).memoryBrief),
         conversationContext: structuredClone(this.change(run.changeId!).conversationContext),
         messages: structuredClone(
           this.state.messages.filter((m) =>
@@ -1740,6 +1919,7 @@ export class Coordinator {
     });
   }
   complete(runId: string, result: ExecutionResult) {
+    this.memoryRunFence?.(runId);
     const run = this.evidence(runId).run;
     if (run.candidateSha || !["queued", "running"].includes(run.status)) return;
     if (result.baseSha !== run.baseSha || !/^[a-f0-9]{40}$/.test(result.candidateSha))
@@ -1753,6 +1933,7 @@ export class Coordinator {
         throw new Error("invalid evidence binding");
     }
     this.durableUpdate(() => {
+      this.memoryRunFence?.(runId);
       run.workerId = result.workerId;
       run.artifactId = result.artifactId;
       run.candidateSha = result.candidateSha;

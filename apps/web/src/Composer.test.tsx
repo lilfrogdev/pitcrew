@@ -99,6 +99,7 @@ it("rejects binary/invalid UTF-8 data visibly without silently sending it", asyn
 });
 it("retains image previews when a model becomes incompatible and delivers native image bytes on send", async () => {
   const api = await mount();
+  fireEvent.click(screen.getByRole("button", { name: "Agent" }));
   const user = userEvent.setup();
   const data =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
@@ -176,6 +177,7 @@ it.each(["missing", "failed", "no-conversation"] as const)(
     api.send = vi.fn(api.send);
     render(<App api={api} demo />);
     await screen.findByText("Show the work behind a change, from delegation to review.");
+    fireEvent.click(screen.getByRole("button", { name: "Agent" }));
     const input = screen.getByLabelText("Choose attachments");
     expect(input.getAttribute("accept")).toContain(".md");
     expect(input.getAttribute("accept")).not.toContain(".png");
@@ -212,6 +214,7 @@ it.each(["missing", "failed", "no-conversation"] as const)(
     await waitFor(() =>
       expect(screen.getByText("Text reference").textContent).toBe("Text reference"),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Agent" }));
     fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
     expect(api.send).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Set up a provider" })).toBeTruthy();
@@ -229,6 +232,7 @@ it("offers images only after conversation capabilities are confirmed", async () 
   api.capabilities = vi.fn(() => new Promise<LandingCapabilities>((ready) => (resolve = ready)));
   render(<App api={api} demo />);
   await screen.findByText("Show the work behind a change, from delegation to review.");
+  fireEvent.click(screen.getByRole("button", { name: "Agent" }));
   expect(screen.getByLabelText("Choose attachments").getAttribute("accept")).not.toContain(".png");
   await act(async () => resolve(capabilities));
   expect(screen.getByLabelText("Choose attachments").getAttribute("accept")).toContain(".png");

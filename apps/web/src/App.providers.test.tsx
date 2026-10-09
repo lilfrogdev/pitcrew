@@ -45,13 +45,14 @@ it("allows selecting and reloading display models while Send and server executio
   render(<App api={api} />);
   await user.click(await screen.findByRole("combobox", { name: "Repo agent model" }));
   await user.click(screen.getByRole("gridcell", { name: "DeepSeek display" }));
+  await user.click(screen.getByRole("button", { name: "Agent" }));
   await user.type(screen.getByLabelText("Message your crew"), "A retained draft");
   expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
   fireEvent.submit(screen.getByLabelText("Message your crew").closest("form")!);
   expect(api.send).not.toHaveBeenCalled();
   expect(api.setThreadModelSelection).not.toHaveBeenCalled();
   expect(screen.queryByText("Execution is disabled.")).toBeNull();
-  expect(screen.getByRole("button", { name: "Permissions, Runs disabled" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Permissions, Agent unavailable" })).toBeTruthy();
   cleanup();
   render(<App api={api} />);
   await waitFor(() =>
@@ -105,6 +106,7 @@ it.each([
     const setup = await screen.findByRole("button", { name: "Set up a provider" });
     await screen.findByRole("heading", { name: "Make agent work visible" });
     const composer = screen.getByLabelText("Message your crew") as HTMLTextAreaElement;
+    await user.click(screen.getByRole("button", { name: "Agent" }));
     await user.type(composer, "Retain this draft");
     expect(screen.queryByRole("combobox", { name: "Repo agent model" })).toBeNull();
     expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
@@ -171,6 +173,7 @@ it("refreshes capabilities after setup and removal without treating a saved key 
   await screen.findByText("Saved");
   await user.click(within(rail).getByRole("button", { name: "Work" }));
   expect(await screen.findByRole("combobox", { name: "Repo agent model" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Agent" }));
   await user.type(screen.getByLabelText("Message your crew"), "Draft after setup");
   expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", false);
   await user.click(within(rail).getByRole("button", { name: "Profile" }));
@@ -216,6 +219,7 @@ it.each(["store", "remove"] as const)(
     await screen.findByRole("heading", { name: "Make agent work visible" });
     if (available) await screen.findByRole("combobox", { name: "Repo agent model" });
     else await screen.findByRole("button", { name: "Set up a provider" });
+    await user.click(screen.getByRole("button", { name: "Agent" }));
     await user.type(screen.getByLabelText("Message your crew"), "Pending provider draft");
     const rail = screen.getByRole("navigation", { name: "Workspace" });
     await user.click(within(rail).getByRole("button", { name: "Profile" }));
@@ -262,6 +266,7 @@ it("blocks sends while capabilities are loading even with a restored selection",
   api.send = vi.fn(api.send);
   render(<App api={api} demo />);
   await screen.findByRole("heading", { name: "Make agent work visible" });
+  fireEvent.click(screen.getByRole("button", { name: "Agent" }));
   fireEvent.change(screen.getByLabelText("Message your crew"), {
     target: { value: "Waiting draft" },
   });

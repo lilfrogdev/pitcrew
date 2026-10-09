@@ -138,8 +138,8 @@ it("persists archive and restore through actual RepositoryAgent SQLite restarts"
         (message: any) => message.content === "Retain transcript",
       ),
     ).toBe(true);
-    expect(await get(`/threads/${thread.id}/changes`)).toHaveLength(1);
-    expect(await get(`/threads/${thread.id}/runs`)).toHaveLength(1);
+    expect(await get(`/threads/${thread.id}/changes`)).toHaveLength(0);
+    expect(await get(`/threads/${thread.id}/runs`)).toHaveLength(0);
     expect((await post(route, { archived: true })).status).toBe(200);
     expect((await post(route, { archived: false })).status).toBe(200);
     await mf.setOptions(

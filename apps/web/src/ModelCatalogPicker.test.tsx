@@ -358,21 +358,21 @@ it("keeps a supported effort when switching models and renders only the model's 
 it("shows permissions as server status with no invented selectable modes and returns focus on Escape", async () => {
   const user = userEvent.setup();
   const view = render(<PermissionsMenu executionEnabled={false} />);
-  const trigger = screen.getByRole("button", { name: "Permissions, Runs disabled" });
+  const trigger = screen.getByRole("button", { name: "Permissions, Agent unavailable" });
   await user.click(trigger);
-  expect(screen.getByRole("status").textContent).toContain("Runs disabled");
+  expect(screen.getByRole("status").textContent).toContain("Agent unavailable");
   expect(screen.queryByRole("row")).toBeNull();
   expect(screen.queryByText("Full access")).toBeNull();
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(document.activeElement).toBe(trigger);
   view.rerender(<PermissionsMenu executionEnabled={null} />);
-  expect(screen.getByRole("button", { name: "Permissions, Permissions unavailable" })).toBe(
+  expect(screen.getByRole("button", { name: "Permissions, Agent status unavailable" })).toBe(
     trigger,
   );
   fireEvent.click(trigger);
-  expect(screen.getByRole("status").textContent).toContain("Permissions unavailable");
+  expect(screen.getByRole("status").textContent).toContain("Agent status unavailable");
   view.rerender(<PermissionsMenu executionEnabled={true} />);
-  expect(screen.getByRole("button", { name: "Permissions, Runs enabled" })).toBe(trigger);
-  expect(screen.getByRole("status").textContent).toContain("Runs enabled");
+  expect(screen.getByRole("button", { name: "Permissions, Agent available" })).toBe(trigger);
+  expect(screen.getByRole("status").textContent).toContain("Agent available");
 });

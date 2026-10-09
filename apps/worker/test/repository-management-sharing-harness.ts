@@ -33,10 +33,20 @@ type Discovery = {
   }[];
 };
 
-export async function fixture(enabled = true, deleteEnabled: boolean | "disabled" = false) {
+export type SharingFixtureOptions = {
+  worker?: { entryPoint: string; className: string };
+  memoryEnabled?: boolean;
+  executionMode?: "disabled" | "fake";
+};
+export async function fixture(
+  enabled = true,
+  deleteEnabled: boolean | "disabled" = false,
+  fixtureOptions: SharingFixtureOptions = {},
+) {
   const bundle = await build({
     entryPoints: [
-      new URL("./fixtures/repository-management-sharing-worker.ts", import.meta.url).pathname,
+      fixtureOptions.worker?.entryPoint ??
+        new URL("./fixtures/repository-management-sharing-worker.ts", import.meta.url).pathname,
     ],
     bundle: true,
     write: false,
@@ -57,7 +67,10 @@ export async function fixture(enabled = true, deleteEnabled: boolean | "disabled
     d1Databases: { AUTH_DB: "synthetic-recipient-sharing" },
     resourcePersistencePath: `/tmp/pitcrew-recipient-sharing-${crypto.randomUUID()}`,
     durableObjects: {
-      REPOSITORY: { className: "RepositorySharingFixture", useSQLite: true },
+      REPOSITORY: {
+        className: fixtureOptions.worker?.className ?? "RepositorySharingFixture",
+        useSQLite: true,
+      },
       USER_CREDENTIALS: { className: "PasswordCredentialsFixture", useSQLite: true },
     },
     bindings: {
@@ -71,7 +84,8 @@ export async function fixture(enabled = true, deleteEnabled: boolean | "disabled
       BETTER_AUTH_URL: base,
       BETTER_AUTH_SECRET: "synthetic-recipient-sharing-secret-never-live-123456",
       ENVIRONMENT: "production",
-      EXECUTION_MODE: "disabled",
+      EXECUTION_MODE: fixtureOptions.executionMode ?? "disabled",
+      ...(fixtureOptions.memoryEnabled ? { REPO_MEMORY_ENABLED: "true" } : {}),
       INFRASTRUCTURE_ADMISSION_ENABLED: "false",
       CLOUD_CONVERSATION_ENABLED: "false",
       REPOSITORY_LIFECYCLE: "disabled",
@@ -183,6 +197,7 @@ export async function fixture(enabled = true, deleteEnabled: boolean | "disabled
   };
   return {
     mf,
+    persistencePath: options.resourcePersistencePath,
     get db() {
       return db;
     },
@@ -248,8 +263,8 @@ export const issuerEmail = colleagueEmail;
 export const recipientEmail = ownerEmail;
 export const recipientUsername = "johncena";
 export const syntheticPassword = password;
-export async function sharingFixture() {
-  const f = await fixture();
+export async function sharingFixture(fixtureOptions: SharingFixtureOptions = {}) {
+  const f = await fixture(true, false, fixtureOptions);
   const issuerActor = await f.enroll(issuerEmail, "repository_owner");
   const recipientActor = await f.enroll(recipientEmail, recipientUsername);
   const repo = await readyCreation(

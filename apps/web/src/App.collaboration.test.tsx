@@ -49,16 +49,16 @@ it("sends an explicitly enabled shared message with no provider and never claims
   const user = userEvent.setup();
   render(<App api={api} viewer={viewer} />);
   await screen.findByText("Start the conversation");
-  expect(screen.getByRole("button", { name: "Attach files" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Attach files" })).toHaveProperty("disabled", false);
   await user.type(screen.getByLabelText("Message your crew"), "Let’s work on this together.");
   await user.click(screen.getByRole("button", { name: "Send message" }));
   await screen.findByText("Let’s work on this together.");
   expect(api.send).toHaveBeenCalledOnce();
   expect(screen.getByText("owner_handle")).toBeTruthy();
-  expect(screen.getByText("Message sent.")).toBeTruthy();
+  expect(screen.getByText("Team message sent.")).toBeTruthy();
   expect(screen.queryByText(/reply queued|change queued/)).toBeNull();
-  expect(screen.getByRole("button", { name: "Permissions, Runs disabled" })).toBeTruthy();
-  expect(screen.getByText("Messages are shared. Agent runs are disabled.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Set up a provider" })).toBeTruthy();
+  expect(screen.queryByText("Messages are shared. Agent runs are disabled.")).toBeNull();
 });
 
 it("renders peer authors from server identity and clears their transcript after permission removal", async () => {
