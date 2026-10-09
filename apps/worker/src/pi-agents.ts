@@ -1,3 +1,4 @@
+import { piExecutionAllowed } from "./pi-execution";
 import { userModelEnv, type CredentialEnv } from "./user-credentials";
 import { pinPlan, executePlan } from "../../../packages/verification/src/index.ts";
 import { Agent, getAgentByName } from "agents";
@@ -272,10 +273,13 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
     void this
       .sql`CREATE TABLE IF NOT EXISTS task_control(id INTEGER PRIMARY KEY CHECK(id=1),run_id TEXT NOT NULL)`;
     if (this.sql`SELECT id FROM task_control WHERE id=1`.length) return false;
-    if (this.env.EXECUTION_MODE !== "cloud" || this.env.INFRASTRUCTURE_ADMISSION_ENABLED !== "true")
-      return false;
     const deadline = this.taskDeadline();
-    return typeof deadline === "number" && Number.isFinite(deadline) && deadline > Date.now();
+    return piExecutionAllowed(
+      this.env.EXECUTION_MODE,
+      this.env.INFRASTRUCTURE_ADMISSION_ENABLED,
+      deadline,
+      Date.now(),
+    );
   }
   protected async assertCurrentAdmission() {
     this.assertTaskActive();
@@ -473,7 +477,12 @@ export class ChangeAgent extends TaskAgent {
       this.assertTaskActive();
     }
   }
+  private localExecutor() {
+    if (!this.env.LOCAL_EXECUTOR_URL) throw Error("execution_not_configured");
+    return new LocalExecutorClient(this.env.LOCAL_EXECUTOR_URL);
+  }
   private transport() {
+    if (this.env.EXECUTION_MODE === "local") return this.localExecutor();
     if (!this.env.ARTIFACTS || !this.ctx.container || !this.env.SANDBOX_IMAGE)
       throw Error("execution_not_configured");
     return new CloudflareSandbox(
@@ -500,6 +509,19 @@ export class ChangeAgent extends TaskAgent {
             await this.assertRunActive();
             const { workspace, input } = this.context();
             if (revision === "base") {
+              if (this.env.EXECUTION_MODE === "local") {
+                if (!input) throw Error("knowledge_not_configured");
+                const result = await this.transport().run(workspace, {
+                  commandId: `knowledge-base-${path}`,
+                  argv: ["git", "--no-replace-objects", "show", `${input.baseSha}:${path}`],
+                  timeoutMs: 10000,
+                  maxOutputBytes: 65536,
+                });
+                await this.assertRunActive();
+                if (result.status !== "completed" || result.exitCode !== 0 || result.truncated)
+                  throw Error("knowledge_source_unavailable");
+                return { text: result.stdout, sha: input.baseSha };
+              }
               if (!this.env.ARTIFACTS || !input) throw Error("knowledge_not_configured");
               using fork = await this.env.ARTIFACTS.get(workspace.artifactId);
               await this.assertRunActive();
@@ -692,7 +714,9 @@ export class ChangeAgent extends TaskAgent {
             // PiHarness opens on lifecycle startup, before a new pipeline is admitted.
             // Publish reporting tools once the frozen request and task context are bound.
             this.installKnowledgeReporting();
-            const signal = AbortSignal.timeout(500);
+            const signal = AbortSignal.timeout(
+              this.env.EXECUTION_MODE === "local" ? 120_000 : 500,
+            );
             try {
               const change = await applyChange(
                 await this.prompt(),
@@ -962,6 +986,7 @@ export class ChangeAgent extends TaskAgent {
   }
   private coordinator() {
     const sandbox = this.transport();
+    const local = this.env.EXECUTION_MODE === "local";
     const transport: WorkspaceTransport = {
       prepare: (workspace) => this.fenced(() => sandbox.prepare(workspace)),
       run: (workspace, command, signal) =>
@@ -972,7 +997,7 @@ export class ChangeAgent extends TaskAgent {
         this.fenced(() => sandbox.writeFile(workspace, path, content)),
       stop: (workspace) => sandbox.stop(workspace),
       publish: async (workspace, candidateSha) => {
-        if (this.env.TRUSTED_PUBLISHER_ENABLED !== "true" || !this.env.TRUSTED_PUBLISHER)
+        if (local || this.env.TRUSTED_PUBLISHER_ENABLED !== "true" || !this.env.TRUSTED_PUBLISHER)
           return sandbox.publish(workspace, candidateSha);
         await this.assertRunActive();
         const bundleBase64 = await exportCandidateBundle(
@@ -1022,11 +1047,10 @@ export class ChangeAgent extends TaskAgent {
           .sql`UPDATE operation_journal SET state='complete',result=${JSON.stringify(result)} WHERE key=${key} AND fingerprint=${fingerprint}`;
       },
     };
-    const coordinator = new ExecutionCoordinator(
-      new CloudflareArtifacts(this.env.ARTIFACTS!, () => this.assertRunActive()),
-      transport,
-      journal,
-    );
+    const forks = local
+      ? this.localExecutor()
+      : new CloudflareArtifacts(this.env.ARTIFACTS!, () => this.assertRunActive());
+    const coordinator = new ExecutionCoordinator(forks, transport, journal);
     return { coordinator, transport };
   }
   async start(input: ExecutionInput) {
@@ -1035,17 +1059,16 @@ export class ChangeAgent extends TaskAgent {
       stage: "blocked" as const,
       error: "reconciliation_required" as const,
     };
+    const local = this.env.EXECUTION_MODE === "local";
+    const cloudAdmitted =
+      this.env.EXECUTION_MODE === "cloud" && this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true";
     if (this.pipeline.status()) {
       // Terminal observation validates the immutable request without binding models,
       // opening Pi or scheduling work, even when execution has since been disabled.
       const existing = this.pipeline.start(input);
       if (["done", "blocked"].includes(existing.stage))
         return { runId: input.runId, stage: existing.stage };
-      if (
-        this.env.EXECUTION_MODE !== "cloud" ||
-        this.env.INFRASTRUCTURE_ADMISSION_ENABLED !== "true"
-      )
-        return rejected;
+      if (!local && !cloudAdmitted) return rejected;
       this.bindModelAdmission(
         input.runModels,
         "implementer",
@@ -1057,8 +1080,8 @@ export class ChangeAgent extends TaskAgent {
         await this.jobs.enqueue("pipeline", { runId: input.runId });
       return { runId: input.runId, stage: existing.stage };
     }
-    if (this.env.EXECUTION_MODE !== "cloud" || this.env.INFRASTRUCTURE_ADMISSION_ENABLED !== "true")
-      return rejected;
+    if (!local && !cloudAdmitted) return rejected;
+    if (local && !this.env.OPENROUTER_API_KEY) return rejected;
     if (
       !this.env.MODEL_CONFIGURATION ||
       !this.env.CONFIGURATION_REVISION ||

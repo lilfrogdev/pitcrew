@@ -1164,7 +1164,68 @@ export class RepositoryAgent extends Agent<Env> {
     const core = this.runCoordinator(id);
     if (!core) throw Error("run_not_found");
     if (this.env.EXECUTION_MODE === "fake") this.ctx.waitUntil(core.dispatch(id, fakeExecution));
-    if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
+    if (this.env.EXECUTION_MODE === "cloud" || this.env.EXECUTION_MODE === "local")
+      await this.jobs.enqueue(id, { runId: id });
+  }
+  private async finishLocalRun(runId: string) {
+    const core = this.runCoordinator(runId);
+    if (!core) return;
+    const run = core.evidence(runId).run;
+    const input =
+      core.begin(runId) ??
+      (run.status === "awaiting_review" ? core.state.requests?.[runId] : undefined);
+    if (!input) return;
+    try {
+      validateFrozenModels(this.env, input.runModels);
+    } catch {
+      core.blockModelConfiguration(runId);
+      return;
+    }
+    if (
+      !this.env.OPENROUTER_API_KEY ||
+      !this.env.MODEL_CONFIGURATION ||
+      !this.env.LOCAL_FIXTURE_DIR
+    ) {
+      core.fail(runId, true);
+      return;
+    }
+    const request = { ...input, repository: this.env.ARTIFACT_REPOSITORY ?? "pitcrew-baseline" };
+    try {
+      const worker = await getAgentByName(
+        this.env.CHANGE,
+        `change:${input.projectId}:${input.runId}`,
+        {
+          props: {
+            runModels: input.runModels,
+            credentialActor: input.credentialActor,
+            role: "implementer",
+            deadline: Date.now() + 10 * 60 * 1000,
+          },
+        },
+      );
+      const started = await worker.start(request);
+      if (
+        started.stage === "blocked" &&
+        "error" in started &&
+        started.error === "reconciliation_required"
+      ) {
+        core.fail(runId, true);
+        return;
+      }
+      const receipt = await worker.result(runId);
+      if (receipt.stage === "done" && receipt.result) {
+        await core.completeVerified(runId, receipt.result);
+        await worker.acknowledge(runId);
+        return;
+      }
+      if (receipt.stage === "blocked") {
+        core.fail(runId, false);
+        return;
+      }
+      return { rescheduleAt: Date.now() + 1000 };
+    } catch {
+      return { rescheduleAt: Date.now() + 1000 };
+    }
   }
   async delegateRepoTurn(turnId: string, callId?: string) {
     if (!codingEnabled(this.env)) throw new AdmissionError("execution_disabled", 503);
@@ -1179,7 +1240,14 @@ export class RepositoryAgent extends Agent<Env> {
       throw new AdmissionError("execution_disabled", 503);
     if (callId) await this.authorizeConversationTool(turnId, `delegate:${callId}`);
     await this.freshConversationMemory(turnId);
-    const run = core.delegateConversation(turnId);
+    const turn = core.conversationTurn(turnId);
+    const mission = core.threadMission(turn.threadId);
+    const run =
+      mission?.proposal &&
+      mission.contract &&
+      mission.approvedRevision === mission.proposal.revision
+        ? await core.delegateApprovedMission(turnId)
+        : core.delegateConversation(turnId);
     await this.dispatchRun(run.id);
     return run;
   }
@@ -1666,7 +1734,11 @@ export class RepositoryAgent extends Agent<Env> {
     this.jobs = new DurableJobs(
       "repository-results",
       async (jobs) => {
-        if (this.env.EXECUTION_MODE !== "cloud" || !codingEnabled(this.env)) return;
+        if (
+          (this.env.EXECUTION_MODE !== "cloud" && this.env.EXECUTION_MODE !== "local") ||
+          !codingEnabled(this.env)
+        )
+          return;
         for (const core of this.coordinators())
           for (const run of core.state.runs)
             if (["queued", "running", "awaiting_review"].includes(run.status))
@@ -1674,6 +1746,7 @@ export class RepositoryAgent extends Agent<Env> {
       },
       async (payload) => {
         const runId = (payload as { runId: string }).runId;
+        if (this.env.EXECUTION_MODE === "local") return this.finishLocalRun(runId);
         const core = this.runCoordinator(runId);
         if (!core) return;
         const run = core.evidence(runId).run;
@@ -1995,7 +2068,7 @@ export class RepositoryAgent extends Agent<Env> {
     const serialized = readRepositoryState(this.ctx.storage.sql);
     const state = serialized
       ? (JSON.parse(serialized) as State)
-      : this.env.EXECUTION_MODE === "cloud"
+      : this.env.EXECUTION_MODE === "cloud" || this.env.EXECUTION_MODE === "local"
         ? cloudInitialState(this.env)
         : initialState();
     this.coordinator = new Coordinator(
