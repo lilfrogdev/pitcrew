@@ -6,7 +6,7 @@ import type {
   InvitationPreview,
   Member,
 } from "./api";
-import { ApiError } from "./api";
+import { ApiError, invitationRecipient } from "./api";
 import type { AuthApi, AuthUser } from "./auth-api";
 import { Avatar } from "./Avatar";
 import styles from "./Collaboration.module.css";
@@ -270,7 +270,8 @@ export function InvitationGate({
           <p>This invitation is no longer available. Ask for a new code.</p>
         ) : preview ? (
           <p>
-            {preview.scope === "thread" ? "Thread" : "Repository"} invitation for {preview.email}.
+            {preview.scope === "thread" ? "Thread" : "Repository"} invitation for{" "}
+            {invitationRecipient(preview)}.
           </p>
         ) : token && !error ? (
           <p>This invitation is unavailable.</p>
@@ -310,7 +311,7 @@ export function Collaborators({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [email, setEmail] = useState("");
+  const [recipient, setRecipient] = useState("");
   const [scope, setScope] = useState<"project" | "thread">("project");
   const [invitation, setInvitation] = useState<CreatedInvitation>();
   const requestGeneration = useRef(0);
@@ -353,6 +354,7 @@ export function Collaborators({
     setProjectMembers([]);
     setThreadMembers([]);
     setInvitation(undefined);
+    setRecipient("");
     setScope("project");
     setError("");
     setNotice("");
@@ -383,10 +385,11 @@ export function Collaborators({
   const threadOwner = threadMembers.some(
     (member) => member.actor === account?.actor && member.role === "owner",
   );
-  const canInvite = projectOwner || threadOwner;
+  const canInvite = projectOwner;
   const makeInvite = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy || (scope === "project" ? !projectOwner : !(projectOwner || threadOwner))) return;
+    if (busy || loading || !projectOwner || !recipient.trim() || (scope === "thread" && !threadId))
+      return;
     setBusy(true);
     setError("");
     setNotice("");
@@ -395,8 +398,8 @@ export function Collaborators({
     try {
       const next =
         scope === "project"
-          ? await api.inviteProject(projectId, email.trim())
-          : await api.inviteThread(threadId, email.trim());
+          ? await api.inviteProject(projectId, recipient.trim())
+          : await api.inviteThread(threadId, recipient.trim());
       if (current === mutationGeneration.current) {
         setInvitation(next);
         setNotice("Invite code ready.");
@@ -519,18 +522,21 @@ export function Collaborators({
                     {projectOwner && <option value="project">Repository</option>}
                     {threadId && <option value="thread">This thread</option>}
                   </select>
-                  <label htmlFor="invite-email">Email</label>
+                  <label htmlFor="invite-recipient">Username or email</label>
                   <input
-                    id="invite-email"
-                    type="email"
+                    id="invite-recipient"
+                    type="text"
                     required
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    autoComplete="email"
+                    value={recipient}
+                    onChange={(event) => setRecipient(event.target.value)}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    maxLength={254}
                     disabled={busy}
                   />
                   {scope === "thread" && <small>Invite them to the repository first.</small>}
-                  <button type="submit" disabled={busy || !email.trim()}>
+                  <button type="submit" disabled={busy || !recipient.trim()}>
                     Create invite code
                   </button>
                 </form>
@@ -538,7 +544,8 @@ export function Collaborators({
               {code && (
                 <div className={styles.link}>
                   <label htmlFor="invite-code">
-                    Invite code for {invitation?.invitation.email}
+                    Invite code for{" "}
+                    {invitation ? invitationRecipient(invitation.invitation) : "recipient"}
                   </label>
                   <input
                     id="invite-code"
@@ -555,10 +562,16 @@ export function Collaborators({
                           setError("Select and copy the code above.");
                           return;
                         }
+                        const current = mutationGeneration.current;
                         void navigator.clipboard
                           .writeText(code)
-                          .then(() => setNotice("Code copied."))
-                          .catch(() => setError("Select and copy the code above."));
+                          .then(() => {
+                            if (current === mutationGeneration.current) setNotice("Code copied.");
+                          })
+                          .catch(() => {
+                            if (current === mutationGeneration.current)
+                              setError("Select and copy the code above.");
+                          });
                       }}
                     >
                       Copy code

@@ -205,7 +205,7 @@ it("shows once-created invitation links ephemerally, copies them, and revokes pe
   const writeText = vi.fn().mockResolvedValue(undefined);
   const { user } = await open(api);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   await user.click(screen.getByRole("button", { name: "Create invitation link" }));
   const field = await screen.findByLabelText("Invitation link");
   expect(field).toHaveProperty("value", `${location.origin}/?invitation=${"a".repeat(64)}`);
@@ -228,7 +228,7 @@ it("requires access discovery after an unknown invitation creation before anothe
   const api = managementApi();
   vi.mocked(api.inviteProject).mockRejectedValue(new Error("secret"));
   const { user } = await open(api);
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   await user.click(screen.getByRole("button", { name: "Create invitation link" }));
   await screen.findByText(/invitation result is unknown/);
   expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
@@ -267,14 +267,19 @@ it.each(["unmount", "account switch"])(
       }),
     );
     const { user, view } = await open(api);
-    await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+    await user.type(screen.getByLabelText("Username or email"), "johncena");
     await user.click(screen.getByRole("button", { name: "Create invitation link" }));
     if (mode === "unmount") view.unmount();
     else {
       view.rerender(<AccountRepositories api={managementApi()} />);
       await screen.findByRole("button", { name: "Manage repository" });
     }
-    await act(async () => complete({ token: "a".repeat(64), invitation }));
+    await act(async () =>
+      complete({
+        token: "a".repeat(64),
+        invitation: { ...invitation, email: undefined, recipient: "@johncena" },
+      }),
+    );
     expect(screen.queryByLabelText("Invitation link")).toBeNull();
     expect(screen.queryByText(/Invitation created/)).toBeNull();
   },
@@ -323,7 +328,7 @@ it("treats malformed invitation success metadata as unknown and requires a fresh
     invitation: { ...invitation, projectId: "different-project" },
   });
   const { user } = await open(api);
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   await user.click(screen.getByRole("button", { name: "Create invitation link" }));
   await screen.findByText(/invitation result is unknown/);
   expect(screen.queryByLabelText("Invitation link")).toBeNull();
@@ -342,7 +347,7 @@ it("allows owner metadata and sharing on a protected repository while disabling 
     "disabled",
     false,
   );
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
     "disabled",
     false,
@@ -475,7 +480,7 @@ it("keeps create and management available but denies deletion when its independe
     false,
   );
   expect(screen.getByRole("form", { name: "Create repository" })).toBeTruthy();
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
     "disabled",
     false,
@@ -720,3 +725,68 @@ it.each(["Kelvin", "\u00a0Sample\u00a0"])(
     expect(api.updateRepository).not.toHaveBeenCalled();
   },
 );
+it.each(["johncena", "guest@example.test"])(
+  "creates and copies a repository link for %s without assuming the recipient has a public email",
+  async (recipient) => {
+    const api = managementApi();
+    const label = recipient.includes("@") ? recipient : `@${recipient}`;
+    vi.mocked(api.projectInvitations!).mockResolvedValue([]);
+    vi.mocked(api.inviteProject).mockResolvedValue({
+      token: "b".repeat(64),
+      invitation: {
+        id: "bound-invitation",
+        recipient: label,
+        scope: "project",
+        role: "editor",
+        projectId: repository.projectId,
+        expiresAt: "2099-01-01T00:00:00Z",
+      },
+    });
+    const { user } = await open(api);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const input = screen.getByLabelText("Username or email");
+    expect(input).toHaveProperty("type", "text");
+    await user.type(input, ` ${recipient} `);
+    await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+    const link = await screen.findByLabelText("Invitation link");
+    expect(api.inviteProject).toHaveBeenCalledExactlyOnceWith(repository.projectId, recipient);
+    expect(link).toHaveProperty("value", `${location.origin}/?invitation=${"b".repeat(64)}`);
+    expect(screen.getByText(label)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Copy invitation link" }));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(
+      `${location.origin}/?invitation=${"b".repeat(64)}`,
+    );
+    expect(screen.getByText(/no email is sent/)).toBeTruthy();
+  },
+);
+it("lets the owner correct a rejected recipient without an unnecessary unknown-result quarantine", async () => {
+  const api = managementApi();
+  vi.mocked(api.inviteProject)
+    .mockRejectedValueOnce(new ApiError(400, "recipient_unavailable"))
+    .mockResolvedValueOnce({
+      token: "b".repeat(64),
+      invitation: {
+        id: "bound-invitation",
+        recipient: "@johncena",
+        scope: "project",
+        role: "editor",
+        projectId: repository.projectId,
+        expiresAt: "2099-01-01T00:00:00Z",
+      },
+    });
+  const { user } = await open(api);
+  const input = screen.getByLabelText("Username or email");
+  await user.type(input, "missing_user");
+  await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    expect.stringContaining("recipient is unavailable"),
+  );
+  expect(screen.queryByText(/invitation result is unknown/)).toBeNull();
+  await user.clear(input);
+  await user.type(input, "johncena");
+  await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+  expect(await screen.findByLabelText("Invitation link")).toBeTruthy();
+  expect(api.inviteProject).toHaveBeenCalledTimes(2);
+});
