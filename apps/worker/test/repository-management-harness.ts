@@ -24,6 +24,8 @@ type Discovery = {
   approval: { name: string } | null;
   creations: {
     name: string;
+    logicalName?: string;
+    repositoryName?: string;
     status: string;
     repositoryId?: string;
     projectId?: string;
@@ -186,6 +188,7 @@ export async function fixture(enabled = true, deleteEnabled: boolean | "disabled
       return repository;
     },
     cookies,
+    managementEnabled: enabled,
     request,
     enroll,
     login,
@@ -213,17 +216,18 @@ export async function readyCreation(
 ) {
   expect([200, 202], await response.clone().text()).toContain(response.status);
   const record = (await response.json()) as Discovery["creations"][number];
-  expect(record.name).toBe(name);
+  expect(record.name).toBe(f.managementEnabled ? name.trim().toLowerCase() : name);
   if (response.status === 200) {
     expect(record.status).toBe("ready");
-    return record;
+    return { ...record, repositoryName: record.repositoryName ?? record.name };
   }
   // Parallel workerd tests can exceed the route's five-second response window.
   // The admitted operation continues; observe its durable result without a POST retry.
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     const saved = (await f.discovery(email)).creations.find((entry) => entry.name === name);
-    if (saved?.status === "ready") return saved;
+    if (saved?.status === "ready")
+      return { ...saved, repositoryName: saved.repositoryName ?? saved.name };
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("admitted_creation_never_became_ready:" + name);
