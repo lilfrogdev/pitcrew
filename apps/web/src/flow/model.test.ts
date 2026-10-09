@@ -1,5 +1,5 @@
 import { expect, it } from "vite-plus/test";
-import { traceView } from "./model";
+import { replayFrame, traceView } from "./model";
 import type { OrchestrationTrace } from "@pitcrew/protocol";
 
 const trace: OrchestrationTrace = {
@@ -70,4 +70,8 @@ it("replays the crew graph up to the selected handoff and can isolate a run", ()
   expect(traceView(trace, 2).nodes.map((node) => node.id)).toEqual(["request", "plan"]);
   expect(traceView(trace, 2).edges.map((edge) => edge.label)).toEqual(["Draft plan"]);
   expect(traceView(trace, 3, "run-2").nodes.map((node) => node.role)).toEqual(["implementer"]);
+  expect(replayFrame(trace, 0).nodes).toEqual([]);
+  expect(replayFrame(trace, 1).nodes.map((node) => node.id)).toEqual(["request"]);
+  expect(replayFrame(trace, 2).edges.map((edge) => edge.label)).toEqual(["Draft plan"]);
+  expect(replayFrame(trace, 3).nodes.map((node) => node.id)).toEqual(["request", "plan", "implement"]);
 });

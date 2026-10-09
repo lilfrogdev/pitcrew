@@ -9,9 +9,22 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { Api } from "../api";
 import type { OrchestrationTrace, TraceNode } from "@pitcrew/protocol";
-import { runChoices, traceView } from "./model";
+import { replayFrame, runChoices } from "./model";
 
 const empty: OrchestrationTrace = { nodes: [], edges: [], probes: [], sequence: 0 };
+const stageCaption: Record<string, string> = {
+  request: "Scoped the request",
+  plan: "Drafted the plan",
+  assign: "Assigned the plan",
+  prepare: "Prepared the checkout",
+  change: "Implemented the change",
+  publish: "Published the candidate",
+  test: "Ran the pinned checks",
+  explore: "Ran an edge-case probe",
+  review: "Reviewed the result",
+  stop: "Recorded the result",
+  done: "Recorded the result",
+};
 
 export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
   const [trace, setTrace] = useState<OrchestrationTrace>(empty);
@@ -27,7 +40,6 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
         .then((next) => {
           if (cancelled) return;
           setTrace(next);
-          if (mode === "live") setCursor(next.sequence || next.nodes.at(-1)?.sequence || 0);
         })
         .catch(() => undefined);
     };
@@ -38,18 +50,23 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
       window.clearInterval(timer);
     };
   }, [api, threadId, mode]);
-  const view = useMemo(() => traceView(trace, cursor || trace.sequence, runId), [trace, cursor, runId]);
+  const view = useMemo(
+    () => replayFrame(trace, mode === "live" ? Number.POSITIVE_INFINITY : cursor, runId),
+    [trace, cursor, runId, mode],
+  );
   const runs = runChoices(trace.nodes);
   const nodes: Node[] = view.nodes.map((node, index) => ({
     id: node.id,
-    position: { x: 40, y: index * 110 },
-    data: { label: `${node.title}\n${node.status}` },
+    position: { x: 48, y: index * 128 },
+    data: { label: `${node.title}\n${stageCaption[node.stage] ?? node.stage}\n${node.status}` },
     style: {
-      width: 220,
+      width: 280,
       whiteSpace: "pre-wrap",
+      fontSize: 14,
+      lineHeight: 1.35,
       border: selected === node.id ? "2px solid #111" : "1px solid #ccc",
-      borderRadius: 8,
-      padding: 8,
+      borderRadius: 10,
+      padding: 12,
       background: node.status === "failed" ? "#fde8e8" : node.status === "active" ? "#e8f1ff" : "#fff",
     },
     ariaLabel: `${node.title} ${node.status}`,
@@ -58,11 +75,11 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
     id: edge.id,
     source: edge.from,
     target: edge.to,
-    label: edge.label,
+    label: edge.label === "Approved" || edge.label === "Draft plan" ? edge.label : undefined,
     animated: mode === "live" && view.nodes.some((node) => node.id === edge.to && node.status === "active"),
   }));
-  const current = view.nodes.find((node) => node.id === selected) ?? view.nodes.at(-1);
-  const max = trace.sequence || trace.nodes.at(-1)?.sequence || 0;
+  const current = view.nodes.find((node) => node.id === selected);
+  const stepLabel = view.nodes.at(-1);
   return (
     <div className="flow-board">
       <div className="flow-toolbar">
@@ -74,7 +91,8 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
           aria-pressed={mode === "replay"}
           onClick={() => {
             setMode("replay");
-            setCursor(max);
+            setCursor(0);
+            setSelected("");
           }}
         >
           Replay
@@ -99,17 +117,29 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
               aria-label="Replay position"
               type="range"
               min={0}
-              max={max}
-              value={cursor}
-              onChange={(event) => setCursor(Number(event.target.value))}
+              max={Math.max(view.total, 1)}
+              step={1}
+              value={Math.min(cursor, view.total)}
+              onChange={(event) => {
+                setCursor(Number(event.target.value));
+                setSelected("");
+              }}
             />
+            <span>
+              {Math.min(cursor, view.total)} of {view.total}
+              {stepLabel ? ` · ${stepLabel.title}` : ""}
+            </span>
           </label>
         )}
       </div>
       {view.nodes.length === 0 ? (
         <div className="workspace-empty">
           <h2>Flow</h2>
-          <p>Agent handoffs appear here as the crew works, and stay available to replay.</p>
+          <p>
+            {trace.nodes.length
+              ? "Move replay position to reveal each handoff."
+              : "Agent handoffs appear here as the crew works, and stay available to replay."}
+          </p>
         </div>
       ) : typeof ResizeObserver === "undefined" ? (
         <ol aria-label="Agent flow">
@@ -124,20 +154,28 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
         </ol>
       ) : (
         <div className="flow-layout">
-          <div className="flow-canvas" aria-label="Agent flow">
+          <div
+            className="flow-canvas"
+            aria-label="Agent flow"
+            style={{ height: Math.max(520, view.nodes.length * 128 + 80) }}
+          >
             <ReactFlow
+              key={nodes.map((node) => node.id).join("|")}
               nodes={nodes}
               edges={edges}
-              fitView
+              minZoom={0.6}
+              maxZoom={1.5}
+              defaultViewport={{ x: 16, y: 12, zoom: 1 }}
               onNodeClick={(_event, node) => setSelected(node.id)}
               nodesDraggable={false}
+              nodesConnectable={false}
               proOptions={{ hideAttribution: true }}
             >
               <Background />
-              <Controls showInteractive={false} />
+              <Controls showInteractive={false} position="top-right" />
             </ReactFlow>
           </div>
-          <FlowDetails node={current} probes={view.probes} />
+          {current && <FlowDetails node={current} probes={view.probes} />}
         </div>
       )}
     </div>
