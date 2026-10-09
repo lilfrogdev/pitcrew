@@ -33,7 +33,26 @@ export interface Thread {
   // Optional for legacy clients; persisted coordinators normalize this to false.
   archived?: boolean;
 }
+/** Opaque journal intervals; the repository authority resolves every descendant ACL. */
+export interface RepositoryMemoryReference {
+  scopeId: string;
+  first: number;
+  last: number;
+  sourceId?: string;
+}
+export interface RepositoryMemoryBrief {
+  projectId: string;
+  repository: string;
+  destinationThreadId: string;
+  items: {
+    nodeId: string;
+    text: string;
+    pending: boolean;
+    sourceRefs: RepositoryMemoryReference[];
+  }[];
+}
 export interface Change {
+  memoryBrief?: RepositoryMemoryBrief;
   /** Frozen historical discussion; reference data, never a new task authorization. */
   conversationContext?: Message[];
   id: string;
@@ -156,6 +175,7 @@ export interface ExecutionInput {
   /** Trusted initiating identity; never a credential or client-selected owner. */
   credentialActor?: string;
   conversationContext?: Message[];
+  memoryBrief?: RepositoryMemoryBrief;
   runModels?: FrozenRunModels;
   knowledgeContext?: WorkerKnowledgeContext;
   verificationPlan?: VerificationPlan;

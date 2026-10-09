@@ -25,6 +25,20 @@ import {
 import { SourceReader } from "./source-reader";
 import { readRepositoryState, writeRepositoryState } from "./repository-state";
 import { sameKnowledgeContext } from "./knowledge";
+import { RepoMemory, type RepoMemoryCompression, type RepoMemoryPage } from "./repo-memory";
+import {
+  memoryAccess,
+  memoryAuthorizer,
+  memoryBrief,
+  messageMemorySources,
+  memoryCompressionSystem,
+  coalesceMemoryReferences,
+} from "./repo-memory-orchestration";
+import type { ConversationInput } from "./conversation";
+import type { RepositoryMemoryBrief, RepositoryMemoryReference } from "@pitcrew/protocol";
+import type { MemoryToolArguments } from "./repo-memory-tools";
+import { configureSelectedModels } from "./model-selection";
+import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { RepoConversationAgent } from "./repo-conversation-agent";
 export { RepoConversationAgent };
 import { resolveCatalog, validateFrozenModels, requiresUserOpenRouter } from "./model-selection";
@@ -129,6 +143,479 @@ interface Env extends PiEnv, AccessEnv, AuthEnv {
   ACCOUNT_REPOSITORY_DELETE?: string;
 }
 export class RepositoryAgent extends Agent<Env> {
+  private repoMemory?: RepoMemory;
+  private getRepoMemory() {
+    if (this.env.REPO_MEMORY_ENABLED !== "true") throw Error("repo_memory_disabled");
+    return (this.repoMemory ??= new RepoMemory(this.ctx.storage.sql, (work) =>
+      this.ctx.storage.transactionSync(work),
+    ));
+  }
+  private memoryTurn(turnId: string) {
+    const core = this.turnCoordinator(turnId);
+    if (!core || !this.conversationsEnabled()) throw Error("memory_access_revoked");
+    const turn = core.conversationTurn(turnId);
+    if (
+      turn.status !== "running" ||
+      !turn.input ||
+      !turn.input.memoryEnabled ||
+      turn.baseSha !== core.state.project.baseSha ||
+      turn.configurationRevision !== core.state.project.configurationRevision
+    )
+      throw Error("memory_access_revoked");
+    const access = memoryAccess(core, turn.membershipActor ?? turn.actor, turn.threadId);
+    const eligible = new Set((turn.input.memoryMessageIds ?? []).map((id) => `message:${id}:`));
+    for (const review of core.state.reviews) {
+      const event = core.state.events.find(
+        (item) => item.type === "review.created" && item.entityId === review.id,
+      );
+      if (event && event.sequence <= (turn.input.memoryEventSequence ?? 0))
+        eligible.add(`message:review:${review.id}:`);
+    }
+    for (const event of core.state.events)
+      if (
+        ["run.completed", "run.failed"].includes(event.type) &&
+        event.sequence <= (turn.input.memoryEventSequence ?? 0)
+      )
+        eligible.add(`message:run:${event.entityId}:${event.sequence}:`);
+    const authorizeBase = memoryAuthorizer(core);
+    const authorize: ReturnType<typeof memoryAuthorizer> = (source, current) =>
+      authorizeBase(source, current) &&
+      [...eligible].some((prefix) => source.sourceId.startsWith(prefix));
+    return { core, turn, access, authorize, store: this.getRepoMemory() };
+  }
+  private memoryContextTable() {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS repo_memory_model_requests(id TEXT PRIMARY KEY,turn_id TEXT NOT NULL,reserved INTEGER NOT NULL,state TEXT NOT NULL)",
+    );
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS repo_memory_turn_context(turn_id TEXT PRIMARY KEY,brief TEXT NOT NULL,disclosures TEXT NOT NULL,calls INTEGER NOT NULL DEFAULT 0,input_bytes INTEGER NOT NULL DEFAULT 0,output_bytes INTEGER NOT NULL DEFAULT 0,native_input_bytes INTEGER NOT NULL DEFAULT 0)",
+    );
+    const columns = this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(repo_memory_turn_context)")
+      .toArray();
+    if (!columns.some((column) => column.name === "native_input_bytes"))
+      this.ctx.storage.sql.exec(
+        "ALTER TABLE repo_memory_turn_context ADD COLUMN native_input_bytes INTEGER NOT NULL DEFAULT 0",
+      );
+  }
+  private memoryContext(turnId: string) {
+    this.memoryContextTable();
+    const row = this.ctx.storage.sql
+      .exec<{
+        brief: string;
+        disclosures: string;
+        calls: number;
+        input_bytes: number;
+        output_bytes: number;
+        native_input_bytes: number;
+      }>("SELECT * FROM repo_memory_turn_context WHERE turn_id=?", turnId)
+      .toArray()[0];
+    return row
+      ? {
+          ...row,
+          brief: JSON.parse(row.brief) as RepositoryMemoryBrief,
+          disclosures: JSON.parse(row.disclosures) as RepositoryMemoryReference[],
+        }
+      : undefined;
+  }
+  protected async compressRepoMemory(input: ConversationInput, job: RepoMemoryCompression) {
+    const { models, model, selection } = configureSelectedModels(
+      userModelEnv(this.env, input.credentialActor),
+      input.models.repoAgent,
+      input.models.catalogRevision,
+    );
+    if (this.env.EXECUTION_MODE === "fake") {
+      const faux = fauxProvider({
+        provider: model.provider,
+        models: [{ id: model.id, maxTokens: 256 }],
+      });
+      faux.setResponses([
+        fauxAssistantMessage(
+          '{"summary":"Development fixture memory; original source journal remains available through memory_zoom."}',
+        ),
+      ]);
+      models.setProvider(faux.provider);
+    }
+    const provider = models.getProvider(model.provider);
+    if (!provider) throw Error("model_not_configured");
+    models.setProvider({
+      ...provider,
+      streamSimple: (selected, context, options) => {
+        const fresh = this.memoryTurn(input.turnId);
+        fresh.store.assertTurnReferences(
+          input.turnId,
+          fresh.access,
+          fresh.authorize,
+          job.sourceRefs,
+        );
+        return provider.streamSimple(selected, context, options);
+      },
+    });
+    const prompt = JSON.stringify({ merge: job.merge, source: job.source });
+    if (
+      new TextEncoder().encode(prompt + memoryCompressionSystem).byteLength >
+      Math.min(196608, Math.floor(model.contextWindow / 2)) - 8192
+    )
+      throw Error("memory_compression_context_limit");
+    const result = await models.completeSimple(
+      model,
+      {
+        systemPrompt: memoryCompressionSystem,
+        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+      },
+      {
+        maxTokens: 256,
+        reasoning: selection.effort === "off" ? undefined : selection.effort,
+        signal: AbortSignal.timeout(20000),
+        maxRetries: 0,
+      },
+    );
+    if (result.stopReason !== "stop" || result.content.some((part) => part.type !== "text"))
+      throw Error("invalid_memory_summary");
+    const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    if (new TextEncoder().encode(text).byteLength > 2048) throw Error("invalid_memory_summary");
+    const parsed: unknown = JSON.parse(text);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).length !== 1 ||
+      typeof (parsed as { summary?: unknown }).summary !== "string"
+    )
+      throw Error("invalid_memory_summary");
+    return (parsed as { summary: string }).summary;
+  }
+  protected async prepareRepoMemory(core: Coordinator, turnId: string) {
+    const { turn, access, authorize, store } = this.memoryTurn(turnId);
+    if (core !== this.turnCoordinator(turnId)) throw Error("memory_context_mismatch");
+    if (this.memoryContext(turnId)) {
+      await this.freshConversationMemory(turnId);
+      const message = core.state.messages.find((item) => item.id === turn.messageId);
+      if (message)
+        for (const source of messageMemorySources(access.projectId, access.repository, message))
+          store.append(source);
+      return;
+    }
+    // Bounded source state is retained independently of admitted model context.
+    for (const message of core.state.messages.filter((message) =>
+      turn.input!.memoryMessageIds?.includes(message.id),
+    ))
+      for (const source of messageMemorySources(access.projectId, access.repository, message))
+        store.append(source);
+    for (const review of core.state.reviews) {
+      const run = core.state.runs.find((candidate) => candidate.id === review.runId);
+      const reviewEvent = core.state.events.find(
+        (event) => event.type === "review.created" && event.entityId === review.id,
+      );
+      if (!run || !reviewEvent || reviewEvent.sequence > (turn.input!.memoryEventSequence ?? 0))
+        continue;
+      for (const source of messageMemorySources(access.projectId, access.repository, {
+        id: `review:${review.id}`,
+        threadId: run.threadId,
+        role: "reviewer",
+        content: JSON.stringify(review),
+        createdAt: reviewEvent.createdAt,
+      }))
+        store.append(source);
+    }
+    for (const run of core.state.runs.filter((candidate) =>
+      ["completed", "failed", "stopped"].includes(candidate.status),
+    )) {
+      const terminal = [...core.state.events]
+        .reverse()
+        .find(
+          (event) =>
+            event.entityId === run.id &&
+            ["run.completed", "run.failed"].includes(event.type) &&
+            event.sequence <= (turn.input!.memoryEventSequence ?? 0),
+        );
+      if (!terminal) continue;
+      for (const source of messageMemorySources(access.projectId, access.repository, {
+        id: `run:${run.id}:${terminal.sequence}`,
+        threadId: run.threadId,
+        role: "worker",
+        content: JSON.stringify({
+          event: terminal,
+          runId: run.id,
+          threadId: run.threadId,
+          baseSha: run.baseSha,
+          configurationRevision: run.configurationRevision,
+          candidateSha: run.candidateSha,
+          error: run.error,
+          tests: core.state.evidence[run.id],
+        }),
+        createdAt: terminal.createdAt,
+      }))
+        store.append(source);
+    }
+    store.beginTurn(turnId, access, {
+      maxToolCalls: 24,
+      maxCompressions: 4,
+      maxInputBytes: 131072,
+      maxOutputBytes: 32768,
+    });
+    for (let index = 0; index < 4; index++) {
+      const callId = `proactive:compression:${index}`;
+      const job = await store.nextCompression(turnId, callId, access, authorize);
+      this.memoryTurn(turnId);
+      if (!job) continue;
+      try {
+        const summary = await this.compressRepoMemory(turn.input!, job);
+        const fresh = this.memoryTurn(turnId);
+        fresh.store.acceptSummary(turnId, callId, fresh.access, fresh.authorize, {
+          nodeId: job.nodeId,
+          inputId: job.inputId,
+          text: summary,
+        });
+      } catch {
+        // Dispatch is durably spent; malformed or unavailable compression leaves originals pending.
+        this.memoryTurn(turnId);
+      }
+    }
+    const fresh = this.memoryTurn(turnId);
+    const pages = [
+      fresh.store.view(turnId, "proactive:view", fresh.access, fresh.authorize, { limit: 4 }),
+    ];
+    for (const category of ["incident", "impact", "prefer", "design"]) {
+      const current = this.memoryTurn(turnId);
+      pages.push(
+        current.store.search(turnId, `proactive:${category}`, current.access, current.authorize, {
+          query: category,
+          limit: 2,
+        }),
+      );
+    }
+    const brief = memoryBrief(fresh.access, pages),
+      disclosures = coalesceMemoryReferences(brief.items.flatMap((item) => item.sourceRefs));
+    fresh.store.assertTurnReferences(turnId, fresh.access, fresh.authorize, disclosures);
+    this.ctx.storage.transactionSync(() => {
+      this.memoryContextTable();
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO repo_memory_turn_context(turn_id,brief,disclosures) VALUES(?,?,?)",
+        turnId,
+        JSON.stringify(brief),
+        JSON.stringify(disclosures),
+      );
+      core.updateCollaboration(() => {
+        turn.input!.memoryBrief = structuredClone(brief);
+      });
+    });
+    const currentMessage = core.state.messages.find((message) => message.id === turn.messageId);
+    if (currentMessage)
+      for (const source of messageMemorySources(
+        access.projectId,
+        access.repository,
+        currentMessage,
+      ))
+        store.append(source);
+  }
+  private assertConversationMemory(turnId: string): ConversationInput {
+    const core = this.turnCoordinator(turnId);
+    if (!core || !this.conversationsEnabled()) throw Error("conversation_access_revoked");
+    const turn = core.conversationTurn(turnId);
+    if (
+      turn.status !== "running" ||
+      !turn.input ||
+      !core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId) ||
+      turn.baseSha !== core.state.project.baseSha ||
+      turn.configurationRevision !== core.state.project.configurationRevision
+    )
+      throw Error("conversation_access_revoked");
+    if (turn.input.memoryEnabled) {
+      const fresh = this.memoryTurn(turnId),
+        context = this.memoryContext(turnId);
+      if (!context) throw Error("memory_context_unavailable");
+      fresh.store.assertTurnReferences(turnId, fresh.access, fresh.authorize, context.disclosures);
+      if (JSON.stringify(turn.input.memoryBrief) !== JSON.stringify(context.brief))
+        throw Error("memory_context_mismatch");
+    }
+    return structuredClone(turn.input);
+  }
+  async freshConversationMemory(turnId: string): Promise<ConversationInput> {
+    return this.assertConversationMemory(turnId);
+  }
+  private assertRunMemory(core: Coordinator, runId: string) {
+    const run = core.state.runs.find((candidate) => candidate.id === runId);
+    if (!run?.changeId) return;
+    const brief =
+      core.state.requests?.[runId]?.memoryBrief ??
+      core.state.changes?.find((change) => change.id === run.changeId)?.memoryBrief;
+    if (!brief) return;
+    const origin = core.memoryConversationOrigin(run.changeId);
+    const saved = this.memoryContext(origin.id);
+    if (
+      !saved ||
+      JSON.stringify(saved.brief) !== JSON.stringify(brief) ||
+      brief.projectId !== core.state.project.id ||
+      brief.repository !== core.state.project.repository ||
+      brief.destinationThreadId !== run.threadId ||
+      run.baseSha !== core.state.project.baseSha ||
+      run.configurationRevision !== core.state.project.configurationRevision
+    )
+      throw Error("memory_access_revoked");
+    const access = memoryAccess(
+      core,
+      core.state.runActors?.[runId] ?? core.state.credentialActors?.[runId] ?? "",
+      run.threadId,
+    );
+    this.getRepoMemory().assertSnapshotReferences(
+      origin.id,
+      access,
+      memoryAuthorizer(core),
+      coalesceMemoryReferences(brief.items.flatMap((item) => item.sourceRefs)),
+    );
+  }
+  private bindMemoryFences(core: Coordinator) {
+    core.repoMemoryEnabled = this.env.REPO_MEMORY_ENABLED === "true";
+    core.memoryRunFence = (runId) => this.assertRunMemory(core, runId);
+    core.memoryConversationFence = (turnId) => {
+      if (core.conversationTurn(turnId).input?.memoryEnabled) this.assertConversationMemory(turnId);
+    };
+  }
+  async readRepoMemory(
+    turnId: string,
+    callId: string,
+    operation: "view" | "search" | "zoom",
+    args: MemoryToolArguments,
+  ): Promise<RepoMemoryPage> {
+    await this.freshConversationMemory(turnId);
+    const current = this.memoryTurn(turnId);
+    const page =
+      operation === "view"
+        ? current.store.view(turnId, callId, current.access, current.authorize, args)
+        : operation === "search"
+          ? current.store.search(turnId, callId, current.access, current.authorize, {
+              ...args,
+              query: args.query ?? "",
+            })
+          : operation === "zoom"
+            ? current.store.zoom(turnId, callId, current.access, current.authorize, {
+                ...args,
+                nodeId: args.nodeId ?? "",
+              })
+            : undefined;
+    if (!page) throw Error("invalid_memory_operation");
+    const context = this.memoryContext(turnId)!;
+    const refs = [...context.disclosures, ...page.items.flatMap((item) => item.sourceRefs)];
+    const unique = coalesceMemoryReferences(refs);
+    if (unique.length > 32) throw Error("memory_reference_limit");
+    current.store.assertTurnReferences(turnId, current.access, current.authorize, unique);
+    this.ctx.storage.sql.exec(
+      "UPDATE repo_memory_turn_context SET disclosures=? WHERE turn_id=?",
+      JSON.stringify(unique),
+      turnId,
+    );
+    return page;
+  }
+  async authorizeConversationModel(
+    turnId: string,
+    inputBytes = 0,
+    outputBytes = 0,
+    response = false,
+    requestId?: string,
+    nativeInputBytes = 0,
+  ) {
+    await this.freshConversationMemory(turnId);
+    const core = this.turnCoordinator(turnId)!;
+    if (!core.conversationTurn(turnId).input!.memoryEnabled) return;
+    const maximumInput = Math.max(
+      0,
+      Math.min(core.conversationTurn(turnId).contextBudgetBytes ?? 196608, 196608) - 8192,
+    );
+    if (
+      ![inputBytes, outputBytes, nativeInputBytes].every(
+        (n) => Number.isSafeInteger(n) && n >= 0,
+      ) ||
+      inputBytes > maximumInput ||
+      inputBytes + nativeInputBytes > ATTACHMENT_LIMITS.nativeInputBytes ||
+      outputBytes > 16384 ||
+      (requestId !== undefined && !/^[a-f0-9-]{36}$/.test(requestId))
+    )
+      throw Error("conversation_budget_exhausted");
+    this.ctx.storage.transactionSync(() => {
+      this.assertConversationMemory(turnId);
+      const current = this.memoryContext(turnId)!;
+      const reservation =
+        requestId && response
+          ? this.ctx.storage.sql
+              .exec<{ reserved: number; state: string }>(
+                "SELECT reserved,state FROM repo_memory_model_requests WHERE id=? AND turn_id=?",
+                requestId,
+                turnId,
+              )
+              .toArray()[0]
+          : undefined;
+      const reserve = !response && requestId ? 16384 : 0;
+      const nextOutput =
+        current.output_bytes +
+        outputBytes +
+        reserve -
+        (reservation?.state === "pending" ? reservation.reserved : 0);
+      if (
+        (!response && current.calls >= 16) ||
+        current.input_bytes + inputBytes > 1048576 ||
+        current.native_input_bytes + nativeInputBytes > 16777216 ||
+        nextOutput > 65536 ||
+        (response && requestId && reservation?.state !== "pending")
+      )
+        throw Error("conversation_budget_exhausted");
+      if (!response && requestId)
+        this.ctx.storage.sql.exec(
+          "INSERT INTO repo_memory_model_requests VALUES(?,?,?,'pending')",
+          requestId,
+          turnId,
+          reserve,
+        );
+      if (response && requestId)
+        this.ctx.storage.sql.exec(
+          "UPDATE repo_memory_model_requests SET state='complete' WHERE id=?",
+          requestId,
+        );
+      this.ctx.storage.sql.exec(
+        "UPDATE repo_memory_turn_context SET calls=calls+?,input_bytes=input_bytes+?,output_bytes=?,native_input_bytes=native_input_bytes+? WHERE turn_id=?",
+        response ? 0 : 1,
+        inputBytes,
+        nextOutput,
+        nativeInputBytes,
+        turnId,
+      );
+    });
+  }
+
+  assertWorkerMemory(context: WorkerKnowledgeContext, brief: RepositoryMemoryBrief) {
+    const core = this.projectCoordinator(context.projectId),
+      input = core?.state.requests?.[context.runId];
+    if (
+      !core?.runAuthorized(context.runId) ||
+      !input?.knowledgeContext ||
+      !sameKnowledgeContext(input.knowledgeContext, context) ||
+      JSON.stringify(input.memoryBrief) !== JSON.stringify(brief) ||
+      brief.projectId !== core.state.project.id ||
+      brief.repository !== core.state.project.repository ||
+      brief.destinationThreadId !== context.threadId ||
+      context.configurationRevision !== core.state.project.configurationRevision ||
+      context.baseSha !== core.state.project.baseSha
+    )
+      throw Error("memory_access_revoked");
+    const access = memoryAccess(
+      core,
+      core.state.runActors?.[context.runId] ?? core.state.credentialActors?.[context.runId] ?? "",
+      context.threadId,
+    );
+    const run = core.state.runs.find((candidate) => candidate.id === context.runId);
+    if (!run?.changeId || run.changeId !== context.changeId)
+      throw Error("memory_context_unavailable");
+    const origin = core.memoryConversationOrigin(run.changeId);
+    const saved = this.memoryContext(origin.id);
+    if (!saved || JSON.stringify(saved.brief) !== JSON.stringify(brief))
+      throw Error("memory_context_unavailable");
+    this.getRepoMemory().assertSnapshotReferences(
+      origin.id,
+      access,
+      memoryAuthorizer(core),
+      coalesceMemoryReferences(brief.items.flatMap((item) => item.sourceRefs)),
+    );
+  }
   protected readonly visualizationAuthority = new VisualizationAuthorityGate();
   private visualizations?: VisualizationStore;
   private visualizationGrants?: VisualizationTurnGrants;
@@ -167,6 +654,7 @@ export class RepositoryAgent extends Agent<Env> {
     )
       throw new VisualizationError("visualization_authority_revoked", 403);
     const fence = () => {
+      this.assertConversationMemory(turnId);
       const turn = core.conversationTurn(turnId),
         membershipActor = turn.membershipActor ?? turn.actor;
       if (
@@ -192,6 +680,7 @@ export class RepositoryAgent extends Agent<Env> {
     };
     const fresh = async () => {
       await requireVisualizationSession(this.env.AUTH_DB!, grant);
+      await this.freshConversationMemory(turnId);
       fence();
     };
     const record = await publishVisualization(
@@ -240,6 +729,7 @@ export class RepositoryAgent extends Agent<Env> {
       this.projectCoordinators.set(id, core);
       core.recover(this.env.EXECUTION_MODE === "cloud");
     }
+    this.bindMemoryFences(core);
     return core;
   }
   private coordinators() {
@@ -537,6 +1027,7 @@ export class RepositoryAgent extends Agent<Env> {
   async delegateRepoTurn(turnId: string) {
     const core = this.turnCoordinator(turnId);
     if (!core) throw Error("turn_not_found");
+    await this.freshConversationMemory(turnId);
     const run = core.delegateConversation(turnId);
     await this.dispatchRun(run.id);
     return run;
@@ -544,6 +1035,7 @@ export class RepositoryAgent extends Agent<Env> {
   async readConversationAttachment(turnId: string, reference: StoredImageAttachment) {
     const core = this.turnCoordinator(turnId);
     if (!core) throw Error("turn_not_found");
+    await this.freshConversationMemory(turnId);
     const turn = core.conversationTurn(turnId);
     if (
       !core.actorAuthorized(turn.membershipActor ?? turn.actor, turn.threadId) ||
@@ -571,6 +1063,7 @@ export class RepositoryAgent extends Agent<Env> {
       )
     )
       throw Error("attachment_not_admitted");
+    if (input.memoryBrief) this.assertWorkerMemory(context, input.memoryBrief);
     return this.getImages().get(reference);
   }
   private readonly jobs: DurableJobs;
@@ -591,6 +1084,9 @@ export class RepositoryAgent extends Agent<Env> {
       run.configurationRevision !== core.state.project.configurationRevision
     )
       throw new ExecutionError("PUBLISHER_ADMISSION_REVOKED");
+    const input = core.state.requests?.[runId];
+    if (input?.memoryBrief && input.knowledgeContext)
+      this.assertWorkerMemory(input.knowledgeContext, input.memoryBrief);
     this.getAdmission().assertActive(runId, frozen.fingerprint, frozen.deadline);
   }
   cleanupCandidatePublisher(runId: string) {
@@ -1226,6 +1722,10 @@ export class RepositoryAgent extends Agent<Env> {
         let input;
         try {
           input = core.beginConversation(id);
+          if (input?.memoryEnabled) {
+            await this.prepareRepoMemory(core, id);
+            input = await this.freshConversationMemory(id);
+          }
         } catch {
           core.completeConversation(id, undefined, "conversation_context_limit");
           return;
@@ -1263,7 +1763,20 @@ export class RepositoryAgent extends Agent<Env> {
           await worker.start(input);
           const receipt = await worker.result(id);
           if (receipt.status === "completed") {
+            await this.freshConversationMemory(id);
             core.completeConversation(id, receipt.text);
+            if (input.memoryEnabled) {
+              const reply = core.state.messages.find(
+                (message) => message.id === turn.replyMessageId,
+              );
+              if (reply)
+                for (const source of messageMemorySources(
+                  input.projectId,
+                  core.state.project.repository,
+                  reply,
+                ))
+                  this.getRepoMemory().append(source);
+            }
             return;
           }
           if (receipt.status === "failed") {
@@ -1271,6 +1784,14 @@ export class RepositoryAgent extends Agent<Env> {
             return;
           }
         } catch {
+          if (turn.input?.memoryEnabled) {
+            try {
+              this.assertConversationMemory(id);
+            } catch {
+              core.completeConversation(id, undefined, "memory_access_revoked");
+              return;
+            }
+          }
           // Frozen child operations reconcile through Pi durable storage; transport retries don't resubmit a new turn.
         }
         return { rescheduleAt: Date.now() + 1000 };
@@ -1284,15 +1805,22 @@ export class RepositoryAgent extends Agent<Env> {
   async refreshWorkerKnowledge(context: WorkerKnowledgeContext) {
     const core = this.projectCoordinator(context.projectId);
     if (!core) throw Error("project_not_found");
+    const input = core.state.requests?.[context.runId];
+    if (input?.memoryBrief) this.assertWorkerMemory(context, input.memoryBrief);
     return core.refreshWorkerKnowledge(context);
   }
   async appendWorkerKnowledge(context: WorkerKnowledgeContext, report: KnowledgeReport) {
     const core = this.projectCoordinator(context.projectId);
     if (!core) throw Error("project_not_found");
+    const input = core.state.requests?.[context.runId];
+    if (input?.memoryBrief) this.assertWorkerMemory(context, input.memoryBrief);
     return core.appendWorkerKnowledge(context, report);
   }
   protected getCoordinator() {
-    if (this.coordinator) return this.coordinator;
+    if (this.coordinator) {
+      this.bindMemoryFences(this.coordinator);
+      return this.coordinator;
+    }
     const serialized = readRepositoryState(this.ctx.storage.sql);
     const state = serialized
       ? (JSON.parse(serialized) as State)
@@ -1350,6 +1878,7 @@ export class RepositoryAgent extends Agent<Env> {
       (operation) => this.ctx.storage.transactionSync(operation),
       this.getUploads(),
     );
+    this.bindMemoryFences(this.coordinator);
     this.coordinator.recover(this.env.EXECUTION_MODE === "cloud");
     return this.coordinator;
   }

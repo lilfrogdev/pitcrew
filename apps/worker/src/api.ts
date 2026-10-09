@@ -583,13 +583,23 @@ export function api(
     await dispatch(result.run.id);
     return c.json({ ...result, message: publicMessage(result.message) }, 201);
   });
+  // Source-scoped internal briefs are reauthorized only inside agent orchestration.
+  // Public change readers must never receive a saved brief via destination-thread access.
+  const publicChange = ({
+    memoryBrief: _memoryBrief,
+    ...change
+  }: import("@pitcrew/protocol").Change) => change;
   app.get("/api/threads/:threadId/changes", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(
-      coordinator.state.changes!.filter((change) => change.threadId === c.req.param("threadId")),
+      coordinator.state
+        .changes!.filter((change) => change.threadId === c.req.param("threadId"))
+        .map(publicChange),
     );
   });
-  app.get("/api/changes/:changeId", (c) => c.json(coordinator.change(c.req.param("changeId"))));
+  app.get("/api/changes/:changeId", (c) =>
+    c.json(publicChange(coordinator.change(c.req.param("changeId")))),
+  );
   app.get("/api/changes/:changeId/runs", (c) => {
     coordinator.change(c.req.param("changeId"));
     return c.json(coordinator.state.runs.filter((run) => run.changeId === c.req.param("changeId")));
