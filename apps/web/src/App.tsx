@@ -924,7 +924,9 @@ export function App({
                   message.author?.displayName ||
                   message.author?.email ||
                   "Participant";
-                const authorImage = isSelf ? viewer.image : message.author?.avatar;
+                const authorImage = isSelf
+                  ? (viewer.image ?? message.author?.avatar)
+                  : message.author?.avatar;
                 return (
                   <article className={`message ${message.role}`} key={message.id}>
                     <Avatar
