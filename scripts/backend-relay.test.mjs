@@ -2075,6 +2075,8 @@ test("native invitation relay rejects identity injection and hides malformed or 
       { recipient: "johncena", email: "other@synthetic.test", role: "editor" },
       { recipient: "johncena", role: "editor", digest: "forged" },
       { recipient: "\u00a0johncena\u00a0", role: "editor" },
+      { recipient: "a\u0000@synthetic.test", role: "editor" },
+      { email: "a@synthetic\u007f.test", role: "editor" },
     ])
       assert.equal(
         (await request(f.handler, path, { method: "POST", headers, body: JSON.stringify(input) }))

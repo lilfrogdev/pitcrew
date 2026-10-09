@@ -352,6 +352,8 @@ const nativeInvitationToken = /^\/api\/invitations\/[a-f0-9]{64}(?:\/(?:accept|r
 const canonicalRecipient = (input) => {
   if (typeof input !== "string" || input.length > 256) return;
   const value = input.replace(/^[\t\n\r\f\v ]+|[\t\n\r\f\v ]+$/g, "");
+  // eslint-disable-next-line no-control-regex -- Match the pure recipient selector's control rejection.
+  if (/[\x00-\x1f\x7f]/.test(value)) return;
   if (/^@?[A-Za-z0-9_]{3,32}$/.test(value)) return `@${value.replace(/^@/, "").toLowerCase()}`;
   if (value.length <= 254 && /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(value))
     return value.toLowerCase();

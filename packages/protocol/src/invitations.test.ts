@@ -24,3 +24,17 @@ it("normalizes existing ASCII usernames and email selectors without confusing th
   ])
     expect(invitationSelector(invalid)).toBeUndefined();
 });
+
+it("rejects embedded ASCII controls in both halves of an email while permitting outer ASCII trim", () => {
+  for (const code of [...Array.from({ length: 32 }, (_, i) => i), 127]) {
+    const control = String.fromCharCode(code);
+    expect(invitationSelector(`john${control}@synthetic.test`)).toBeUndefined();
+    expect(invitationSelector(`john@synthetic${control}.test`)).toBeUndefined();
+  }
+  expect(invitationSelector(" \t\r\nJOHN@SYNTHETIC.TEST\v\f ")).toEqual({
+    kind: "email",
+    value: "john@synthetic.test",
+  });
+  expect(invitationSelector("\u0000john@synthetic.test")).toBeUndefined();
+  expect(invitationSelector("john@synthetic.test\u007f")).toBeUndefined();
+});

@@ -18,6 +18,10 @@ export type InvitationSelector = { kind: "username" | "email"; value: string };
 export function invitationSelector(input: unknown): InvitationSelector | undefined {
   if (typeof input !== "string" || input.length > 256) return;
   const value = input.replace(/^[\t\n\r\f\v ]+|[\t\n\r\f\v ]+$/g, "");
+  // Only agreed outer ASCII whitespace is trimmed; embedded controls cannot
+  // become part of a recipient label or database selector.
+  // eslint-disable-next-line no-control-regex -- Reject ASCII control characters.
+  if (/[\x00-\x1f\x7f]/.test(value)) return;
   const username = value.startsWith("@") ? value.slice(1) : value;
   if (/^[a-zA-Z0-9_]{3,32}$/.test(username))
     return { kind: "username", value: username.toLowerCase() };
