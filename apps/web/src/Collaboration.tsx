@@ -6,7 +6,7 @@ import type {
   InvitationPreview,
   Member,
 } from "./api";
-import { ApiError, invitationRecipient } from "./api";
+import { ApiError, invitationRecipient, invitationMatchesRecipient } from "./api";
 import type { AuthApi, AuthUser } from "./auth-api";
 import { Avatar } from "./Avatar";
 import styles from "./Collaboration.module.css";
@@ -175,6 +175,18 @@ export function InvitationGate({
   const [loading, setLoading] = useState(!!token);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const acceptanceGeneration = useRef(0);
+  const acceptedCallback = useRef(onAccepted);
+  acceptedCallback.current = onAccepted;
+  const context = useRef({ api, token });
+  context.current = { api, token };
+  useEffect(() => {
+    const invalidate = () => {
+      acceptanceGeneration.current++;
+    };
+    window.addEventListener("pitcrew-auth-required", invalidate);
+    return () => window.removeEventListener("pitcrew-auth-required", invalidate);
+  }, []);
   useEffect(() => {
     if (!fromUrl || !token) return;
     const url = new URL(location.href);
@@ -182,7 +194,14 @@ export function InvitationGate({
     history.replaceState(null, "", url);
   }, [fromUrl, token]);
   useEffect(() => {
-    if (!token || !api) return;
+    acceptanceGeneration.current++;
+    setBusy(false);
+    setPreview(undefined);
+    setLoading(!!token && !!api);
+    if (!token || !api)
+      return () => {
+        acceptanceGeneration.current++;
+      };
     let active = true;
     api
       .invitation(token)
@@ -200,6 +219,7 @@ export function InvitationGate({
       });
     return () => {
       active = false;
+      acceptanceGeneration.current++;
     };
   }, [api, token]);
   if (!api || (!token && !manual)) return null;
@@ -215,17 +235,30 @@ export function InvitationGate({
     setError("");
   };
   const accept = async () => {
-    if (!preview || busy) return;
+    if (!available || !preview || busy || loading) return;
+    const generation = acceptanceGeneration.current;
+    const current = () =>
+      generation === acceptanceGeneration.current &&
+      context.current.api === api &&
+      context.current.token === token;
     setBusy(true);
     setError("");
     try {
       const accepted = await api.acceptInvitation(token);
+      if (!current()) return;
+      if (
+        accepted.id !== preview.id ||
+        accepted.projectId !== preview.projectId ||
+        accepted.scope !== preview.scope ||
+        accepted.threadId !== preview.threadId
+      )
+        throw new ApiError(0);
       clear();
-      onAccepted(accepted);
+      acceptedCallback.current(accepted);
     } catch (cause) {
-      setError(problem(cause));
+      if (current()) setError(problem(cause));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
   return (
@@ -280,7 +313,11 @@ export function InvitationGate({
       </div>
       {token && (
         <div className={styles.actions}>
-          <button type="button" disabled={!available || busy} onClick={() => void accept()}>
+          <button
+            type="button"
+            disabled={!available || busy || loading}
+            onClick={() => void accept()}
+          >
             {busy ? "Joining…" : "Accept invitation"}
           </button>
           <button type="button" onClick={clear} disabled={busy}>
@@ -314,6 +351,7 @@ export function Collaborators({
   const [recipient, setRecipient] = useState("");
   const [scope, setScope] = useState<"project" | "thread">("project");
   const [invitation, setInvitation] = useState<CreatedInvitation>();
+  const [invitationUncertain, setInvitationUncertain] = useState(false);
   const requestGeneration = useRef(0);
   const mutationGeneration = useRef(0);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -329,6 +367,7 @@ export function Collaborators({
           threadId ? api.threadMembers(threadId) : Promise.resolve([]),
         ]);
         if (generation === requestGeneration.current) {
+          if (foreground) setInvitationUncertain(false);
           setAccount(identity);
           setProjectMembers(project);
           setThreadMembers(thread);
@@ -337,7 +376,7 @@ export function Collaborators({
             thread.some((member) => member.actor === identity.actor && member.role === "owner")
           )
             setScope("thread");
-          setError("");
+          if (foreground) setError("");
         }
       } catch (cause) {
         if (generation === requestGeneration.current) {
@@ -354,6 +393,7 @@ export function Collaborators({
     setProjectMembers([]);
     setThreadMembers([]);
     setInvitation(undefined);
+    setInvitationUncertain(false);
     setRecipient("");
     setScope("project");
     setError("");
@@ -388,7 +428,14 @@ export function Collaborators({
   const canInvite = projectOwner;
   const makeInvite = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy || loading || !projectOwner || !recipient.trim() || (scope === "thread" && !threadId))
+    if (
+      busy ||
+      loading ||
+      invitationUncertain ||
+      !projectOwner ||
+      !recipient.trim() ||
+      (scope === "thread" && !threadId)
+    )
       return;
     setBusy(true);
     setError("");
@@ -401,13 +448,33 @@ export function Collaborators({
           ? await api.inviteProject(projectId, recipient.trim())
           : await api.inviteThread(threadId, recipient.trim());
       if (current === mutationGeneration.current) {
+        if (
+          !next ||
+          !/^[a-f0-9]{64}$/.test(next.token) ||
+          !next.invitation ||
+          !next.invitation.id ||
+          next.invitation.role !== "editor" ||
+          next.invitation.scope !== scope ||
+          next.invitation.projectId !== projectId ||
+          (scope === "thread" && next.invitation.threadId !== threadId) ||
+          !Number.isFinite(Date.parse(next.invitation.expiresAt)) ||
+          !invitationMatchesRecipient(next.invitation, recipient)
+        )
+          throw new ApiError(0);
         setInvitation(next);
         setNotice("Invite code ready.");
       }
     } catch (cause) {
       if (current === mutationGeneration.current) {
         if (cause instanceof ApiError && [401, 403, 404].includes(cause.status)) onAccessLost();
-        else setError(problem(cause));
+        else if (cause instanceof ApiError && [400, 409].includes(cause.status))
+          setError(problem(cause));
+        else {
+          setInvitationUncertain(true);
+          setError(
+            "The invitation result is unknown. Refresh people before creating another invitation.",
+          );
+        }
       }
     } finally {
       if (current === mutationGeneration.current) setBusy(false);
@@ -536,7 +603,7 @@ export function Collaborators({
                     disabled={busy}
                   />
                   {scope === "thread" && <small>Invite them to the repository first.</small>}
-                  <button type="submit" disabled={busy || !recipient.trim()}>
+                  <button type="submit" disabled={busy || invitationUncertain || !recipient.trim()}>
                     Create invite code
                   </button>
                 </form>

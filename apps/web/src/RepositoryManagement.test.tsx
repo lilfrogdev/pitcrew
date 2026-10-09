@@ -786,3 +786,64 @@ it("lets the owner correct a rejected recipient without an unnecessary unknown-r
   expect(await screen.findByLabelText("Invitation link")).toBeTruthy();
   expect(api.inviteProject).toHaveBeenCalledTimes(2);
 });
+
+it.each([
+  { recipient: "@different" },
+  { recipient: "arbitrary plaintext" },
+  { recipient: "@JohnCena" },
+  { recipient: "@johncena", email: "other@example.test" },
+])(
+  "quarantines an untrusted repository invitation label %j without exposing its link",
+  async (fields) => {
+    const api = managementApi();
+    vi.mocked(api.inviteProject).mockResolvedValue({
+      token: "a".repeat(64),
+      invitation: {
+        id: "new",
+        scope: "project",
+        role: "editor",
+        projectId: repository.projectId,
+        expiresAt: "2099-01-01T00:00:00Z",
+        ...fields,
+      },
+    });
+    const { user } = await open(api);
+    await user.type(screen.getByLabelText("Username or email"), "johncena");
+    await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+    await screen.findByText(/invitation result is unknown/);
+    expect(screen.queryByLabelText("Invitation link")).toBeNull();
+    const create = screen.getByRole("button", { name: "Create invitation link" });
+    expect(create).toHaveProperty("disabled", true);
+    fireEvent.click(create);
+    expect(api.inviteProject).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Refresh access" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
+        "disabled",
+        false,
+      ),
+    );
+    expect(api.inviteProject).toHaveBeenCalledOnce();
+  },
+);
+
+it("shows repository name format guidance only for invalid nonempty create and rename drafts", async () => {
+  const api = managementApi();
+  const { user } = await open(api);
+  const create = screen.getByRole("form", { name: "Create repository" });
+  const settings = screen.getByRole("region", { name: `Manage ${repository.name}` });
+  expect(screen.queryByText(/Use 1–63 ASCII/)).toBeNull();
+  expect(screen.queryByText(/Renaming keeps|Saved in lowercase/)).toBeNull();
+  const draft = within(create).getByLabelText("Repository name");
+  await user.type(draft, "invalid_name");
+  expect(within(create).getByText(/Use 1–63 ASCII/)).toBeTruthy();
+  await user.clear(draft);
+  await user.type(draft, "valid-name");
+  expect(within(create).queryByText(/Use 1–63 ASCII/)).toBeNull();
+  const name = within(settings).getByLabelText("Repository name");
+  await user.clear(name);
+  await user.type(name, "invalid_name");
+  expect(within(settings).getByText(/Use 1–63 ASCII/)).toBeTruthy();
+  await user.clear(name);
+  expect(within(settings).queryByText(/Use 1–63 ASCII/)).toBeNull();
+});

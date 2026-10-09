@@ -1,3 +1,4 @@
+import { invitationSelector } from "../../../packages/protocol/src/invitations";
 import { canonicalRepositoryName } from "./repository-names";
 import { createUploadApi, type UploadApi } from "./uploads/api";
 import type { UploadSubmission } from "@pitcrew/protocol";
@@ -383,21 +384,30 @@ function repositoryStatus(value: unknown): RepositoryStatus {
     deletable: item.deletable,
   };
 }
+function canonicalInvitationLabel(item: {
+  recipient?: unknown;
+  email?: unknown;
+}): string | undefined {
+  if ((item.recipient === undefined) === (item.email === undefined)) return;
+  const label = item.recipient ?? item.email;
+  const selector = invitationSelector(label);
+  if (!selector || (item.email !== undefined && selector.kind !== "email")) return;
+  const canonical = selector.kind === "username" ? `@${selector.value}` : selector.value;
+  return label === canonical ? canonical : undefined;
+}
+/** Bind only a newly created invitation to the submitted selector, never to profile metadata. */
+export function invitationMatchesRecipient(invitation: Invitation, recipient: string): boolean {
+  const selector = invitationSelector(recipient);
+  if (!selector) return false;
+  const expected = selector.kind === "username" ? `@${selector.value}` : selector.value;
+  return canonicalInvitationLabel(invitation) === expected;
+}
 function safeInvitation(value: unknown): Invitation {
   if (!value || typeof value !== "object") throw new ApiError(0);
   const item = value as Record<string, unknown>;
   if (
     !publicIdentifier(item.id) ||
-    (item.recipient === undefined && item.email === undefined) ||
-    (item.recipient !== undefined &&
-      (typeof item.recipient !== "string" ||
-        !item.recipient.trim() ||
-        item.recipient.length > 254 ||
-        /[\x00-\x1f\x7f]/.test(item.recipient))) ||
-    (item.email !== undefined &&
-      (!publicIdentifier(item.email) ||
-        item.email.length > 254 ||
-        /[\x00-\x1f\x7f]/.test(item.email))) ||
+    !canonicalInvitationLabel(item) ||
     item.role !== "editor" ||
     !["project", "thread"].includes(item.scope as string) ||
     !publicIdentifier(item.projectId) ||
@@ -452,6 +462,7 @@ async function createInvitation(
   id: string,
   recipient: string,
 ): Promise<CreatedInvitation> {
+  if (!invitationSelector(recipient)) throw new ApiError(400, "invalid_recipient");
   const value = await invitationRequest<unknown>(
     `/${scope === "project" ? "projects" : "threads"}/${encodeURIComponent(id)}/invitations`,
     { recipient: recipient.trim(), role: "editor" },
@@ -467,6 +478,7 @@ async function createInvitation(
     throw new ApiError(0);
   const invitation = safeInvitation(value.invitation);
   if (
+    !invitationMatchesRecipient(invitation, recipient) ||
     invitation.scope !== scope ||
     (scope === "project" ? invitation.projectId !== id : invitation.threadId !== id)
   )

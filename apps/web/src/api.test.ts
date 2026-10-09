@@ -1055,6 +1055,8 @@ it("reads canonical logical names in directory and status while continuing to ac
 });
 it.each([
   ["project", "johncena", "@johncena"],
+  ["project", "@JOHN_CENA", "@john_cena"],
+  ["project", "GUEST@EXAMPLE.TEST", "guest@example.test"],
   ["project", "guest@example.test", "guest@example.test"],
   ["thread", "johncena", "@johncena"],
   ["thread", "guest@example.test", "guest@example.test"],
@@ -1174,4 +1176,85 @@ it("rejects malformed or mismatched bound invitation metadata without returning 
       new ApiError(0),
     );
   }
+});
+
+it.each(["project", "thread"] as const)(
+  "rejects wrong, dual or noncanonical recipient labels in new %s invitation responses",
+  async (scope) => {
+    const invitation = {
+      id: "bound",
+      scope,
+      recipient: "@johncena",
+      role: "editor",
+      projectId: "project",
+      ...(scope === "thread" ? { threadId: "thread" } : {}),
+      expiresAt: "2099-01-01T00:00:00Z",
+    };
+    for (const fields of [
+      { recipient: "@different" },
+      { recipient: "arbitrary plaintext" },
+      { recipient: "@JohnCena" },
+      { recipient: "johncena" },
+      { recipient: " @johncena " },
+      { recipient: "@ab" },
+      { recipient: "@Kelvin" },
+      { recipient: "Guest@EXAMPLE.TEST" },
+      { recipient: "@johncena", email: "john@example.test" },
+      { recipient: undefined, email: "johncena" },
+      { recipient: undefined, email: "Guest@EXAMPLE.TEST" },
+    ]) {
+      withSession(async () =>
+        Response.json({ token: "a".repeat(64), invitation: { ...invitation, ...fields } }),
+      );
+      await expect(
+        scope === "project"
+          ? httpApi.collaboration!.inviteProject("project", "johncena")
+          : httpApi.collaboration!.inviteThread("thread", "johncena"),
+      ).rejects.toEqual(new ApiError(0));
+    }
+  },
+);
+it("validates historical invitation labels without binding them to the current profile username", async () => {
+  const historical = {
+    id: "bound",
+    scope: "project",
+    recipient: "@previous_name",
+    role: "editor",
+    projectId: "project",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  withSession(async () => Response.json(historical));
+  expect(await httpApi.collaboration!.invitation("a".repeat(64))).toEqual(historical);
+  expect(await httpApi.collaboration!.acceptInvitation("a".repeat(64))).toEqual(historical);
+  for (const fields of [
+    { recipient: "freeform person" },
+    { recipient: "@Previous_Name" },
+    { recipient: "@previous_name", email: "other@example.test" },
+  ]) {
+    withSession(async () => Response.json({ ...historical, ...fields }));
+    await expect(httpApi.collaboration!.invitation("a".repeat(64))).rejects.toEqual(
+      new ApiError(0),
+    );
+  }
+});
+
+it("rejects invalid submitted recipient selectors before fetching an invitation token", async () => {
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  for (const recipient of [
+    "plain text",
+    "@ab",
+    "@Kelvin",
+    "\u00a0johncena\u00a0",
+    "missing@example",
+    "*",
+  ]) {
+    await expect(httpApi.collaboration!.inviteProject("project", recipient)).rejects.toEqual(
+      new ApiError(400, "invalid_recipient"),
+    );
+    await expect(httpApi.collaboration!.inviteThread("thread", recipient)).rejects.toEqual(
+      new ApiError(400, "invalid_recipient"),
+    );
+  }
+  expect(fetch).not.toHaveBeenCalled();
 });

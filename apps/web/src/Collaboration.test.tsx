@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import type { AuthApi } from "./auth-api";
@@ -339,4 +340,190 @@ it("previews a bound username invitation with no email field", async () => {
   });
   render(<InvitationGate api={api} onAccepted={vi.fn()} />);
   expect(await screen.findByText("Repository invitation for @johncena.")).toBeTruthy();
+});
+
+it.each(["project", "thread"] as const)(
+  "quarantines wrong, dual and noncanonical %s invitation labels until explicit refresh",
+  async (scope) => {
+    for (const fields of [
+      { recipient: "@different" },
+      { recipient: "arbitrary plaintext" },
+      { recipient: "@JohnCena" },
+      { recipient: "@johncena", email: "other@example.test" },
+    ]) {
+      const api = collaboration();
+      const created = {
+        token: "a".repeat(64),
+        invitation: {
+          id: "new",
+          scope,
+          role: "editor" as const,
+          projectId: "repo-1",
+          ...(scope === "thread" ? { threadId: "thread-1" } : {}),
+          expiresAt: "2099-01-01T00:00:00Z",
+          ...fields,
+        },
+      };
+      vi.mocked(api.inviteProject).mockResolvedValue(created);
+      vi.mocked(api.inviteThread).mockResolvedValue(created);
+      const user = userEvent.setup();
+      render(
+        <Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={vi.fn()} />,
+      );
+      await user.click(screen.getByRole("button", { name: "Share" }));
+      await user.selectOptions(await screen.findByLabelText("Access"), scope);
+      await user.type(screen.getByLabelText("Username or email"), "johncena");
+      await user.click(screen.getByRole("button", { name: "Create invite code" }));
+      await screen.findByText(/invitation result is unknown/);
+      expect(screen.queryByLabelText(/Invite code for/)).toBeNull();
+      const create = screen.getByRole("button", { name: "Create invite code" });
+      expect(create).toHaveProperty("disabled", true);
+      fireEvent.click(create);
+      const mutation = scope === "project" ? api.inviteProject : api.inviteThread;
+      expect(mutation).toHaveBeenCalledOnce();
+      // Background access reads may succeed; only explicit refresh releases the quarantine.
+      fireEvent(document, new Event("visibilitychange"));
+      await waitFor(() => expect(api.projectMembers).toHaveBeenCalledTimes(3));
+      expect(create).toHaveProperty("disabled", true);
+      await user.click(screen.getByRole("button", { name: "Refresh" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Create invite code" })).toHaveProperty(
+          "disabled",
+          false,
+        ),
+      );
+      expect(mutation).toHaveBeenCalledOnce();
+      cleanup();
+    }
+  },
+);
+
+function InvitationHost({
+  api,
+  accountKey,
+  onAccepted,
+}: {
+  api: CollaborationApi;
+  accountKey: string;
+  onAccepted: (value: Awaited<ReturnType<CollaborationApi["acceptInvitation"]>>) => void;
+}) {
+  const [selectedProject, setSelectedProject] = useState("original-project");
+  return (
+    <>
+      <output aria-label="Selected repository">{selectedProject}</output>
+      <InvitationGate
+        key={accountKey}
+        api={api}
+        manual
+        fromUrl={false}
+        onAccepted={(invitation) => {
+          setSelectedProject(invitation.projectId);
+          onAccepted(invitation);
+        }}
+      />
+    </>
+  );
+}
+it.each(["unmount", "account switch", "API change", "authority lost", "token change"])(
+  "ignores delayed invitation acceptance after %s",
+  async (change) => {
+    const api = collaboration();
+    const invitation = await api.invitation("a".repeat(64));
+    let resolve!: (value: typeof invitation) => void;
+    vi.mocked(api.acceptInvitation).mockReturnValue(
+      new Promise((complete) => {
+        resolve = complete;
+      }),
+    );
+    const accepted = vi.fn();
+    const user = userEvent.setup();
+    const view = render(
+      <InvitationHost accountKey="first-account" api={api} onAccepted={accepted} />,
+    );
+    await user.type(screen.getByLabelText("Invite code"), "a".repeat(64));
+    await user.click(screen.getByRole("button", { name: "Check invitation" }));
+    await screen.findByText(/Repository invitation for/);
+    await user.click(screen.getByRole("button", { name: "Accept invitation" }));
+    if (change === "unmount") view.unmount();
+    else if (change === "authority lost") fireEvent(window, new Event("pitcrew-auth-required"));
+    else {
+      const nextApi = collaboration();
+      view.rerender(
+        <InvitationHost
+          accountKey={change === "account switch" ? "second-account" : "first-account"}
+          api={nextApi}
+          onAccepted={accepted}
+        />,
+      );
+      if (change === "token change") {
+        await waitFor(() =>
+          expect(screen.getByRole("button", { name: "Dismiss" })).toHaveProperty("disabled", false),
+        );
+        await user.click(screen.getByRole("button", { name: "Dismiss" }));
+        await user.type(screen.getByLabelText("Invite code"), "b".repeat(64));
+        await user.click(screen.getByRole("button", { name: "Check invitation" }));
+        await screen.findByText(/Repository invitation for/);
+      }
+    }
+    await act(async () => resolve(invitation));
+    expect(accepted).not.toHaveBeenCalled();
+    if (change !== "unmount")
+      expect(screen.getByLabelText("Selected repository")).toHaveProperty(
+        "textContent",
+        "original-project",
+      );
+    if (change === "account switch")
+      expect(screen.getByLabelText("Invite code")).toHaveProperty("value", "");
+    if (change === "token change") {
+      expect(screen.getByText(/Repository invitation for/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Accept invitation" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    }
+  },
+);
+it("accepts a pending invitation through incidental callback rerenders without matching a renamed profile label", async () => {
+  const api = collaboration();
+  const historical = {
+    ...(await api.invitation("a".repeat(64))),
+    email: undefined,
+    recipient: "@previous_name",
+  };
+  vi.mocked(api.invitation).mockResolvedValue(historical);
+  let resolve!: (value: typeof historical) => void;
+  vi.mocked(api.acceptInvitation).mockReturnValue(
+    new Promise((complete) => {
+      resolve = complete;
+    }),
+  );
+  const first = vi.fn();
+  const latest = vi.fn();
+  const user = userEvent.setup();
+  const view = render(<InvitationGate api={api} manual fromUrl={false} onAccepted={first} />);
+  await user.type(screen.getByLabelText("Invite code"), "a".repeat(64));
+  await user.click(screen.getByRole("button", { name: "Check invitation" }));
+  await screen.findByText(/Repository invitation for @previous_name/);
+  await user.click(screen.getByRole("button", { name: "Accept invitation" }));
+  view.rerender(<InvitationGate api={api} manual fromUrl={false} onAccepted={latest} />);
+  await act(async () => resolve(historical));
+  expect(latest).toHaveBeenCalledExactlyOnceWith(historical);
+  expect(first).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("Invite code")).toHaveProperty("value", "");
+});
+it("rejects an acceptance response for a different immutable invitation resource", async () => {
+  const api = collaboration();
+  vi.mocked(api.acceptInvitation).mockResolvedValue({
+    ...(await api.invitation("a".repeat(64))),
+    projectId: "other-project",
+  });
+  const accepted = vi.fn();
+  const user = userEvent.setup();
+  history.replaceState(null, "", `/?invitation=${"a".repeat(64)}`);
+  render(<InvitationGate api={api} onAccepted={accepted} />);
+  await screen.findByText(/Repository invitation for/);
+  await user.click(screen.getByRole("button", { name: "Accept invitation" }));
+  await screen.findByRole("alert");
+  expect(accepted).not.toHaveBeenCalled();
+  expect(screen.getByText(/Repository invitation for/)).toBeTruthy();
 });

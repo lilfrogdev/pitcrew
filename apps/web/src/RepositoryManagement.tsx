@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
   invitationRecipient,
+  invitationMatchesRecipient,
   type CollaborationApi,
   type Invitation,
   type Member,
@@ -290,7 +291,11 @@ export function RepositoryManagement({
                     onChange={(event) => setLogicalName(event.target.value)}
                   />
                 </label>
-                <p className={styles.note}>Renaming keeps the physical identity and history.</p>
+                {!!logicalName && !canonicalName && (
+                  <p className={styles.note}>
+                    Use 1–63 ASCII letters, numbers or hyphens, starting with a letter or number.
+                  </p>
+                )}
                 <label>
                   Description
                   <textarea
@@ -373,7 +378,7 @@ export function RepositoryManagement({
                           result.invitation.projectId !== item.projectId ||
                           result.invitation.scope !== "project" ||
                           result.invitation.role !== "editor" ||
-                          (!result.invitation.recipient && !result.invitation.email) ||
+                          !invitationMatchesRecipient(result.invitation, recipient) ||
                           !Number.isFinite(Date.parse(result.invitation.expiresAt))
                         ) {
                           setInvitationUncertain(true);

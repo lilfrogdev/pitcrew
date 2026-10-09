@@ -348,9 +348,11 @@ export function AccountRepositories({
                     }}
                   />
                 </label>
-                <p className={styles.note}>
-                  1–63 letters, numbers or hyphens. Saved in lowercase; unique within your account.
-                </p>
+                {!!newName && !canonicalName && (
+                  <p className={styles.note}>
+                    Use 1–63 ASCII letters, numbers or hyphens, starting with a letter or number.
+                  </p>
+                )}
                 <label>
                   Description (optional)
                   <textarea
@@ -384,10 +386,7 @@ export function AccountRepositories({
                   aria-label={`Approved empty repository ${creations.approval.name}`}
                 >
                   <h2>Create approved repository</h2>
-                  <p>
-                    The operator approved {creations.approval.name} for this account. Your account
-                    will own this empty repository.
-                  </p>
+                  <p>{creations.approval.name}</p>
                   <button
                     type="button"
                     disabled={busy || !!error || !!creationError}
