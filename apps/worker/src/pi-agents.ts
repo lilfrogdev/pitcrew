@@ -667,97 +667,172 @@ export class ChangeAgent extends TaskAgent {
       candidateSha: evidence.candidateSha,
     }));
   }
-  private async publishTrace(before: PipelineState["stage"], state: PipelineState | undefined) {
-    if (!state || before === state.stage) return;
-    const order = ["prepare", "change", "publish", "test", "explore", "review", "stop", "done"] as const;
-    const parent =
-      before === "prepare" ? "assign" : order[order.indexOf(before as (typeof order)[number]) - 1];
-    const copy: Record<string, { role: CrewRole; title: string; text: string; message: Message["role"] }> = {
+  private stageMeta(
+    stage: string,
+    state: PipelineState,
+  ): {
+    role: CrewRole;
+    title: string;
+    active: string;
+    done: string;
+    edge: string;
+    message: Message["role"];
+  } {
+    const reviewText = state.review
+      ? `${state.review.decision === "approve" ? "Approved." : "Changes requested."} ${state.review.summary}`
+      : "Reviewer finished.";
+    const copy: Record<
+      string,
+      {
+        role: CrewRole;
+        title: string;
+        active: string;
+        done: string;
+        edge: string;
+        message: Message["role"];
+      }
+    > = {
       prepare: {
         role: "coordinator",
         title: "Coordinator",
-        text: "Coordinator assigned the approved plan to the change worker.",
+        active: "Preparing the checkout.",
+        done: "Coordinator prepared the checkout.",
+        edge: "Prepare",
         message: "coordinator",
       },
       change: {
         role: "implementer",
         title: "Change worker",
-        text: "Change worker finished the candidate and handed it to the test runner.",
+        active: "Implementing the change.",
+        done: "Change worker finished the candidate and handed it to publishing.",
+        edge: "Implement",
         message: "worker",
       },
       publish: {
         role: "implementer",
         title: "Change worker",
-        text: "Change worker published the candidate commit.",
+        active: "Publishing the candidate.",
+        done: "Change worker published the candidate commit.",
+        edge: "Publish",
         message: "worker",
       },
       test: {
         role: "test_runner",
         title: "Test runner",
-        text: "Test runner finished the pinned checks and sent the evidence to the test agent.",
+        active: "Running the pinned checks.",
+        done: "Test runner finished the pinned checks and sent evidence to the test agent.",
+        edge: "Test",
         message: "worker",
       },
       explore: {
         role: "test_agent",
         title: "Test agent",
-        text: "Test agent finished exploratory probes in a disposable checkout and sent them to the reviewer.",
+        active: "Running exploratory probes.",
+        done: "Test agent finished exploratory probes and sent them to the reviewer.",
+        edge: "Explore",
         message: "reviewer",
       },
       review: {
         role: "reviewer",
         title: "Reviewer",
-        text: state.review
-          ? `${state.review.decision === "approve" ? "Approved." : "Changes requested."} ${state.review.summary}`
-          : "Reviewer finished.",
+        active: "Reviewing the candidate.",
+        done: reviewText,
+        edge: "Review",
         message: "reviewer",
       },
       stop: {
         role: "coordinator",
         title: "Coordinator",
-        text: "Coordinator recorded the run result.",
+        active: "Recording the run result.",
+        done: "Coordinator recorded the run result.",
+        edge: "Record",
         message: "coordinator",
       },
       done: {
         role: "coordinator",
         title: "Coordinator",
-        text: "Coordinator recorded the run result.",
+        active: "Recording the run result.",
+        done: "Coordinator recorded the run result.",
+        edge: "Record",
         message: "coordinator",
       },
       blocked: {
         role: "coordinator",
         title: "Coordinator",
-        text: "Coordinator stopped the run before it finished.",
+        active: "Stopping the run.",
+        done: "Coordinator stopped the run before it finished.",
+        edge: "Stop",
         message: "coordinator",
       },
     };
-    const item = copy[before] ?? copy.blocked;
+    return copy[stage] ?? copy.blocked;
+  }
+  private async publishTrace(before: PipelineState["stage"], state: PipelineState | undefined) {
+    if (!state || before === state.stage) return;
+    const order = ["prepare", "change", "publish", "test", "explore", "review", "stop", "done"] as const;
+    const parentOf = (stage: string) =>
+      stage === "prepare" ? "assign" : order[order.indexOf(stage as (typeof order)[number]) - 1];
+    const repository = this.env.REPOSITORY.get(
+      this.env.REPOSITORY.idFromName("pitcrew"),
+    ) as DurableObjectStub<RepositoryAgent>;
+    const finished = this.stageMeta(before, state);
+    const failed = state.stage === "blocked";
+    await repository.recordStage({
+      threadId: state.input.threadId,
+      runId: state.input.runId,
+      role: finished.role,
+      stage: before,
+      status: failed ? "failed" : "passed",
+      title: finished.title,
+      summary: finished.done,
+      parentStage: parentOf(before),
+      edgeLabel: finished.edge,
+      candidateSha: state.change?.candidateSha,
+      ...(["review", "stop", "done", "blocked"].includes(before)
+        ? {}
+        : {
+            note: {
+              id: `note:${state.input.runId}:${before}`,
+              role: finished.message,
+              crew: finished.role,
+              content: finished.done,
+            },
+          }),
+    });
+    if (before === "explore" && state.probes?.length)
+      await repository.recordProbes(state.input.threadId, state.input.runId, state.probes);
+    if (["done", "blocked"].includes(state.stage)) return;
+    const next = this.stageMeta(state.stage, state);
+    await repository.recordStage({
+      threadId: state.input.threadId,
+      runId: state.input.runId,
+      role: next.role,
+      stage: state.stage,
+      status: "active",
+      title: next.title,
+      summary: next.active,
+      parentStage: before === "blocked" ? parentOf(before) : before,
+      edgeLabel: `Sending to ${next.title}`,
+      candidateSha: state.change?.candidateSha,
+    });
+  }
+  private async beginTrace(state: PipelineState) {
+    const next = this.stageMeta(state.stage, state);
+    if (["done", "blocked"].includes(state.stage)) return;
     const repository = this.env.REPOSITORY.get(
       this.env.REPOSITORY.idFromName("pitcrew"),
     ) as DurableObjectStub<RepositoryAgent>;
     await repository.recordStage({
       threadId: state.input.threadId,
       runId: state.input.runId,
-      role: item.role,
-      stage: before,
-      status: state.stage === "blocked" ? "failed" : "passed",
-      title: item.title,
-      summary: item.text,
-      parentStage: parent,
-      edgeLabel: item.title,
-      candidateSha: state.change?.candidateSha,
-      ...(["review", "stop", "done"].includes(before)
-        ? {}
-        : {
-            note: {
-              id: `note:${state.input.runId}:${before}`,
-              role: item.message,
-              crew: item.role,
-              content: item.text,
-            },
-          }),
+      role: next.role,
+      stage: state.stage,
+      status: "active",
+      title: next.title,
+      summary: next.active,
+      parentStage: state.stage === "prepare" ? "assign" : undefined,
+      edgeLabel: state.stage === "prepare" ? `Sending to ${next.title}` : undefined,
     });
-    if (before === "explore" && state.probes?.length)
-      await repository.recordProbes(state.input.threadId, state.input.runId, state.probes);
   }
   private coordinator() {
     const transport = this.transport();
@@ -836,6 +911,7 @@ export class ChangeAgent extends TaskAgent {
     if (!this.taskActive()) return rejected;
     await this.lifecycle.start();
     const state = this.pipeline.start(input);
+    await this.beginTrace(state);
     if (!["done", "blocked"].includes(state.stage))
       await this.jobs.enqueue("pipeline", { runId: input.runId });
     return { runId: input.runId, stage: state.stage };

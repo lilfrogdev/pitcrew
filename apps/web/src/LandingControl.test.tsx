@@ -37,25 +37,22 @@ function authorization(run: Awaited<ReturnType<typeof fixture>>["run"]): Authori
   };
 }
 describe("exact candidate landing simulation", () => {
-  it("requires two actions and sends exact approval hashes, then only authorization id", async () => {
+  it("accepts the exact candidate in one action", async () => {
     const f = await fixture();
     f.api.approve = vi.fn(f.api.approve);
     f.api.land = vi.fn(f.api.land);
     render(<Harness {...f} />);
-    fireEvent.click(screen.getByRole("button", { name: "Approve exact candidate" }));
-    const land = await screen.findByRole("button", { name: "Land fixture simulation" });
+    fireEvent.click(screen.getByRole("button", { name: "Accept this candidate" }));
+    await screen.findByText(/local baseline is now/);
     expect(f.api.approve).toHaveBeenCalledWith(f.run.id, {
       expectedTargetSha: f.run.baseSha,
       candidateSha: f.run.candidateSha,
       configurationRevision: f.run.configurationRevision,
       idempotencyKey: expect.any(String),
     });
-    expect(f.api.land).not.toHaveBeenCalled();
-    fireEvent.click(land);
-    await screen.findByText(/Fixture simulation landed/);
     expect(f.api.land).toHaveBeenCalledWith(f.run.id, expect.stringMatching(/^fixture-/));
     expect(
-      screen.getByRole("button", { name: "Land fixture simulation" }).hasAttribute("disabled"),
+      screen.getByRole("button", { name: "Candidate accepted" }).hasAttribute("disabled"),
     ).toBe(true);
   });
   it.each(["missing", "failed", "stale", "review", "disabled"] as const)(
@@ -75,64 +72,65 @@ describe("exact candidate landing simulation", () => {
         />,
       );
       expect(
-        screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
+        screen.getByRole("button", { name: "Accept this candidate" }).hasAttribute("disabled"),
       ).toBe(true);
     },
   );
-  it("blocks expired and stale authorizations", async () => {
+  it("refuses a candidate that no longer matches the baseline", async () => {
     const f = await fixture();
     const auth = authorization(f.run);
     auth.expiresAt = Date.now() - 1;
     auth.candidateSha = "stale";
     render(<Harness {...f} initial={{ authorization: auth }} />);
     expect(
-      screen.getByRole("button", { name: "Land fixture simulation" }).hasAttribute("disabled"),
+      screen.getByRole("button", { name: "Accept this candidate" }).hasAttribute("disabled"),
     ).toBe(true);
-    expect(screen.getByText(/Approval expired/)).toBeTruthy();
-    expect(screen.getByText(/Approval is stale/)).toBeTruthy();
+    expect(screen.getByText(/no longer matches the baseline/)).toBeTruthy();
   });
-  it("reuses approval idempotency key after a lost response", async () => {
+  it("reuses the same request after a lost acceptance reply", async () => {
     const f = await fixture();
     f.api.approve = vi
       .fn()
       .mockRejectedValueOnce(new Error("lost"))
-      .mockResolvedValue(authorization(f.run));
+      .mockImplementation(f.api.approve);
+    f.api.land = vi.fn(f.api.land);
     render(<Harness {...f} />);
-    fireEvent.click(screen.getByRole("button", { name: "Approve exact candidate" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Retry approval receipt" }));
-    await screen.findByRole("button", { name: "Land fixture simulation" });
+    fireEvent.click(screen.getByRole("button", { name: "Accept this candidate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry accepting this candidate" }));
+    await screen.findByText(/local baseline is now/);
     const calls = vi.mocked(f.api.approve).mock.calls;
     expect(calls[0][1].idempotencyKey).toBe(calls[1][1].idempotencyKey);
+    expect(f.api.land).toHaveBeenCalledTimes(1);
   });
-  it("never repeats uncertain landing, and checks its receipt separately", async () => {
+  it("checks an uncertain landing without landing it again", async () => {
     const f = await fixture();
     f.api.land = vi.fn().mockRejectedValue(new Error("lost"));
     f.api.reconcile = vi
       .fn()
       .mockResolvedValue({ authorizationId: "auth1", status: "rejected", backend: "fixture" });
     render(<Harness {...f} initial={{ authorization: authorization(f.run) }} />);
-    const button = screen.getByRole("button", { name: "Land fixture simulation" });
+    const button = screen.getByRole("button", { name: "Accept this candidate" });
     fireEvent.click(button);
     fireEvent.click(button);
-    await screen.findByText(/Fixture landing uncertain/);
+    await screen.findByText(/landing result is uncertain/);
     expect(f.api.land).toHaveBeenCalledTimes(1);
-    expect(button.hasAttribute("disabled")).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Check landing receipt" }));
-    await screen.findByText(/Fixture landing rejected/);
+    fireEvent.click(screen.getByRole("button", { name: "Check whether it landed" }));
+    await screen.findByText(/This candidate was rejected/);
     expect(f.api.reconcile).toHaveBeenCalledWith(f.run.id, "auth1");
     expect(f.api.land).toHaveBeenCalledTimes(1);
   });
   it("refuses a mismatched or malformed authorization response", async () => {
     const f = await fixture();
     f.api.approve = vi.fn().mockResolvedValue({ ...authorization(f.run), expiresAt: NaN });
+    f.api.land = vi.fn();
     render(<Harness {...f} />);
-    fireEvent.click(screen.getByRole("button", { name: "Approve exact candidate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept this candidate" }));
     await waitFor(() =>
-      expect(screen.getByRole("alert").textContent).toContain("Approval receipt unavailable"),
+      expect(screen.getByRole("alert").textContent).toContain("could not be accepted"),
     );
-    expect(screen.queryByRole("button", { name: "Land fixture simulation" })).toBeNull();
+    expect(f.api.land).not.toHaveBeenCalled();
   });
-  it("renders persisted fixture landing after reload and disables new approval", async () => {
+  it("renders a persisted acceptance and disables another one", async () => {
     const f = await fixture();
     f.run.landing = {
       authorizationId: "persisted",
@@ -141,9 +139,9 @@ describe("exact candidate landing simulation", () => {
       backend: "fixture",
     };
     render(<Harness {...f} />);
-    expect(screen.getByText(/Fixture simulation landed/)).toBeTruthy();
+    expect(screen.getByText(/local baseline is now/)).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
+      screen.getByRole("button", { name: "Candidate accepted" }).hasAttribute("disabled"),
     ).toBe(true);
   });
   it("reconciles a persisted uncertain receipt without another landing", async () => {
@@ -157,22 +155,24 @@ describe("exact candidate landing simulation", () => {
       backend: "fixture",
     });
     render(<Harness {...f} />);
-    fireEvent.click(screen.getByRole("button", { name: "Check landing receipt" }));
-    await screen.findByText(/Fixture simulation landed/);
+    fireEvent.click(screen.getByRole("button", { name: "Check whether it landed" }));
+    await screen.findByText(/local baseline is now/);
     expect(f.api.land).not.toHaveBeenCalled();
     expect(f.api.reconcile).toHaveBeenCalledWith(f.run.id, "persisted");
   });
-  it("allows canonical awaiting_review status with an exact trusted approval", async () => {
+  it("accepts an awaiting review run whose review matches the candidate", async () => {
     const f = await fixture();
     f.run.status = "awaiting_review";
     f.evidence.run.status = "awaiting_review";
     f.api.approve = vi.fn(f.api.approve);
+    f.api.land = vi.fn(f.api.land);
     render(<Harness {...f} />);
-    const button = screen.getByRole("button", { name: "Approve exact candidate" });
+    const button = screen.getByRole("button", { name: "Accept this candidate" });
     expect(button.hasAttribute("disabled")).toBe(false);
     fireEvent.click(button);
-    await screen.findByRole("button", { name: "Land fixture simulation" });
+    await screen.findByText(/local baseline is now/);
     expect(f.api.approve).toHaveBeenCalledTimes(1);
+    expect(f.api.land).toHaveBeenCalledTimes(1);
   });
   it.each(["truncated", "empty argv", "empty actor"] as const)(
     "rejects %s evidence despite a passed test label",
@@ -184,7 +184,7 @@ describe("exact candidate landing simulation", () => {
       if (kind === "empty actor") f.reviews[0].actor = " ";
       render(<Harness {...f} />);
       expect(
-        screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
+        screen.getByRole("button", { name: "Accept this candidate" }).hasAttribute("disabled"),
       ).toBe(true);
     },
   );

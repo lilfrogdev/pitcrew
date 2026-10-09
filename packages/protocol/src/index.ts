@@ -102,6 +102,8 @@ export interface ProbeEvidence {
 export interface OrchestrationTrace {
   nodes: TraceNode[];
   edges: TraceEdge[];
+  /** Ordered status snapshots so replay can show thinking → passed for the same stage. */
+  steps: TraceNode[];
   probes: ProbeEvidence[];
   sequence: number;
 }

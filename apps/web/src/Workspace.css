@@ -101,12 +101,19 @@
   border-radius: inherit;
   background: #d9e4f5;
 }
+.flow-layout {
+  display: grid;
+  gap: 12px;
+}
 .flow-canvas {
   position: relative;
   width: 100%;
   min-height: 520px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.9), transparent 45%),
+    linear-gradient(180deg, #f4f5f7 0%, #eceef1 100%);
 }
 .flow-replay-empty {
   position: absolute;
@@ -118,9 +125,164 @@
 .flow-canvas .react-flow__controls {
   box-shadow: none;
 }
+.flow-canvas .react-flow__edge-text {
+  font-size: 11px;
+}
+.flow-canvas .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  background: #8b929c;
+}
+.flow-canvas .react-flow__node {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: inherit;
+  text-align: left;
+}
+.crew-flow-node {
+  width: 280px;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8f9fb 100%);
+  box-shadow: 0 10px 24px rgba(36, 38, 43, 0.06);
+  text-align: left;
+}
+.crew-flow-node.is-selected {
+  border-color: #24262b;
+  box-shadow: 0 0 0 1px #24262b, 0 12px 28px rgba(36, 38, 43, 0.1);
+}
+.crew-flow-node.is-live {
+  border-color: #7d8794;
+  background: linear-gradient(180deg, #ffffff 0%, #eef3f8 100%);
+}
+.crew-flow-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.crew-flow-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: #e8eaee;
+  color: #3d434d;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.crew-flow-node.role-planner .crew-flow-mark {
+  background: #e7eef8;
+  color: #314961;
+}
+.crew-flow-node.role-implementer .crew-flow-mark {
+  background: #e9f2ea;
+  color: #2f4a36;
+}
+.crew-flow-node.role-test_runner .crew-flow-mark,
+.crew-flow-node.role-test_agent .crew-flow-mark {
+  background: #f3eee4;
+  color: #5a4524;
+}
+.crew-flow-node.role-reviewer .crew-flow-mark {
+  background: #f1e8ef;
+  color: #56344d;
+}
+.crew-flow-role {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+.crew-flow-action {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.flow-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.flow-status.is-active {
+  background: #e7eef8;
+  color: #314961;
+}
+.flow-status.is-passed {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.flow-status.is-failed {
+  background: var(--error-bg);
+  color: var(--error);
+}
+.flow-status.is-muted {
+  background: var(--accent-soft);
+  color: var(--muted);
+}
+.flow-status-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4d6f96;
+  box-shadow: 0 0 0 0 rgba(77, 111, 150, 0.55);
+  animation: flow-pulse 1.4s ease-out infinite;
+}
+@keyframes flow-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(77, 111, 150, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(77, 111, 150, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(77, 111, 150, 0);
+  }
+}
 .flow-details {
   padding: 12px 4px 20px;
   overflow: auto;
+}
+.flow-details-action {
+  margin: 0 0 6px;
+  color: var(--muted);
+}
+.flow-details-status {
+  display: inline-flex;
+  margin: 0 0 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--accent-soft);
+}
+.flow-details-status.status-active,
+.flow-details-status.status-waiting {
+  background: #e7eef8;
+  color: #314961;
+}
+.flow-details-status.status-passed {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.flow-details-status.status-failed,
+.flow-details-status.status-stopped {
+  background: var(--error-bg);
+  color: var(--error);
 }
 .flow-details pre {
   white-space: pre-wrap;

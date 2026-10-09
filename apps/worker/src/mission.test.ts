@@ -79,6 +79,7 @@ describe("mission approval", () => {
     );
     const run = await f.core.startMission(mission.id, "start", "alice");
     expect(run.status).toBe("queued");
+    expect(f.core.state.plans?.[run.id].profile.revision).toBe(f.core.profile().revision);
     expect(f.core.state.runs).toHaveLength(1);
     expect(await f.core.startMission(mission.id, "start", "alice")).toMatchObject({ id: run.id });
     const reloaded = f.reload();
@@ -131,6 +132,13 @@ describe("mission approval", () => {
     expect(proposed?.proposal?.summary).toContain("hello, pitcrew");
     const trace = f.core.threadTrace(f.thread.id);
     expect(trace.nodes.map((node) => node.role)).toEqual(["repository", "planner"]);
+    expect(trace.nodes.map((node) => node.status)).toEqual(["passed", "passed"]);
+    expect(trace.steps.map((step) => `${step.stage}:${step.status}`)).toEqual([
+      "request:active",
+      "request:passed",
+      "plan:active",
+      "plan:passed",
+    ]);
     expect(trace.edges.map((edge) => edge.label)).toEqual(["Draft plan"]);
     expect(f.core.state.messages.some((message) => message.crew === "planner")).toBe(true);
     expect(await f.core.ensureChatProposal(turn.turn.id)).toBeUndefined();

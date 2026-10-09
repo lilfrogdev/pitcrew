@@ -100,7 +100,12 @@ export interface State {
   requests?: Record<string, ExecutionInput>;
   credentialActors?: Record<string, string>;
   missions?: Mission[];
-  orchestration?: { nodes: TraceNode[]; edges: TraceEdge[]; probes: ProbeEvidence[] };
+  orchestration?: {
+    nodes: TraceNode[];
+    edges: TraceEdge[];
+    steps: TraceNode[];
+    probes: ProbeEvidence[];
+  };
 }
 export const initialState = (overrides: Partial<Project> = {}): State => {
   const project: Project = {
@@ -1205,10 +1210,14 @@ export class Coordinator {
   }
   threadTrace(threadId: string, after = 0): OrchestrationTrace {
     this.thread(threadId);
-    const book = this.state.orchestration ?? { nodes: [], edges: [], probes: [] };
+    const book = this.state.orchestration ?? { nodes: [], edges: [], steps: [], probes: [] };
+    const steps = (book.steps ?? []).filter(
+      (step) => step.threadId === threadId && step.sequence > after,
+    );
     return {
       nodes: book.nodes.filter((node) => node.threadId === threadId && node.sequence > after),
       edges: book.edges.filter((edge) => edge.threadId === threadId && edge.sequence > after),
+      steps,
       probes: book.probes.filter((probe) => probe.threadId === threadId),
       sequence: this.state.events.at(-1)?.sequence ?? 0,
     };
@@ -1231,7 +1240,8 @@ export class Coordinator {
   }): TraceNode {
     this.thread(input.threadId);
     return this.durableUpdate(() => {
-      const book = (this.state.orchestration ??= { nodes: [], edges: [], probes: [] });
+      const book = (this.state.orchestration ??= { nodes: [], edges: [], steps: [], probes: [] });
+      book.steps ??= [];
       const scope = input.runId ?? input.missionId ?? "thread";
       const id = `${input.threadId}:${scope}:${input.stage}`;
       const now = this.now();
@@ -1263,7 +1273,8 @@ export class Coordinator {
       if (input.parentId || input.parentStage) {
         const from = input.parentId ?? `${input.threadId}:${scope}:${input.parentStage}`;
         const edgeId = `${from}->${id}`;
-        if (!book.edges.some((edge) => edge.id === edgeId) && book.nodes.some((item) => item.id === from))
+        const existing = book.edges.find((edge) => edge.id === edgeId);
+        if (!existing && book.nodes.some((item) => item.id === from))
           book.edges.push({
             id: edgeId,
             threadId: input.threadId,
@@ -1274,7 +1285,12 @@ export class Coordinator {
             sequence: node.sequence,
             createdAt: now,
           });
+        else if (existing && input.edgeLabel) {
+          existing.label = input.edgeLabel.slice(0, 80);
+          existing.sequence = node.sequence;
+        }
       }
+      book.steps.push(structuredClone(node));
       if (input.note)
         this.crewNote(input.threadId, input.note.id, input.note.role, input.note.content, input.note.crew);
       this.event("orchestration.updated", id);
@@ -1284,7 +1300,7 @@ export class Coordinator {
   recordProbes(threadId: string, runId: string, probes: ProbeEvidence[]) {
     this.thread(threadId);
     return this.durableUpdate(() => {
-      const book = (this.state.orchestration ??= { nodes: [], edges: [], probes: [] });
+      const book = (this.state.orchestration ??= { nodes: [], edges: [], steps: [], probes: [] });
       for (const probe of probes) {
         if (probe.threadId !== threadId || probe.runId !== runId) throw new AdmissionError("invalid_probe");
         if (probe.command.join(" ").length > 500 || probe.purpose.length > 500)
@@ -1557,11 +1573,7 @@ export class Coordinator {
       baseSha: this.state.project.baseSha,
       candidateSha: this.state.project.baseSha,
       configurationRevision: this.state.project.configurationRevision,
-      profile: {
-        projectId: this.state.project.id,
-        revision: mission.approvedRevision,
-        checks: mission.proposal.checks,
-      },
+      profile: this.profile(),
       acceptance: mission.proposal.acceptance,
       reproduceBaseline: false,
     });
@@ -1605,6 +1617,18 @@ export class Coordinator {
       this.event("run.queued", run.id);
       this.event("mission.updated", current.id, { kind: "principal", id: actor });
       return structuredClone(run);
+    });
+    this.recordStage({
+      threadId: run.threadId,
+      runId: run.id,
+      missionId,
+      role: "coordinator",
+      stage: "assign",
+      status: "active",
+      title: "Coordinator",
+      summary: "Assigning the approved plan to the change worker.",
+      parentId: `${run.threadId}:${missionId}:plan`,
+      edgeLabel: "Sending to Coordinator",
     });
     this.recordStage({
       threadId: run.threadId,
@@ -1726,9 +1750,29 @@ export class Coordinator {
       missionId: mission.id,
       role: "repository",
       stage: "request",
+      status: "active",
+      title: "Repository agent",
+      summary: "Scoping the request for planning.",
+    });
+    this.recordStage({
+      threadId: turn.threadId,
+      missionId: mission.id,
+      role: "repository",
+      stage: "request",
       status: "passed",
       title: "Repository agent",
       summary: "Scoped the request for planning.",
+    });
+    this.recordStage({
+      threadId: turn.threadId,
+      missionId: mission.id,
+      role: "planner",
+      stage: "plan",
+      status: "active",
+      title: "Planner",
+      summary: "Drafting the plan.",
+      parentStage: "request",
+      edgeLabel: "Sending to Planner",
     });
     const proposed = await this.proposeMission(turnId, {
       summary: request.trim().slice(0, 4000),

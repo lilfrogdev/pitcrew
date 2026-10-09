@@ -76,75 +76,81 @@ export function LandingControl({
   );
   const receiptResult = state.result ?? run.landing;
   const receiptState = receiptResult?.status ?? authorization?.state;
-  const canApprove = enabled && eligible && !state.busy && !authorization && !receiptResult;
-  const canLand =
-    enabled && eligible && matches && !expired && receiptState === "authorized" && !state.busy;
-  async function approve() {
-    if (!canApprove || lock.current) return;
+  const landed = receiptResult?.status === "landed";
+  const uncertain = Boolean(receiptResult && ["pending", "uncertain"].includes(receiptResult.status));
+  const stale = Boolean(authorization && !matches);
+  const canAccept = enabled && eligible && !state.busy && !landed && !stale;
+  async function accept() {
+    if (!canAccept || lock.current) return;
     lock.current = true;
-    const key = state.fingerprint === fingerprint && state.key ? state.key : crypto.randomUUID();
-    const next = { key, fingerprint, busy: true };
+    const key =
+      !authorization && state.fingerprint === fingerprint && state.key
+        ? state.key
+        : crypto.randomUUID();
+    const next = { ...state, key, fingerprint, busy: true, error: undefined };
     onStateChange(next);
+    let knownId = authorization?.authorizationId ?? receiptResult?.authorizationId;
+    let accepted = authorization;
     try {
-      const receipt = await api.approve(run.id, {
-        expectedTargetSha: run.baseSha,
-        candidateSha: run.candidateSha!,
-        configurationRevision: run.configurationRevision,
-        idempotencyKey: key,
-      });
+      if (uncertain && knownId) {
+        const result = await api.reconcile(run.id, knownId);
+        if (
+          result.backend !== "fixture" ||
+          result.authorizationId !== knownId ||
+          !["landed", "rejected", "uncertain"].includes(result.status)
+        )
+          throw new Error("Receipt mismatch");
+        onStateChange({ ...next, busy: false, result });
+        return;
+      }
+      const receipt =
+        authorization && matches && !expired
+          ? authorization
+          : await api.approve(run.id, {
+              expectedTargetSha: run.baseSha,
+              candidateSha: run.candidateSha!,
+              configurationRevision: run.configurationRevision,
+              idempotencyKey: key,
+            });
       if (
         receipt.backend !== "fixture" ||
         !receipt.authorizationId ||
         !Number.isFinite(new Date(receipt.expiresAt).getTime()) ||
-        !["authorized", "pending", "landed", "rejected", "uncertain"].includes(receipt.state) ||
+        receipt.expiresAt <= Date.now() ||
         receipt.runId !== run.id ||
         receipt.expectedTargetSha !== run.baseSha ||
         receipt.candidateSha !== run.candidateSha ||
         receipt.configurationRevision !== run.configurationRevision
       )
         throw new Error("Receipt mismatch");
-      onStateChange({ ...next, busy: false, authorization: receipt });
-    } catch {
-      onStateChange({
-        ...next,
-        busy: false,
-        error:
-          "Approval receipt unavailable. Retry retrieves the same request; landing remains disabled.",
-      });
-    } finally {
-      lock.current = false;
-    }
-  }
-  async function land(reconcile = false) {
-    const authorizationId = authorization?.authorizationId ?? receiptResult?.authorizationId;
-    if (!authorizationId || lock.current || state.busy || (!reconcile && !canLand)) return;
-    lock.current = true;
-    onStateChange({ ...state, busy: true, error: undefined });
-    try {
-      const result = await (reconcile
-        ? api.reconcile(run.id, authorizationId)
-        : api.land(run.id, authorizationId));
+      knownId = receipt.authorizationId;
+      accepted = receipt;
+      const result = await api.land(run.id, receipt.authorizationId);
       if (
         result.backend !== "fixture" ||
         !["landed", "rejected", "uncertain"].includes(result.status) ||
-        result.authorizationId !== authorizationId ||
-        (result.status === "landed" &&
-          result.landedSha !== (authorization?.candidateSha ?? run.candidateSha))
+        result.authorizationId !== receipt.authorizationId ||
+        (result.status === "landed" && result.landedSha !== run.candidateSha)
       )
         throw new Error("Receipt mismatch");
-      onStateChange({ ...state, busy: false, result });
+      onStateChange({ ...next, busy: false, authorization: receipt, result });
     } catch {
-      onStateChange({
-        ...state,
-        busy: false,
-        result: {
-          authorizationId,
-          status: "uncertain",
-          backend: "fixture",
-        },
-        error:
-          "Landing receipt unavailable. Check the receipt to reconcile; no landing will be replayed.",
-      });
+      if (knownId) {
+        onStateChange({
+          ...next,
+          busy: false,
+          authorization: accepted,
+          result: { authorizationId: knownId, status: "uncertain", backend: "fixture" },
+          error:
+            "The landing reply was lost. Retry checks this same candidate and does not land it again.",
+        });
+      } else {
+        onStateChange({
+          ...next,
+          busy: false,
+          error: "This candidate could not be accepted. Retry uses the same request.",
+        });
+      }
     } finally {
       lock.current = false;
     }
@@ -160,50 +166,37 @@ export function LandingControl({
         </p>
       ) : (
         <p>
-          Approve candidate <code>{run.candidateSha}</code> against target{" "}
-          <code>{run.baseSha}</code> with configuration <code>{run.configurationRevision}</code>.
+          Accept candidate <code>{run.candidateSha}</code> as the new baseline in place of{" "}
+          <code>{run.baseSha}</code>.
         </p>
       )}
-      <button disabled={!canApprove} onClick={() => void approve()}>
-        {state.busy && !authorization
-          ? "Requesting approval…"
-          : state.key && !authorization
-            ? "Retry approval receipt"
-            : "Approve exact candidate"}
-      </button>
-      {authorization && (
-        <>
-          <p>
-            Authorization <code>{authorization.authorizationId}</code> · expires{" "}
-            <time dateTime={new Date(authorization.expiresAt).toISOString()}>
-              {new Date(authorization.expiresAt).toLocaleTimeString()}
-            </time>
-          </p>
-          {!matches && (
-            <p role="alert">Approval is stale. Landing is disabled for the changed candidate.</p>
-          )}
-          {expired && <p role="status">Approval expired. Landing is disabled.</p>}
-          <button disabled={!canLand} onClick={() => void land()}>
-            Land fixture simulation
-          </button>
-        </>
+      {stale && (
+        <p role="alert">This candidate no longer matches the baseline. Acceptance is refused.</p>
       )}
+      {authorization && expired && matches && (
+        <p role="status">The previous acceptance expired. Accept this candidate again.</p>
+      )}
+      <button disabled={!canAccept} onClick={() => void accept()}>
+        {state.busy
+          ? "Accepting candidate…"
+          : uncertain
+            ? "Check whether it landed"
+            : state.key && !authorization
+              ? "Retry accepting this candidate"
+              : landed
+                ? "Candidate accepted"
+                : "Accept this candidate"}
+      </button>
       {receiptState && receiptState !== "authorized" && (
         <p role="status">
           {receiptState === "landed"
-            ? `Fixture simulation landed ${receiptResult?.landedSha ?? authorization?.candidateSha}. No real repository merge occurred.`
+            ? `Candidate accepted. The local baseline is now ${receiptResult?.landedSha ?? authorization?.candidateSha}. No real repository merge occurred.`
             : receiptState === "rejected"
-              ? "Fixture landing rejected. Review the evidence before requesting another change."
-              : "Fixture landing uncertain or pending. Reconciliation is required; no landing is replayed."}
+              ? "This candidate was rejected. Review the evidence before requesting another change."
+              : "The landing result is uncertain. Retry checks this same candidate and does not land it again."}
         </p>
       )}
       {state.error && <p role="alert">{state.error}</p>}
-      {(authorization || receiptResult) &&
-        ["pending", "uncertain"].includes(receiptState ?? "") && (
-          <button disabled={state.busy || !enabled} onClick={() => void land(true)}>
-            Check landing receipt
-          </button>
-        )}
     </div>
   );
 }

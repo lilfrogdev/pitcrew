@@ -10,14 +10,21 @@ import {
 } from "@pitcrew/protocol";
 const baseSha = "851b619d31a4f1b769b8046a3d306122097ac036";
 const candidateSha = "2a456c88e1d6489d17c1684bfb7f9e0e2a915a04";
-const node = (stage: string, role: CrewRole, title: string, status: "passed", sequence: number) => ({
+const node = (
+  stage: string,
+  role: CrewRole,
+  title: string,
+  status: "active" | "passed",
+  sequence: number,
+) => ({
   id: `welcome:thread:${stage}`,
   threadId: "welcome",
   role,
   stage,
   status,
   title,
-  summary: `${title} finished ${stage}.`,
+  summary:
+    status === "active" ? `${title} is working on ${stage}.` : `${title} finished ${stage}.`,
   sequence,
   createdAt: "2026-10-07T00:00:00.000Z",
   updatedAt: "2026-10-07T00:00:00.000Z",
@@ -308,13 +315,23 @@ export function createFixtureApi(): Api {
                 node("implement", "implementer", "Change worker", "passed", 3),
                 node("review", "reviewer", "Reviewer", "passed", 4),
               ],
+              steps: [
+                node("request", "repository", "Repository agent", "active", 1),
+                node("request", "repository", "Repository agent", "passed", 2),
+                node("plan", "planner", "Planner", "active", 3),
+                node("plan", "planner", "Planner", "passed", 4),
+                node("implement", "implementer", "Change worker", "active", 5),
+                node("implement", "implementer", "Change worker", "passed", 6),
+                node("review", "reviewer", "Reviewer", "active", 7),
+                node("review", "reviewer", "Reviewer", "passed", 8),
+              ],
               edges: [
-                edge("request", "plan", "Draft plan", 2),
-                edge("plan", "implement", "Approved", 3),
-                edge("implement", "review", "Review", 4),
+                edge("request", "plan", "Draft plan", 3),
+                edge("plan", "implement", "Approved", 5),
+                edge("implement", "review", "Review", 7),
               ],
             }
-          : { nodes: [], edges: [], probes: [], sequence: 0 },
+          : { nodes: [], edges: [], steps: [], probes: [], sequence: 0 },
       ),
     createThread: async (projectId, title, key) => {
       const existing = threads.find((thread) => thread.id === key);

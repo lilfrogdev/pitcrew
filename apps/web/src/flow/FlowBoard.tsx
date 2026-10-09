@@ -2,29 +2,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
+  MarkerType,
   ReactFlow,
   type Edge,
-  type Node,
+  type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Api } from "../api";
 import type { OrchestrationTrace, TraceNode } from "@pitcrew/protocol";
-import { replayFrame, runChoices } from "./model";
+import { CrewNode, type CrewFlowNode } from "./CrewNode";
+import { actionLabel, replayFrame, runChoices, statusLabel } from "./model";
 
-const empty: OrchestrationTrace = { nodes: [], edges: [], probes: [], sequence: 0 };
-const stageCaption: Record<string, string> = {
-  request: "Scoped the request",
-  plan: "Drafted the plan",
-  assign: "Assigned the plan",
-  prepare: "Prepared the checkout",
-  change: "Implemented the change",
-  publish: "Published the candidate",
-  test: "Ran the pinned checks",
-  explore: "Ran an edge-case probe",
-  review: "Reviewed the result",
-  stop: "Recorded the result",
-  done: "Recorded the result",
-};
+const empty: OrchestrationTrace = { nodes: [], edges: [], steps: [], probes: [], sequence: 0 };
+const nodeTypes = { crew: CrewNode } satisfies NodeTypes;
 
 export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
   const [trace, setTrace] = useState<OrchestrationTrace>(empty);
@@ -39,12 +29,12 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
         .trace(threadId, 0)
         .then((next) => {
           if (cancelled) return;
-          setTrace(next);
+          setTrace({ ...next, steps: next.steps ?? [] });
         })
         .catch(() => undefined);
     };
     load();
-    const timer = window.setInterval(load, mode === "live" ? 1200 : 5000);
+    const timer = window.setInterval(load, mode === "live" ? 900 : 5000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -55,29 +45,30 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
     [trace, cursor, runId, mode],
   );
   const runs = runChoices(trace.nodes);
-  const nodes: Node[] = view.nodes.map((node, index) => ({
+  const nodes: CrewFlowNode[] = view.nodes.map((node, index) => ({
     id: node.id,
-    position: { x: 48, y: index * 128 },
-    data: { label: `${node.title}\n${stageCaption[node.stage] ?? node.stage}\n${node.status}` },
-    style: {
-      width: 280,
-      whiteSpace: "pre-wrap",
-      fontSize: 14,
-      lineHeight: 1.35,
-      border: selected === node.id ? "2px solid #111" : "1px solid #ccc",
-      borderRadius: 10,
-      padding: 12,
-      background: node.status === "failed" ? "#fde8e8" : node.status === "active" ? "#e8f1ff" : "#fff",
-    },
-    ariaLabel: `${node.title} ${node.status}`,
+    type: "crew",
+    position: { x: 72, y: index * 148 },
+    data: { trace: node, selected: selected === node.id },
+    ariaLabel: `${node.title} ${actionLabel(node)} ${statusLabel(node.status, node.role)}`,
   }));
-  const edges: Edge[] = view.edges.map((edge) => ({
-    id: edge.id,
-    source: edge.from,
-    target: edge.to,
-    label: edge.label === "Approved" || edge.label === "Draft plan" ? edge.label : undefined,
-    animated: mode === "live" && view.nodes.some((node) => node.id === edge.to && node.status === "active"),
-  }));
+  const edges: Edge[] = view.edges.map((edge) => {
+    const target = view.nodes.find((node) => node.id === edge.to);
+    const sending = !!target && (target.status === "active" || target.status === "waiting");
+    return {
+      id: edge.id,
+      source: edge.from,
+      target: edge.to,
+      label: sending ? `Sending to ${target.title}` : edge.label,
+      animated: sending && mode === "live",
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#9aa1ab" },
+      style: { stroke: sending ? "#5b6573" : "#c6cad1", strokeWidth: sending ? 2 : 1.5 },
+      labelStyle: { fill: "#626772", fontSize: 11, fontWeight: 600 },
+      labelBgStyle: { fill: "#f7f7f8", fillOpacity: 0.95 },
+      labelBgPadding: [6, 4] as [number, number],
+      labelBgBorderRadius: 4,
+    };
+  });
   const current = view.nodes.find((node) => node.id === selected);
   const stepLabel = view.nodes.at(-1);
   return (
@@ -114,7 +105,9 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
           <ReplayScrubber
             total={view.total}
             value={Math.min(cursor, view.total)}
-            label={stepLabel?.title ?? ""}
+            label={
+              stepLabel ? `${stepLabel.title} · ${statusLabel(stepLabel.status, stepLabel.role)}` : ""
+            }
             onChange={(step) => {
               setCursor((current) => (current === step ? current : step));
               setSelected("");
@@ -132,7 +125,7 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
           {view.nodes.map((node) => (
             <li key={node.id}>
               <button type="button" onClick={() => setSelected(node.id)}>
-                {node.title} {node.status}
+                {node.title} · {actionLabel(node)} · {statusLabel(node.status, node.role)}
               </button>
             </li>
           ))}
@@ -143,7 +136,7 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
           <div
             className="flow-canvas"
             aria-label="Agent flow"
-            style={{ height: Math.max(520, view.total * 128 + 80) }}
+            style={{ height: Math.max(520, view.nodes.length * 148 + 96) }}
           >
             {view.nodes.length === 0 && (
               <p className="flow-replay-empty">Move replay position to reveal each handoff.</p>
@@ -151,15 +144,16 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
             <ReactFlow
               nodes={nodes}
               edges={edges}
-              minZoom={0.6}
+              nodeTypes={nodeTypes}
+              minZoom={0.55}
               maxZoom={1.5}
-              defaultViewport={{ x: 16, y: 12, zoom: 1 }}
+              defaultViewport={{ x: 24, y: 16, zoom: 1 }}
               onNodeClick={(_event, node) => setSelected(node.id)}
               nodesDraggable={false}
               nodesConnectable={false}
               proOptions={{ hideAttribution: true }}
             >
-              <Background />
+              <Background gap={22} size={1.2} color="#d7dae0" />
               <Controls showInteractive={false} position="top-right" />
             </ReactFlow>
           </div>
@@ -259,7 +253,10 @@ function FlowDetails({
   return (
     <aside className="flow-details" aria-label="Flow details">
       <p className="eyebrow">{node.title}</p>
-      <p>{node.status}</p>
+      <p className="flow-details-action">{actionLabel(node)}</p>
+      <p className={`flow-details-status status-${node.status}`}>
+        {statusLabel(node.status, node.role)}
+      </p>
       <p>{node.summary}</p>
       {node.revision && <p>Revision {node.revision.slice(0, 12)}</p>}
       {node.candidateSha && <p>Candidate {node.candidateSha.slice(0, 12)}</p>}

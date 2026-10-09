@@ -24,7 +24,7 @@ describe("project conversations", () => {
     expect(screen.getByText(/8 synthetic checks passed/)).toBeTruthy();
     expect(screen.getByText(/Matches current candidate/)).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Approve exact candidate" }).hasAttribute("disabled"),
+      screen.getByRole("button", { name: "Accept this candidate" }).hasAttribute("disabled"),
     ).toBe(false);
   });
   it("switches projects and threads, preserves drafts, and creates an empty thread", async () => {
