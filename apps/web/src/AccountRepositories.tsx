@@ -28,7 +28,6 @@ export function AccountRepositories({
     creations: [],
   });
   const [newName, setNewName] = useState("");
-  const [newDisplayName, setNewDisplayName] = useState("");
   const [newDescription, setNewDescription] = useState("");
   const canonicalName = canonicalRepositoryName(newName);
   const activeName = (name: string) =>
@@ -149,7 +148,7 @@ export function AccountRepositories({
       pending.current ||
       loading ||
       creationError ||
-      !creationConsent[name] ||
+      (recovery && !creationConsent[name]) ||
       !api.createRepository
     )
       return;
@@ -172,7 +171,7 @@ export function AccountRepositories({
     try {
       const result = await (creations.capabilities?.create && !recovery
         ? api.createRepository(name, true, {
-            displayName: newDisplayName.trim() || name,
+            displayName: name,
             description: newDescription.trim(),
           })
         : api.createRepository(name, true));
@@ -186,7 +185,6 @@ export function AccountRepositories({
         throw new ApiError(0);
       setUnknownCreation(null);
       setNewName("");
-      setNewDisplayName("");
       setNewDescription("");
       setCreationConsent({});
       setCreations((value) => ({
@@ -235,7 +233,6 @@ export function AccountRepositories({
     setUnknownCreation(null);
     setAnnouncement("");
     setNewName("");
-    setNewDisplayName("");
     setNewDescription("");
     void load();
     const online = () => {
@@ -335,7 +332,7 @@ export function AccountRepositories({
                   if (canonicalName) void create(canonicalName);
                 }}
               >
-                <h2>Create empty repository</h2>
+                <h2>Create repository</h2>
                 <label>
                   Repository name
                   <input
@@ -351,20 +348,11 @@ export function AccountRepositories({
                     }}
                   />
                 </label>
-                <p className={styles.note}>
-                  Use 1–63 letters, numbers or hyphens, starting with a letter or number. Names are
-                  saved in lowercase and are unique within your account. You can rename them later;
-                  the physical storage name stays fixed.
-                </p>
-                <label>
-                  Display name (optional)
-                  <input
-                    value={newDisplayName}
-                    maxLength={80}
-                    disabled={busy || !!error || !!creationError}
-                    onChange={(event) => setNewDisplayName(event.target.value)}
-                  />
-                </label>
+                {!!newName && !canonicalName && (
+                  <p className={styles.note}>
+                    Use 1–63 ASCII letters, numbers or hyphens, starting with a letter or number.
+                  </p>
+                )}
                 <label>
                   Description (optional)
                   <textarea
@@ -374,39 +362,18 @@ export function AccountRepositories({
                     onChange={(event) => setNewDescription(event.target.value)}
                   />
                 </label>
-                <p>
-                  This creates no code, threads, or invitations. Your account owns the repository.
-                </p>
-                <p>
-                  Cloudflare repository storage and operations can incur charges under the account's
-                  plan.
-                </p>
-                <label className={styles.consent}>
-                  <input
-                    type="checkbox"
-                    checked={creationConsent[canonicalName ?? ""] ?? false}
-                    disabled={busy || !!error || !!creationError}
-                    onChange={(event) =>
-                      setCreationConsent({ [canonicalName ?? ""]: event.target.checked })
-                    }
-                  />
-                  I consent to storing this empty repository in Cloudflare and to Cloudflare issuing
-                  a temporary Git token that is discarded and revoked before repository access is
-                  enabled.
-                </label>
                 <button
                   type="submit"
                   disabled={
                     busy ||
                     !!error ||
                     !!creationError ||
-                    !creationConsent[canonicalName ?? ""] ||
                     !canonicalName ||
                     !!unknownCreation ||
                     (!!canonicalName && activeName(canonicalName))
                   }
                 >
-                  {busy ? "Creating repository…" : "Create empty repository"}
+                  {busy ? "Creating repository…" : "Create repository"}
                 </button>
               </form>
             )}
@@ -418,40 +385,14 @@ export function AccountRepositories({
                   className={styles.form}
                   aria-label={`Approved empty repository ${creations.approval.name}`}
                 >
-                  <h2>Create approved empty repository</h2>
-                  <p>
-                    The operator approved {creations.approval.name} for this account. Your account
-                    will own this empty repository.
-                  </p>
-                  <p>This creates no code, threads, or invitations.</p>
-                  <p>
-                    Cloudflare repository storage and operations can incur charges under the
-                    account's plan.
-                  </p>
-                  <label className={styles.consent}>
-                    <input
-                      type="checkbox"
-                      checked={creationConsent[creations.approval.name] ?? false}
-                      disabled={busy || !!error || !!creationError}
-                      onChange={(event) =>
-                        setCreationConsent({ [creations.approval!.name]: event.target.checked })
-                      }
-                    />
-                    I consent to storing this empty repository in Cloudflare and to Cloudflare
-                    issuing a temporary Git token that is discarded and revoked before repository
-                    access is enabled.
-                  </label>
+                  <h2>Create approved repository</h2>
+                  <p>{creations.approval.name}</p>
                   <button
                     type="button"
-                    disabled={
-                      busy ||
-                      !!error ||
-                      !!creationError ||
-                      !creationConsent[creations.approval.name]
-                    }
+                    disabled={busy || !!error || !!creationError}
                     onClick={() => void create(creations.approval!.name)}
                   >
-                    {busy ? "Creating repository…" : "Create empty repository"}
+                    {busy ? "Creating repository…" : "Create repository"}
                   </button>
                 </section>
               )}

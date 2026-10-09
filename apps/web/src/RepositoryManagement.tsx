@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  invitationRecipient,
+  invitationMatchesRecipient,
   type CollaborationApi,
   type Invitation,
   type Member,
@@ -24,11 +26,10 @@ export function RepositoryManagement({
   const [open, setOpen] = useState(false);
   const [logicalName, setLogicalName] = useState(item.logicalName ?? item.repositoryName ?? "");
   const canonicalName = canonicalRepositoryName(logicalName);
-  const [displayName, setDisplayName] = useState(item.name);
   const [description, setDescription] = useState(item.description ?? "");
   const [confirmation, setConfirmation] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [email, setEmail] = useState("");
+  const [recipient, setRecipient] = useState("");
   const [link, setLink] = useState<{ url: string; invitationId: string } | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -62,12 +63,12 @@ export function RepositoryManagement({
     setConfirmation("");
     setDeleteOpen(false);
     setLogicalName(item.logicalName ?? item.repositoryName ?? "");
-    setDisplayName(item.name);
     setDescription(item.description ?? "");
     setDeleting(item.status === "deleting");
     setDeletionUnknown(false);
     setRecoveryConfirmed(false);
     setInvitationUncertain(false);
+    setRecipient("");
     setLoading(false);
     setReadError("");
     return () => {
@@ -120,11 +121,16 @@ export function RepositoryManagement({
     } catch (cause) {
       if (alive(version))
         setError(
-          cause instanceof ApiError && cause.code === "repository_exists"
-            ? "This repository name is already used in your account. Choose another name, then save again."
-            : cause instanceof ApiError && cause.status === 409
-              ? "This repository changed. Refresh repositories before trying again."
-              : failure,
+          cause instanceof ApiError &&
+            ["invalid_recipient", "recipient_unavailable", "already_member"].includes(
+              cause.code ?? "",
+            )
+            ? cause.message
+            : cause instanceof ApiError && cause.code === "repository_exists"
+              ? "This repository name is already used in your account. Choose another name, then save again."
+              : cause instanceof ApiError && cause.status === 409
+                ? "This repository changed. Refresh repositories before trying again."
+                : failure,
         );
     } finally {
       if (alive(version)) {
@@ -253,19 +259,13 @@ export function RepositoryManagement({
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
-                  if (
-                    unavailable ||
-                    !canonicalName ||
-                    !displayName.trim() ||
-                    !api.updateRepository ||
-                    !targetReady
-                  )
+                  if (unavailable || !canonicalName || !api.updateRepository || !targetReady)
                     return;
                   const version = generation.current;
                   void mutate(async () => {
                     const result = await api.updateRepository!(item.projectId, {
                       logicalName: canonicalName,
-                      displayName: displayName.trim(),
+                      displayName: canonicalName,
                       description: description.trim(),
                       expectedRevision: item.metadataRevision ?? 0,
                     });
@@ -291,20 +291,11 @@ export function RepositoryManagement({
                     onChange={(event) => setLogicalName(event.target.value)}
                   />
                 </label>
-                <p className={styles.note}>
-                  Unique within your account and saved in lowercase. Renaming keeps the physical
-                  name, repository ID and history.
-                </p>
-                <label>
-                  Display name
-                  <input
-                    value={displayName}
-                    maxLength={80}
-                    required
-                    disabled={unavailable}
-                    onChange={(event) => setDisplayName(event.target.value)}
-                  />
-                </label>
+                {!!logicalName && !canonicalName && (
+                  <p className={styles.note}>
+                    Use 1–63 ASCII letters, numbers or hyphens, starting with a letter or number.
+                  </p>
+                )}
                 <label>
                   Description
                   <textarea
@@ -314,18 +305,9 @@ export function RepositoryManagement({
                     onChange={(event) => setDescription(event.target.value)}
                   />
                 </label>
-                <p className={styles.note}>
-                  Display names are labels and do not need to be unique.
-                </p>
                 <button
                   type="submit"
-                  disabled={
-                    unavailable ||
-                    !canonicalName ||
-                    !targetReady ||
-                    !api.updateRepository ||
-                    !displayName.trim()
-                  }
+                  disabled={unavailable || !canonicalName || !targetReady || !api.updateRepository}
                 >
                   Save repository details
                 </button>
@@ -372,15 +354,19 @@ export function RepositoryManagement({
                   <form
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (unavailable || invitationUncertain || !email.trim()) return;
+                      if (unavailable || invitationUncertain || !recipient.trim()) return;
                       const version = generation.current;
                       setLink(null);
                       void mutate(async () => {
                         let result;
                         try {
-                          result = await api.inviteProject(item.projectId, email.trim());
+                          result = await api.inviteProject(item.projectId, recipient.trim());
                         } catch (cause) {
-                          if (alive(version)) setInvitationUncertain(true);
+                          if (
+                            alive(version) &&
+                            !(cause instanceof ApiError && [400, 409].includes(cause.status))
+                          )
+                            setInvitationUncertain(true);
                           throw cause;
                         }
                         if (!alive(version)) return;
@@ -392,8 +378,7 @@ export function RepositoryManagement({
                           result.invitation.projectId !== item.projectId ||
                           result.invitation.scope !== "project" ||
                           result.invitation.role !== "editor" ||
-                          typeof result.invitation.email !== "string" ||
-                          result.invitation.email.toLowerCase() !== email.trim().toLowerCase() ||
+                          !invitationMatchesRecipient(result.invitation, recipient) ||
                           !Number.isFinite(Date.parse(result.invitation.expiresAt))
                         ) {
                           setInvitationUncertain(true);
@@ -403,7 +388,7 @@ export function RepositoryManagement({
                         url.searchParams.set("invitation", result.token);
                         setLink({ url: url.href, invitationId: result.invitation.id });
                         setInvitations((values) => [...values, result.invitation]);
-                        setEmail("");
+                        setRecipient("");
                         setNotice(
                           "Invitation created. Share the link with the intended recipient.",
                         );
@@ -411,23 +396,23 @@ export function RepositoryManagement({
                     }}
                   >
                     <label>
-                      Invitation recipient email
+                      Username or email
                       <input
-                        type="email"
-                        value={email}
+                        type="text"
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        value={recipient}
                         required
                         maxLength={254}
                         disabled={unavailable}
-                        onChange={(event) => setEmail(event.target.value)}
+                        onChange={(event) => setRecipient(event.target.value)}
                       />
                     </label>
-                    <p className={styles.note}>
-                      Editors can work in this repository. Share the link yourself; no email is
-                      sent.
-                    </p>
+                    <p className={styles.note}>Share the link yourself; no email is sent.</p>
                     <button
                       type="submit"
-                      disabled={unavailable || invitationUncertain || !email.trim()}
+                      disabled={unavailable || invitationUncertain || !recipient.trim()}
                     >
                       Create invitation link
                     </button>
@@ -444,10 +429,7 @@ export function RepositoryManagement({
                         Invitation link
                         <input readOnly value={link.url} />
                       </label>
-                      <p className={styles.note}>
-                        Copy now. This link is shown only here and is cleared when you close
-                        management.
-                      </p>
+                      <p className={styles.note}>Copy this link before closing management.</p>
                       <button
                         type="button"
                         disabled={busy}
@@ -474,7 +456,7 @@ export function RepositoryManagement({
                       {pendingInvitations.map((invite) => (
                         <li key={invite.id}>
                           <div>
-                            <strong>{invite.email}</strong>
+                            <strong>{invitationRecipient(invite)}</strong>
                             <span>
                               {invite.scope === "thread" ? "Thread editor" : "Repository editor"} ·
                               Expires {new Date(invite.expiresAt).toLocaleString()}

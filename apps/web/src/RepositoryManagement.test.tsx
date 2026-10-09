@@ -84,23 +84,26 @@ async function open(api: CollaborationApi) {
   await screen.findByText("editor@example.test");
   return { user, view };
 }
-it("creates the selected permanent name with optional metadata only after consent", async () => {
+it("creates with one canonical repository name and optional description on explicit action", async () => {
   const api = managementApi();
   const user = userEvent.setup();
   render(<AccountRepositories api={api} />);
   const form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "Invalid_Name");
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   await user.clear(within(form).getByLabelText("Repository name"));
   await user.type(within(form).getByLabelText("Repository name"), "new-physical");
-  await user.type(within(form).getByLabelText("Display name (optional)"), " Friendly name ");
+  expect(within(form).queryByLabelText(/Display name/)).toBeNull();
+  expect(within(form).queryByRole("checkbox")).toBeNull();
+  expect(within(form).queryByText(/Cloudflare repository storage|creates no code/)).toBeNull();
   await user.type(within(form).getByLabelText("Description (optional)"), " A description ");
-  expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
-  await user.click(within(form).getByRole("checkbox"));
+  expect(within(form).getByRole("button", { name: "Create repository" })).toHaveProperty(
+    "disabled",
+    false,
+  );
   await user.click(within(form).getByRole("button"));
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("new-physical", true, {
-    displayName: "Friendly name",
+    displayName: "new-physical",
     description: "A description",
   });
   expect(await screen.findByText(/Creation is pending/)).toBeTruthy();
@@ -130,12 +133,14 @@ it("gates all management controls on discovered capability and owner role", asyn
 it("saves only metadata with the discovered revision, without changing the physical target", async () => {
   const api = managementApi();
   const { user } = await open(api);
-  await user.clear(screen.getByLabelText("Display name"));
-  await user.type(screen.getByLabelText("Display name"), " New label ");
+  const panel = screen.getByRole("region", { name: `Manage ${repository.name}` });
+  expect(within(panel).queryByLabelText("Display name")).toBeNull();
+  await user.clear(within(panel).getByLabelText("Repository name"));
+  await user.type(within(panel).getByLabelText("Repository name"), " New-Name ");
   await user.click(screen.getByRole("button", { name: "Save repository details" }));
   expect(api.updateRepository).toHaveBeenCalledExactlyOnceWith(repository.projectId, {
-    logicalName: repository.repositoryName,
-    displayName: "New label",
+    logicalName: "new-name",
+    displayName: "new-name",
     description: "Existing description",
     expectedRevision: 3,
   });
@@ -205,7 +210,7 @@ it("shows once-created invitation links ephemerally, copies them, and revokes pe
   const writeText = vi.fn().mockResolvedValue(undefined);
   const { user } = await open(api);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   await user.click(screen.getByRole("button", { name: "Create invitation link" }));
   const field = await screen.findByLabelText("Invitation link");
   expect(field).toHaveProperty("value", `${location.origin}/?invitation=${"a".repeat(64)}`);
@@ -228,7 +233,7 @@ it("requires access discovery after an unknown invitation creation before anothe
   const api = managementApi();
   vi.mocked(api.inviteProject).mockRejectedValue(new Error("secret"));
   const { user } = await open(api);
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   await user.click(screen.getByRole("button", { name: "Create invitation link" }));
   await screen.findByText(/invitation result is unknown/);
   expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
@@ -267,14 +272,19 @@ it.each(["unmount", "account switch"])(
       }),
     );
     const { user, view } = await open(api);
-    await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+    await user.type(screen.getByLabelText("Username or email"), "johncena");
     await user.click(screen.getByRole("button", { name: "Create invitation link" }));
     if (mode === "unmount") view.unmount();
     else {
       view.rerender(<AccountRepositories api={managementApi()} />);
       await screen.findByRole("button", { name: "Manage repository" });
     }
-    await act(async () => complete({ token: "a".repeat(64), invitation }));
+    await act(async () =>
+      complete({
+        token: "a".repeat(64),
+        invitation: { ...invitation, email: undefined, recipient: "@johncena" },
+      }),
+    );
     expect(screen.queryByLabelText("Invitation link")).toBeNull();
     expect(screen.queryByText(/Invitation created/)).toBeNull();
   },
@@ -304,7 +314,6 @@ it("keeps an unresolved creation quarantined across refresh and cannot create a 
   render(<AccountRepositories api={api} />);
   let form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "unknown-target");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   await screen.findByText(/creation result is unknown/i);
   await user.click(screen.getByRole("button", { name: "Refresh" }));
@@ -312,7 +321,6 @@ it("keeps an unresolved creation quarantined across refresh and cannot create a 
   form = screen.getByRole("form", { name: "Create repository" });
   await user.clear(within(form).getByLabelText("Repository name"));
   await user.type(within(form).getByLabelText("Repository name"), "other-target");
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   expect(api.createRepository).toHaveBeenCalledOnce();
 });
@@ -323,7 +331,7 @@ it("treats malformed invitation success metadata as unknown and requires a fresh
     invitation: { ...invitation, projectId: "different-project" },
   });
   const { user } = await open(api);
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   await user.click(screen.getByRole("button", { name: "Create invitation link" }));
   await screen.findByText(/invitation result is unknown/);
   expect(screen.queryByLabelText("Invitation link")).toBeNull();
@@ -342,7 +350,7 @@ it("allows owner metadata and sharing on a protected repository while disabling 
     "disabled",
     false,
   );
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
     "disabled",
     false,
@@ -423,12 +431,10 @@ it("keeps live directory management and new creation usable after another reposi
   for (const retiredName of ["retiring-repo"]) {
     await user.clear(name);
     await user.type(name, retiredName);
-    await user.click(within(form).getByRole("checkbox"));
     expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   }
   await user.clear(name);
   await user.type(name, "retired-repo");
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", false);
   expect(fetch.mock.calls.some(([path]) => path.endsWith("/create"))).toBe(false);
 });
@@ -475,7 +481,7 @@ it("keeps create and management available but denies deletion when its independe
     false,
   );
   expect(screen.getByRole("form", { name: "Create repository" })).toBeTruthy();
-  await user.type(screen.getByLabelText("Invitation recipient email"), "guest@example.test");
+  await user.type(screen.getByLabelText("Username or email"), "guest@example.test");
   expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
     "disabled",
     false,
@@ -564,7 +570,6 @@ it("creates a canonical logical name from mixed case and ASCII padding while sho
   render(<AccountRepositories api={api} />);
   const form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "  New-PrOjEcT  ");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("new-project", true, {
     displayName: "new-project",
@@ -593,7 +598,6 @@ it("allows an owner to use the same logical name as a shared repository from ano
   render(<AccountRepositories api={api} />);
   const form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "SAMPLE");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("sample", true, {
     displayName: "sample",
@@ -628,7 +632,7 @@ it("recovers an owner logical-name collision by choosing another name, preservin
   await user.click(screen.getByRole("button", { name: "Save repository details" }));
   expect(api.updateRepository).toHaveBeenNthCalledWith(2, repository.projectId, {
     logicalName: "available-name",
-    displayName: repository.name,
+    displayName: "available-name",
     description: repository.description,
     expectedRevision: 3,
   });
@@ -655,13 +659,11 @@ it("keeps an unknown reused-name creation quarantined when refresh finds only th
   render(<AccountRepositories api={api} />);
   let form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "reusable");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   await screen.findByText(/creation result is unknown/);
   await user.click(screen.getByRole("button", { name: "Refresh" }));
   await screen.findByText(/creation result for reusable is unknown/);
   form = screen.getByRole("form", { name: "Create repository" });
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   expect(api.createRepository).toHaveBeenCalledOnce();
 });
@@ -705,7 +707,6 @@ it.each(["Kelvin", "\u00a0Sample\u00a0"])(
     const { user } = await open(api);
     const form = screen.getByRole("form", { name: "Create repository" });
     await user.type(within(form).getByLabelText("Repository name"), name);
-    await user.click(within(form).getByRole("checkbox"));
     const create = within(form).getByRole("button");
     expect(create).toHaveProperty("disabled", true);
     fireEvent.click(create);
@@ -720,3 +721,129 @@ it.each(["Kelvin", "\u00a0Sample\u00a0"])(
     expect(api.updateRepository).not.toHaveBeenCalled();
   },
 );
+it.each(["johncena", "guest@example.test"])(
+  "creates and copies a repository link for %s without assuming the recipient has a public email",
+  async (recipient) => {
+    const api = managementApi();
+    const label = recipient.includes("@") ? recipient : `@${recipient}`;
+    vi.mocked(api.projectInvitations!).mockResolvedValue([]);
+    vi.mocked(api.inviteProject).mockResolvedValue({
+      token: "b".repeat(64),
+      invitation: {
+        id: "bound-invitation",
+        recipient: label,
+        scope: "project",
+        role: "editor",
+        projectId: repository.projectId,
+        expiresAt: "2099-01-01T00:00:00Z",
+      },
+    });
+    const { user } = await open(api);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const input = screen.getByLabelText("Username or email");
+    expect(input).toHaveProperty("type", "text");
+    await user.type(input, ` ${recipient} `);
+    await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+    const link = await screen.findByLabelText("Invitation link");
+    expect(api.inviteProject).toHaveBeenCalledExactlyOnceWith(repository.projectId, recipient);
+    expect(link).toHaveProperty("value", `${location.origin}/?invitation=${"b".repeat(64)}`);
+    expect(screen.getByText(label)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Copy invitation link" }));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(
+      `${location.origin}/?invitation=${"b".repeat(64)}`,
+    );
+    expect(screen.getByText(/no email is sent/)).toBeTruthy();
+  },
+);
+it("lets the owner correct a rejected recipient without an unnecessary unknown-result quarantine", async () => {
+  const api = managementApi();
+  vi.mocked(api.inviteProject)
+    .mockRejectedValueOnce(new ApiError(400, "recipient_unavailable"))
+    .mockResolvedValueOnce({
+      token: "b".repeat(64),
+      invitation: {
+        id: "bound-invitation",
+        recipient: "@johncena",
+        scope: "project",
+        role: "editor",
+        projectId: repository.projectId,
+        expiresAt: "2099-01-01T00:00:00Z",
+      },
+    });
+  const { user } = await open(api);
+  const input = screen.getByLabelText("Username or email");
+  await user.type(input, "missing_user");
+  await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    expect.stringContaining("recipient is unavailable"),
+  );
+  expect(screen.queryByText(/invitation result is unknown/)).toBeNull();
+  await user.clear(input);
+  await user.type(input, "johncena");
+  await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+  expect(await screen.findByLabelText("Invitation link")).toBeTruthy();
+  expect(api.inviteProject).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  { recipient: "@different" },
+  { recipient: "arbitrary plaintext" },
+  { recipient: "@JohnCena" },
+  { recipient: "@johncena", email: "other@example.test" },
+])(
+  "quarantines an untrusted repository invitation label %j without exposing its link",
+  async (fields) => {
+    const api = managementApi();
+    vi.mocked(api.inviteProject).mockResolvedValue({
+      token: "a".repeat(64),
+      invitation: {
+        id: "new",
+        scope: "project",
+        role: "editor",
+        projectId: repository.projectId,
+        expiresAt: "2099-01-01T00:00:00Z",
+        ...fields,
+      },
+    });
+    const { user } = await open(api);
+    await user.type(screen.getByLabelText("Username or email"), "johncena");
+    await user.click(screen.getByRole("button", { name: "Create invitation link" }));
+    await screen.findByText(/invitation result is unknown/);
+    expect(screen.queryByLabelText("Invitation link")).toBeNull();
+    const create = screen.getByRole("button", { name: "Create invitation link" });
+    expect(create).toHaveProperty("disabled", true);
+    fireEvent.click(create);
+    expect(api.inviteProject).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Refresh access" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Create invitation link" })).toHaveProperty(
+        "disabled",
+        false,
+      ),
+    );
+    expect(api.inviteProject).toHaveBeenCalledOnce();
+  },
+);
+
+it("shows repository name format guidance only for invalid nonempty create and rename drafts", async () => {
+  const api = managementApi();
+  const { user } = await open(api);
+  const create = screen.getByRole("form", { name: "Create repository" });
+  const settings = screen.getByRole("region", { name: `Manage ${repository.name}` });
+  expect(screen.queryByText(/Use 1–63 ASCII/)).toBeNull();
+  expect(screen.queryByText(/Renaming keeps|Saved in lowercase/)).toBeNull();
+  const draft = within(create).getByLabelText("Repository name");
+  await user.type(draft, "invalid_name");
+  expect(within(create).getByText(/Use 1–63 ASCII/)).toBeTruthy();
+  await user.clear(draft);
+  await user.type(draft, "valid-name");
+  expect(within(create).queryByText(/Use 1–63 ASCII/)).toBeNull();
+  const name = within(settings).getByLabelText("Repository name");
+  await user.clear(name);
+  await user.type(name, "invalid_name");
+  expect(within(settings).getByText(/Use 1–63 ASCII/)).toBeTruthy();
+  await user.clear(name);
+  expect(within(settings).queryByText(/Use 1–63 ASCII/)).toBeNull();
+});

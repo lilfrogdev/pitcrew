@@ -1053,3 +1053,211 @@ it("reads canonical logical names in directory and status while continuing to ac
     "logical-sample",
   );
 });
+it.each([
+  ["project", "johncena", "@johncena"],
+  ["project", "@JOHN_CENA", "@john_cena"],
+  ["project", "GUEST@EXAMPLE.TEST", "guest@example.test"],
+  ["project", "guest@example.test", "guest@example.test"],
+  ["thread", "johncena", "@johncena"],
+  ["thread", "guest@example.test", "guest@example.test"],
+] as const)(
+  "posts only recipient and role for %s %s invitations and projects the safe bound response",
+  async (scope, recipient, label) => {
+    const invitation = {
+      id: "bound-invite",
+      scope,
+      recipient: label,
+      role: "editor",
+      projectId: "project/id",
+      ...(scope === "thread" ? { threadId: "thread/id" } : {}),
+      expiresAt: "2099-01-01T00:00:00Z",
+    };
+    const fetch = vi.fn(async (path: string) =>
+      path === "/api/local-session"
+        ? Response.json({ nonce: null })
+        : Response.json({
+            token: "a".repeat(64),
+            invitation: {
+              ...invitation,
+              digest: "private",
+              recipientActor: "account:private",
+              invitedBy: "private",
+              emailVerified: true,
+            },
+            providerToken: "private",
+          }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const result = await (scope === "project"
+      ? httpApi.collaboration!.inviteProject("project/id", ` ${recipient} `)
+      : httpApi.collaboration!.inviteThread("thread/id", ` ${recipient} `));
+    expect(result).toEqual({ token: "a".repeat(64), invitation });
+    expect(fetch.mock.calls.at(-1)).toEqual([
+      `/api/${scope === "project" ? "projects/project%2Fid" : "threads/thread%2Fid"}/invitations`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ recipient, role: "editor" }),
+      }),
+    ]);
+  },
+);
+it("reads bound recipient metadata with no email while preserving legacy email-only projection", async () => {
+  const bound = {
+    id: "bound",
+    recipient: "@johncena",
+    scope: "project",
+    role: "editor",
+    projectId: "project",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  const legacy = {
+    id: "legacy",
+    email: "legacy@example.test",
+    scope: "project",
+    role: "editor",
+    projectId: "project",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) =>
+      Response.json(
+        path.endsWith("/invitations")
+          ? [{ ...bound, recipientActor: "private", digest: "private" }, legacy]
+          : { ...bound, recipientActor: "private", digest: "private" },
+      ),
+    ),
+  );
+  expect(await httpApi.collaboration!.projectInvitations!("project")).toEqual([bound, legacy]);
+  expect(await httpApi.collaboration!.invitation("a".repeat(64))).toEqual(bound);
+});
+it("returns fixed recipient error messages without exposing backend diagnostics or account identities", async () => {
+  for (const [status, code] of [
+    [400, "invalid_recipient"],
+    [400, "recipient_unavailable"],
+    [409, "already_member"],
+    [410, "invitation_unavailable"],
+  ] as const) {
+    withSession(async () =>
+      Response.json(
+        {
+          error: code,
+          details: "private provider/account diagnostic",
+          recipientActor: "account:private",
+        },
+        { status },
+      ),
+    );
+    const result = await httpApi
+      .collaboration!.inviteProject("project", "johncena")
+      .catch((error: ApiError) => error);
+    expect(result).toEqual(new ApiError(status, code));
+    expect((result as ApiError).message).not.toContain("private");
+  }
+});
+it("rejects malformed or mismatched bound invitation metadata without returning a usable token", async () => {
+  const invitation = {
+    id: "bound",
+    recipient: "@johncena",
+    scope: "thread",
+    role: "editor",
+    projectId: "project",
+    threadId: "thread",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  for (const value of [
+    { ...invitation, recipient: "" },
+    { ...invitation, recipient: 1 },
+    { ...invitation, threadId: "different" },
+    { ...invitation, scope: "project" },
+  ]) {
+    withSession(async () => Response.json({ token: "a".repeat(64), invitation: value }));
+    await expect(httpApi.collaboration!.inviteThread("thread", "johncena")).rejects.toEqual(
+      new ApiError(0),
+    );
+  }
+});
+
+it.each(["project", "thread"] as const)(
+  "rejects wrong, dual or noncanonical recipient labels in new %s invitation responses",
+  async (scope) => {
+    const invitation = {
+      id: "bound",
+      scope,
+      recipient: "@johncena",
+      role: "editor",
+      projectId: "project",
+      ...(scope === "thread" ? { threadId: "thread" } : {}),
+      expiresAt: "2099-01-01T00:00:00Z",
+    };
+    for (const fields of [
+      { recipient: "@different" },
+      { recipient: "arbitrary plaintext" },
+      { recipient: "@JohnCena" },
+      { recipient: "johncena" },
+      { recipient: " @johncena " },
+      { recipient: "@ab" },
+      { recipient: "@Kelvin" },
+      { recipient: "Guest@EXAMPLE.TEST" },
+      { recipient: "@johncena", email: "john@example.test" },
+      { recipient: undefined, email: "johncena" },
+      { recipient: undefined, email: "Guest@EXAMPLE.TEST" },
+    ]) {
+      withSession(async () =>
+        Response.json({ token: "a".repeat(64), invitation: { ...invitation, ...fields } }),
+      );
+      await expect(
+        scope === "project"
+          ? httpApi.collaboration!.inviteProject("project", "johncena")
+          : httpApi.collaboration!.inviteThread("thread", "johncena"),
+      ).rejects.toEqual(new ApiError(0));
+    }
+  },
+);
+it("validates historical invitation labels without binding them to the current profile username", async () => {
+  const historical = {
+    id: "bound",
+    scope: "project",
+    recipient: "@previous_name",
+    role: "editor",
+    projectId: "project",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  withSession(async () => Response.json(historical));
+  expect(await httpApi.collaboration!.invitation("a".repeat(64))).toEqual(historical);
+  expect(await httpApi.collaboration!.acceptInvitation("a".repeat(64))).toEqual(historical);
+  for (const fields of [
+    { recipient: "freeform person" },
+    { recipient: "john\u0000@example.test" },
+    { recipient: undefined, email: "john\u0000@example.test" },
+    { recipient: "@Previous_Name" },
+    { recipient: "@previous_name", email: "other@example.test" },
+  ]) {
+    withSession(async () => Response.json({ ...historical, ...fields }));
+    await expect(httpApi.collaboration!.invitation("a".repeat(64))).rejects.toEqual(
+      new ApiError(0),
+    );
+  }
+});
+
+it("rejects invalid submitted recipient selectors before fetching an invitation token", async () => {
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  for (const recipient of [
+    "plain text",
+    "@ab",
+    "@Kelvin",
+    "\u00a0johncena\u00a0",
+    "missing@example",
+    "john\u0000@example.test",
+    "*",
+  ]) {
+    await expect(httpApi.collaboration!.inviteProject("project", recipient)).rejects.toEqual(
+      new ApiError(400, "invalid_recipient"),
+    );
+    await expect(httpApi.collaboration!.inviteThread("thread", recipient)).rejects.toEqual(
+      new ApiError(400, "invalid_recipient"),
+    );
+  }
+  expect(fetch).not.toHaveBeenCalled();
+});

@@ -1,3 +1,4 @@
+import type { PublicInvitation, ResolvedInvitationRecipient } from "@pitcrew/protocol";
 import { AdmissionError, type Coordinator } from "./coordinator";
 
 export type Member = Identity & { role: "owner" | "editor" };
@@ -6,7 +7,9 @@ export type Invitation = {
   digest: string;
   scope: "project" | "thread";
   threadId?: string;
-  email: string;
+  email?: string;
+  recipientActor?: string;
+  recipient?: string;
   role: "editor";
   invitedBy: string;
   expiresAt: string;
@@ -54,6 +57,10 @@ export class Collaboration {
     private core: Coordinator,
     readonly identity: Identity,
     private ownerEmail: string,
+    private accountAuthority?: {
+      resolveRecipient: (input: unknown) => Promise<ResolvedInvitationRecipient>;
+      requireSession: () => Promise<void>;
+    },
   ) {}
   // Old single-user state belongs only to the configured, verified owner. An
   // allowlisted colleague cannot claim it by being the first request after deploy.
@@ -193,8 +200,16 @@ export class Collaboration {
     if (scope === "project") this.requireProject(scopeId, true);
     else this.requireThread(scopeId, true);
     if (role !== "editor") throw new AdmissionError("invalid_role");
-    const email = normalizedEmail(emailValue);
-    if (email === this.identity.email) throw new AdmissionError("already_member", 409);
+    const native = this.identity.actor.startsWith("account:");
+    if (native && !this.accountAuthority)
+      throw new AdmissionError("collaboration_unavailable", 503);
+    const resolved = native ? await this.accountAuthority!.resolveRecipient(emailValue) : undefined;
+    this.requireProject(this.core.state.project.id, true);
+    if (scope === "project") this.requireProject(scopeId, true);
+    else this.requireThread(scopeId, true);
+    const email = resolved ? undefined : normalizedEmail(emailValue);
+    if (resolved?.actor === this.identity.actor || email === this.identity.email)
+      throw new AdmissionError("already_member", 409);
     const token = tokenString(),
       id = crypto.randomUUID(),
       hashed = await digest(token);
@@ -203,14 +218,23 @@ export class Collaboration {
       digest: hashed,
       scope,
       ...(scope === "thread" ? { threadId: scopeId } : {}),
-      email,
+      ...(resolved ? { recipientActor: resolved.actor, recipient: resolved.recipient } : { email }),
       role,
       invitedBy: this.identity.actor,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     };
+    await this.accountAuthority?.requireSession();
     this.core.updateCollaboration((state) => {
       this.requireProject(this.core.state.project.id, true);
+      if (scope === "project") this.requireProject(scopeId, true);
+      else this.requireThread(scopeId, true);
       const access = state.collaboration!;
+      if (resolved) {
+        if (scope === "thread" && !access.projectMembers[resolved.actor])
+          throw new AdmissionError("recipient_unavailable");
+        const members = scope === "project" ? access.projectMembers : access.threadMembers[scopeId];
+        if (members?.[resolved.actor]) throw new AdmissionError("already_member", 409);
+      }
       if (scope === "project") {
         if (access.projectMembers[this.identity.actor]?.role !== "owner") forbidden();
       } else if (
@@ -225,9 +249,32 @@ export class Collaboration {
     });
     return { token, invitation: this.publicInvitation(invitation) };
   }
-  private publicInvitation(invitation: Invitation) {
-    const { digest: _digest, ...publicValue } = invitation;
-    return { ...publicValue, projectId: this.core.state.project.id };
+  private publicInvitation(invitation: Invitation): PublicInvitation {
+    return {
+      id: invitation.id,
+      scope: invitation.scope,
+      projectId: this.core.state.project.id,
+      ...(invitation.threadId ? { threadId: invitation.threadId } : {}),
+      ...(invitation.recipientActor
+        ? { recipient: invitation.recipient }
+        : { email: invitation.email }),
+      role: invitation.role,
+      invitedBy: invitation.invitedBy,
+      expiresAt: invitation.expiresAt,
+      ...(invitation.acceptedBy ? { acceptedBy: invitation.acceptedBy } : {}),
+      ...(invitation.revokedAt ? { revokedAt: invitation.revokedAt } : {}),
+    };
+  }
+  private requireRecipient(invite: Invitation, identity: Identity) {
+    if (invite.recipientActor) {
+      if (invite.recipientActor !== identity.actor) missing();
+    } else {
+      if (invite.email !== identity.email) missing();
+      // Native password email is not proof of ownership. Old email-only tokens
+      // require owner reissue; we never upgrade their binding at acceptance.
+      if (identity.actor.startsWith("account:"))
+        throw new AdmissionError("invitation_unavailable", 410);
+    }
   }
   invitations(projectId: string) {
     this.requireProject(projectId, true);
@@ -255,13 +302,15 @@ export class Collaboration {
   }
   async preview(token: string) {
     const invite = await this.find(token);
-    if (invite.email !== this.identity.email && this.projectRole() !== "owner") missing();
+    await this.accountAuthority?.requireSession();
+    if (this.projectRole() !== "owner") this.requireRecipient(invite, this.identity);
     return this.publicInvitation(invite);
   }
   async accept(token: string, identity = this.identity) {
-    if (identity.actor !== this.identity.actor || identity.email !== this.identity.email) missing();
+    if (identity.actor !== this.identity.actor) missing();
     const invite = await this.find(token);
-    if (invite.email !== identity.email) missing();
+    await this.accountAuthority?.requireSession();
+    this.requireRecipient(invite, identity);
     return this.core.updateCollaboration((state) => {
       const current = state.collaboration?.invitations[invite.id];
       if (
@@ -272,16 +321,12 @@ export class Collaboration {
         Date.parse(current.expiresAt) <= Date.now()
       )
         throw new AdmissionError("invitation_unavailable", 410);
+      this.requireRecipient(current, identity);
       const inviter = state.collaboration!.projectMembers[current.invitedBy];
       const threadInviter =
         current.threadId &&
         state.collaboration!.threadMembers[current.threadId]?.[current.invitedBy];
-      if (
-        !inviter ||
-        (current.scope === "project"
-          ? inviter.role !== "owner"
-          : !threadInviter || (threadInviter.role !== "owner" && inviter.role !== "owner"))
-      )
+      if (!inviter || inviter.role !== "owner" || (current.scope === "thread" && !threadInviter))
         throw new AdmissionError("invitation_unavailable", 410);
       const member: Member = { ...identity, role: current.role };
       if (current.scope === "thread") {
@@ -301,6 +346,8 @@ export class Collaboration {
   async revoke(token: string) {
     this.requireProject(this.core.state.project.id, true);
     const invite = await this.find(token);
+    await this.accountAuthority?.requireSession();
+    this.requireProject(this.core.state.project.id, true);
     if (
       this.projectRole() !== "owner" &&
       (invite.scope !== "thread" || this.threadRole(invite.threadId!) !== "owner")
@@ -334,7 +381,10 @@ export class Collaboration {
         if (
           !invite.acceptedBy &&
           (scope === "project" || invite.threadId === scopeId) &&
-          (invite.email === target.email || invite.invitedBy === actor)
+          ((invite.recipientActor
+            ? invite.recipientActor === actor
+            : invite.email === target.email) ||
+            invite.invitedBy === actor)
         )
           invite.revokedAt ??= new Date().toISOString();
       return { removed: actor };

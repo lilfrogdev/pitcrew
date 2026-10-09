@@ -1,3 +1,4 @@
+import { invitationSelector } from "../../../packages/protocol/src/invitations";
 import { canonicalRepositoryName } from "./repository-names";
 import { createUploadApi, type UploadApi } from "./uploads/api";
 import type { UploadSubmission } from "@pitcrew/protocol";
@@ -122,7 +123,8 @@ export type RepositoryStatus = {
 };
 export type Invitation = {
   id: string;
-  email: string;
+  recipient?: string;
+  email?: string;
   role: "editor";
   expiresAt: string;
   scope: "project" | "thread";
@@ -133,6 +135,8 @@ export type Invitation = {
 };
 export type InvitationPreview = Invitation;
 export type CreatedInvitation = { token: string; invitation: Invitation };
+export const invitationRecipient = (invitation: Invitation) =>
+  invitation.recipient ?? invitation.email ?? "recipient";
 export interface CollaborationApi {
   account(): Promise<Account>;
   repositories(): Promise<SharedRepository[]>;
@@ -151,8 +155,8 @@ export interface CollaborationApi {
   revokeProjectInvitation?(projectId: string, invitationId: string): Promise<Invitation>;
   projectMembers(projectId: string): Promise<Member[]>;
   threadMembers(threadId: string): Promise<Member[]>;
-  inviteProject(projectId: string, email: string): Promise<CreatedInvitation>;
-  inviteThread(threadId: string, email: string): Promise<CreatedInvitation>;
+  inviteProject(projectId: string, recipient: string): Promise<CreatedInvitation>;
+  inviteThread(threadId: string, recipient: string): Promise<CreatedInvitation>;
   invitation(token: string): Promise<InvitationPreview>;
   acceptInvitation(token: string): Promise<InvitationPreview>;
   revokeInvitation(token: string): Promise<unknown>;
@@ -196,22 +200,37 @@ export interface Api {
 export class ApiError extends Error {
   constructor(
     public status: number,
-    public code?: "repository_exists" | "revision_conflict" | "repository_name_retired",
+    public code?:
+      | "repository_exists"
+      | "revision_conflict"
+      | "repository_name_retired"
+      | "invalid_recipient"
+      | "recipient_unavailable"
+      | "already_member"
+      | "invitation_unavailable",
   ) {
     super(
-      status === 403 || status === 401
-        ? "Access is unavailable. Ask the project owner to enable protected access."
-        : status === 404
-          ? "This shared item is no longer available. Refresh your workspace."
-          : status === 410
-            ? "This invitation has expired or was already used. Ask for a new code."
-            : status === 409
-              ? "The thread changed. Refresh before trying again."
-              : status === 413
-                ? "This message is too large. Shorten it and try again."
-                : status === 429
-                  ? "The crew is at capacity. Wait for an active change to finish, then try again."
-                  : "Could not reach Pitcrew. Your draft is saved here; try again.",
+      code === "invalid_recipient"
+        ? "Enter a username or email address."
+        : code === "recipient_unavailable"
+          ? "That recipient is unavailable for this invitation. Check the username or email; thread recipients must already have repository access."
+          : code === "already_member"
+            ? "That account already has access."
+            : code === "invitation_unavailable"
+              ? "This invitation is no longer usable. Ask a repository owner to revoke it and create a new invitation."
+              : status === 403 || status === 401
+                ? "Access is unavailable. Ask the project owner to enable protected access."
+                : status === 404
+                  ? "This shared item is no longer available. Refresh your workspace."
+                  : status === 410
+                    ? "This invitation has expired or was already used. Ask for a new code."
+                    : status === 409
+                      ? "The thread changed. Refresh before trying again."
+                      : status === 413
+                        ? "This message is too large. Shorten it and try again."
+                        : status === 429
+                          ? "The crew is at capacity. Wait for an active change to finish, then try again."
+                          : "Could not reach Pitcrew. Your draft is saved here; try again.",
     );
   }
 }
@@ -365,12 +384,31 @@ function repositoryStatus(value: unknown): RepositoryStatus {
     deletable: item.deletable,
   };
 }
+function canonicalInvitationLabel(item: {
+  recipient?: unknown;
+  email?: unknown;
+}): string | undefined {
+  if ((item.recipient === undefined) === (item.email === undefined)) return;
+  const label = item.recipient ?? item.email;
+  if (typeof label !== "string" || /[\x00-\x1f\x7f]/.test(label)) return;
+  const selector = invitationSelector(label);
+  if (!selector || (item.email !== undefined && selector.kind !== "email")) return;
+  const canonical = selector.kind === "username" ? `@${selector.value}` : selector.value;
+  return label === canonical ? canonical : undefined;
+}
+/** Bind only a newly created invitation to the submitted selector, never to profile metadata. */
+export function invitationMatchesRecipient(invitation: Invitation, recipient: string): boolean {
+  const selector = invitationSelector(recipient);
+  if (!selector) return false;
+  const expected = selector.kind === "username" ? `@${selector.value}` : selector.value;
+  return canonicalInvitationLabel(invitation) === expected;
+}
 function safeInvitation(value: unknown): Invitation {
   if (!value || typeof value !== "object") throw new ApiError(0);
   const item = value as Record<string, unknown>;
   if (
     !publicIdentifier(item.id) ||
-    typeof item.email !== "string" ||
+    !canonicalInvitationLabel(item) ||
     item.role !== "editor" ||
     !["project", "thread"].includes(item.scope as string) ||
     !publicIdentifier(item.projectId) ||
@@ -383,7 +421,8 @@ function safeInvitation(value: unknown): Invitation {
     throw new ApiError(0);
   return {
     id: item.id,
-    email: item.email,
+    ...(item.recipient === undefined ? {} : { recipient: item.recipient as string }),
+    ...(item.email === undefined ? {} : { email: item.email as string }),
     role: "editor",
     scope: item.scope as Invitation["scope"],
     projectId: item.projectId,
@@ -393,6 +432,63 @@ function safeInvitation(value: unknown): Invitation {
     ...(item.revokedAt === undefined ? {} : { revokedAt: item.revokedAt as string }),
   };
 }
+async function invitationRequest<T>(path: string, body?: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await apiFetch(path, body);
+  } catch {
+    throw new ApiError(0);
+  }
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
+    const value = (await response.json().catch(() => null)) as { error?: unknown } | null;
+    const code = value?.error;
+    const known =
+      (response.status === 400 &&
+        ["invalid_recipient", "recipient_unavailable"].includes(code as string)) ||
+      (response.status === 409 && code === "already_member") ||
+      (response.status === 410 && code === "invitation_unavailable")
+        ? (code as ApiError["code"])
+        : undefined;
+    throw new ApiError(response.status, known);
+  }
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new ApiError(0);
+  }
+}
+async function createInvitation(
+  scope: "project" | "thread",
+  id: string,
+  recipient: string,
+): Promise<CreatedInvitation> {
+  const selector = invitationSelector(recipient);
+  if (!selector || /[\x00-\x1f\x7f]/.test(selector.value))
+    throw new ApiError(400, "invalid_recipient");
+  const value = await invitationRequest<unknown>(
+    `/${scope === "project" ? "projects" : "threads"}/${encodeURIComponent(id)}/invitations`,
+    { recipient: recipient.trim(), role: "editor" },
+  );
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("token" in value) ||
+    typeof value.token !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.token) ||
+    !("invitation" in value)
+  )
+    throw new ApiError(0);
+  const invitation = safeInvitation(value.invitation);
+  if (
+    !invitationMatchesRecipient(invitation, recipient) ||
+    invitation.scope !== scope ||
+    (scope === "project" ? invitation.projectId !== id : invitation.threadId !== id)
+  )
+    throw new ApiError(0);
+  return { token: value.token, invitation };
+}
+
 async function repositoryMutation(
   path: string,
   body: unknown,
@@ -744,12 +840,14 @@ export const httpApi: Api = {
       ),
     projectMembers: (id) => request(`/projects/${encodeURIComponent(id)}/members`),
     threadMembers: (id) => request(`/threads/${encodeURIComponent(id)}/members`),
-    inviteProject: (id, email) =>
-      request(`/projects/${encodeURIComponent(id)}/invitations`, { email, role: "editor" }),
-    inviteThread: (id, email) =>
-      request(`/threads/${encodeURIComponent(id)}/invitations`, { email, role: "editor" }),
-    invitation: (token) => request(`/invitations/${encodeURIComponent(token)}`),
-    acceptInvitation: (token) => request(`/invitations/${encodeURIComponent(token)}/accept`, {}),
+    inviteProject: (id, recipient) => createInvitation("project", id, recipient),
+    inviteThread: (id, recipient) => createInvitation("thread", id, recipient),
+    invitation: async (token) =>
+      safeInvitation(await invitationRequest(`/invitations/${encodeURIComponent(token)}`)),
+    acceptInvitation: async (token) =>
+      safeInvitation(
+        await invitationRequest(`/invitations/${encodeURIComponent(token)}/accept`, {}),
+      ),
     revokeInvitation: (token) => request(`/invitations/${encodeURIComponent(token)}/revoke`, {}),
     removeProjectMember: (id, actor) =>
       removeRequest(`/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(actor)}`),

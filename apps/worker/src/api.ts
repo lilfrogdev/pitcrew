@@ -47,6 +47,11 @@ export function api(
   collaborationAuthority?: CollaborationAuthority,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
+  app.use("*", async (c, next) => {
+    if (/\/invitations(?:\/|$)/.test(new URL(c.req.url).pathname))
+      c.header("Cache-Control", "private, no-store");
+    await next();
+  });
   const collaborate = <T>(operation: (identity?: Identity) => T | Promise<T>) =>
     collaborationAuthority ? collaborationAuthority(operation) : operation();
   app.use("/api/threads/:threadId/presence", async (c, next) => {
@@ -114,11 +119,13 @@ export function api(
               new URL(c.req.url).pathname,
             )
               ? 512
-              : new URL(c.req.url).pathname.endsWith("/presence")
-                ? 512
-                : /^\/api\/threads\/[^/]+\/messages$/.test(new URL(c.req.url).pathname)
-                  ? ATTACHMENT_LIMITS.requestBytes
-                  : 16384;
+              : /\/invitations(?:\/|$)/.test(new URL(c.req.url).pathname)
+                ? 1024
+                : new URL(c.req.url).pathname.endsWith("/presence")
+                  ? 512
+                  : /^\/api\/threads\/[^/]+\/messages$/.test(new URL(c.req.url).pathname)
+                    ? ATTACHMENT_LIMITS.requestBytes
+                    : 16384;
             if (size > limit) {
               await reader.cancel();
               throw new AdmissionError("body_too_large", 413);
@@ -376,9 +383,10 @@ export function api(
   app.post("/api/projects/:projectId/invitations", async (c) => {
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
+    const recipient = invitationInput(body);
     return c.json(
       await collaborate(() =>
-        access.invite("project", c.req.param("projectId"), body.email, body.role),
+        access.invite("project", c.req.param("projectId"), recipient, body.role),
       ),
       201,
     );
@@ -386,9 +394,10 @@ export function api(
   app.post("/api/threads/:threadId/invitations", async (c) => {
     if (!access) throw new AdmissionError("collaboration_unavailable", 503);
     const body = c.get("body");
+    const recipient = invitationInput(body);
     return c.json(
       await collaborate(() =>
-        access.invite("thread", c.req.param("threadId"), body.email, body.role),
+        access.invite("thread", c.req.param("threadId"), recipient, body.role),
       ),
       201,
     );
@@ -396,12 +405,14 @@ export function api(
   app.get("/api/invitations/:token", async (c) =>
     c.json(await collaborate(() => access?.preview(c.req.param("token")))),
   );
-  app.post("/api/invitations/:token/accept", async (c) =>
-    c.json(await collaborate((identity) => access?.accept(c.req.param("token"), identity))),
-  );
-  app.post("/api/invitations/:token/revoke", async (c) =>
-    c.json(await collaborate(() => access?.revoke(c.req.param("token")))),
-  );
+  app.post("/api/invitations/:token/accept", async (c) => {
+    if (Object.keys(c.get("body")).length) throw new AdmissionError("invalid_request");
+    return c.json(await collaborate((identity) => access?.accept(c.req.param("token"), identity)));
+  });
+  app.post("/api/invitations/:token/revoke", async (c) => {
+    if (Object.keys(c.get("body")).length) throw new AdmissionError("invalid_request");
+    return c.json(await collaborate(() => access?.revoke(c.req.param("token"))));
+  });
   app.delete("/api/projects/:projectId/members/:actor", async (c) =>
     c.json(
       await collaborate(() =>
@@ -714,4 +725,11 @@ export function api(
     return c.json(receipt);
   });
   return app;
+}
+
+function invitationInput(body: Record<string, unknown>) {
+  const keys = Object.keys(body).sort().join(",");
+  if (keys !== "recipient,role" && keys !== "email,role")
+    throw new AdmissionError("invalid_request");
+  return keys === "email,role" ? body.email : body.recipient;
 }
