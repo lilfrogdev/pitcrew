@@ -125,14 +125,14 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
               }),
             ],
           });
-          if (!input.canaryId && codingEnabled(env))
+          if (!input.canaryId && !input.normalConversationScopeId && codingEnabled(env))
             this.registry.install(
               repositoryConversationTools((callId) => {
                 this.assertConversationAllowed();
                 return this.repository().delegateRepoTurn(this.input().turnId, callId);
               }),
             );
-          if (!input.canaryId)
+          if (!input.canaryId && !input.normalConversationScopeId)
             this.registry.install(
               visualizationRpcTools((invocationId, content) => {
                 this.assertConversationAllowed();

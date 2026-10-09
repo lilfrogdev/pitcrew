@@ -14,6 +14,7 @@ export interface ConversationTurn {
   membershipActor?: string;
   /** Server-frozen trial profile; excluded from the model prompt. */
   canaryId?: string;
+  normalConversationScopeId?: string;
   baseSha: string;
   configurationRevision: string;
   createdAt: string;
@@ -25,6 +26,7 @@ export interface ConversationTurn {
 }
 export interface ConversationInput {
   canaryId?: string;
+  normalConversationScopeId?: string;
   /** Server-frozen source admission; excluded from the model prompt. */
   memoryMessageIds?: string[];
   memoryEventSequence?: number;

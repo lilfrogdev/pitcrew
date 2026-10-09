@@ -14,6 +14,9 @@ export class AgentTeamRepositoryFixture extends RepositoryMemorySharingFixture {
   canary(policy: string | undefined) {
     this.env.CLOUD_CONVERSATION_CANARY = policy;
   }
+  normalScope(policy: string | undefined) {
+    this.env.CLOUD_CONVERSATION_SCOPE = policy;
+  }
   canarySnapshot() {
     return {
       scopes: this.ctx.storage.sql.exec("SELECT * FROM conversation_canary_scope").toArray(),

@@ -1419,6 +1419,9 @@ export class Coordinator {
           : {}),
         memoryEnabled: memoryEnabled || undefined,
         ...(turn.canaryId ? { canaryId: turn.canaryId } : {}),
+        ...(turn.normalConversationScopeId
+          ? { normalConversationScopeId: turn.normalConversationScopeId }
+          : {}),
         credentialActor: turn.actor,
         turnId: id,
         threadId: turn.threadId,
@@ -1450,9 +1453,12 @@ export class Coordinator {
         id: this.id(),
         threadId: turn.threadId,
         role: "coordinator",
-        content: error
-          ? `Repository agent could not answer: ${error}. You can send a new message to retry.`
-          : text!,
+        content:
+          error === "conversation_cancelled"
+            ? "Repository agent stopped. You can send a new message when you're ready."
+            : error
+              ? `Repository agent could not answer: ${error}. You can send a new message to retry.`
+              : text!,
         createdAt: this.now(),
       };
       turn.replyMessageId = message.id;

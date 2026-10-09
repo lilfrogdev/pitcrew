@@ -50,6 +50,7 @@ export function api(
   uploads?: UploadStore,
   uploadAuthority?: UploadAuthority,
   collaborationAuthority?: CollaborationAuthority,
+  stopConversation?: (turnId: string) => Promise<void>,
 ) {
   const app = new Hono<{ Variables: { body: Record<string, unknown> } }>();
   app.use("*", async (c, next) => {
@@ -508,15 +509,42 @@ export function api(
     };
     return uploadAuthority ? uploadAuthority(download) : download();
   });
+  const publicTurn = ({
+    input: _input,
+    actor: _actor,
+    membershipActor: _member,
+    ...turn
+  }: import("./conversation").ConversationTurn) => ({
+    ...turn,
+    canStop:
+      (_member ?? _actor) === (access?.identity.actor ?? identity.actor) &&
+      ["queued", "running"].includes(turn.status),
+  });
   app.get("/api/threads/:threadId/turns", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(
       (coordinator.state.conversationTurns ?? [])
         .filter((turn) => turn.threadId === c.req.param("threadId"))
-        .map(
-          ({ input: _input, actor: _actor, membershipActor: _member, ...publicTurn }) => publicTurn,
-        ),
+        .map(publicTurn),
     );
+  });
+  app.post("/api/threads/:threadId/turns/:turnId/stop", async (c) => {
+    if (Object.keys(c.get("body")).length) throw new AdmissionError("invalid_request", 400);
+    const stop = () => {
+      access?.requireThread(c.req.param("threadId"));
+      const turn = coordinator.conversationTurn(c.req.param("turnId"));
+      if (
+        turn.threadId !== c.req.param("threadId") ||
+        (turn.membershipActor ?? turn.actor) !== (access?.identity.actor ?? identity.actor)
+      )
+        throw new AdmissionError("not_found", 404);
+      coordinator.completeConversation(turn.id, undefined, "conversation_cancelled");
+      return publicTurn(coordinator.conversationTurn(turn.id));
+    };
+    // The authority rechecks the original session before the terminal commit.
+    const turn = await (uploadAuthority ? uploadAuthority(stop) : stop());
+    if (turn.error === "conversation_cancelled") await stopConversation?.(turn.id);
+    return c.json(turn);
   });
   app.get("/api/threads/:threadId/messages", (c) => {
     coordinator.thread(c.req.param("threadId"));
