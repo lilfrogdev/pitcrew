@@ -1023,7 +1023,7 @@ it("normalizes logical rename PATCH input and surfaces only recognized conflict 
 it("rejects invalid logical names before create or rename admission", async () => {
   const fetch = vi.fn();
   vi.stubGlobal("fetch", fetch);
-  for (const name of ["a_b", "-start", "x".repeat(64), "\u00a0sample\u00a0", "éclair"]) {
+  for (const name of ["a_b", "-start", "x".repeat(64), "\u00a0sample\u00a0", "éclair", "Kelvin"]) {
     await expect(
       httpApi.collaboration!.createRepository!(name, true, {
         displayName: "Display",

@@ -698,3 +698,25 @@ it("keeps credential-cleanup recovery bound to its original physical identity ev
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("recoverable", true);
   expect(screen.queryByText(/is ready in your repositories/)).toBeNull();
 });
+it.each(["Kelvin", "\u00a0Sample\u00a0"])(
+  "rejects non-ASCII repository input %s before normalization in creation and rename controls",
+  async (name) => {
+    const api = managementApi();
+    const { user } = await open(api);
+    const form = screen.getByRole("form", { name: "Create repository" });
+    await user.type(within(form).getByLabelText("Repository name"), name);
+    await user.click(within(form).getByRole("checkbox"));
+    const create = within(form).getByRole("button");
+    expect(create).toHaveProperty("disabled", true);
+    fireEvent.click(create);
+    const panel = screen.getByRole("region", { name: `Manage ${repository.name}` });
+    const rename = within(panel).getByLabelText("Repository name");
+    await user.clear(rename);
+    await user.type(rename, name);
+    const save = within(panel).getByRole("button", { name: "Save repository details" });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.click(save);
+    expect(api.createRepository).not.toHaveBeenCalled();
+    expect(api.updateRepository).not.toHaveBeenCalled();
+  },
+);
