@@ -114,14 +114,61 @@ it("removes only the current user provider record and fails closed for legacy st
   const init = (fetch.mock.calls as unknown as [string, RequestInit][])[1][1];
   expect(init.body).toBe(JSON.stringify({ action: "remove" }));
 });
-function withSession(fetch: (path: string, init?: RequestInit) => Promise<Response>) {
+function withSession(
+  fetch: (path: string, init?: RequestInit) => Promise<Response>,
+  nonce: string | null = null,
+) {
   vi.stubGlobal("fetch", (path: string, init?: RequestInit) =>
     path === "/api/local-session"
-      ? Promise.resolve(new Response(JSON.stringify({ nonce: null })))
+      ? Promise.resolve(new Response(JSON.stringify({ nonce })))
       : fetch(path, init),
   );
 }
 describe("canonical HTTP adapter", () => {
+  it("stops an own turn using only escaped route IDs and a guarded empty mutation", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({
+        id: "turn/1",
+        status: "failed",
+        error: "conversation_cancelled",
+        canStop: false,
+      }),
+    );
+    withSession(fetch, "a".repeat(64));
+    expect(await httpApi.stopTurn!("thread/1", "turn/1")).toMatchObject({
+      status: "failed",
+      error: "conversation_cancelled",
+      canStop: false,
+    });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      "/api/threads/thread%2F1/turns/turn%2F1/stop",
+      expect.objectContaining({
+        method: "POST",
+        body: "{}",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", "X-Pitcrew-Local-Nonce": "a".repeat(64) },
+      }),
+    );
+  });
+  it.each([
+    { id: "other-turn", status: "failed", canStop: false },
+    { id: "turn", status: "running", canStop: true },
+    { id: "turn", status: "completed" },
+  ])("rejects an unconfirmed cancellation response (%j)", async (turn) => {
+    withSession(vi.fn(async () => Response.json(turn)));
+    await expect(httpApi.stopTurn!("thread", "turn")).rejects.toBeInstanceOf(ApiError);
+  });
+  it("propagates a denied Stop and requests reauthentication for an expired session", async () => {
+    const expired = vi.fn();
+    window.addEventListener("pitcrew-auth-required", expired);
+    try {
+      withSession(vi.fn(async () => Response.json({ error: "unauthorized" }, { status: 401 })));
+      await expect(httpApi.stopTurn!("thread", "turn")).rejects.toMatchObject({ status: 401 });
+      expect(expired).toHaveBeenCalledOnce();
+    } finally {
+      window.removeEventListener("pitcrew-auth-required", expired);
+    }
+  });
   it("posts repository-scoped archive/restore state with escaped identifiers", async () => {
     const fetch = vi
       .fn()

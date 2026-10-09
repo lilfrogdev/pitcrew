@@ -47,6 +47,7 @@ import type { AuthUser } from "./auth-api";
 import { Avatar } from "./Avatar";
 import { useThreadPresence } from "./useThreadPresence";
 import { ComposerStatus } from "./ComposerStatus";
+import { AgentTurnControls } from "./AgentTurnControls";
 import { landingApprovalPending } from "./landing-approval";
 const empty: Snapshot = { messages: [], runs: [], reviews: [], evidence: [] };
 const labels: Record<Run["status"], string> = {
@@ -96,6 +97,7 @@ export function App({
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadId, setThreadId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
+  const [snapshotSession, setSnapshotSession] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [destinations, setDestinations] = useState<Record<string, MessageDestination>>({});
   const destination = destinations[threadId] ?? "team";
@@ -373,6 +375,7 @@ export function App({
         const next = await api.snapshot(threadId);
         if (!cancelled && current === generation.current && sequence === snapshotSequence.current) {
           setSnapshot(next);
+          setSnapshotSession(`${viewer?.id ?? ""}:${threadId}`);
           setSnapshotLoading(false);
           setSnapshotError("");
           setConnectionFailed(false);
@@ -409,7 +412,7 @@ export function App({
       window.clearInterval(timer);
       window.removeEventListener("online", onOnline);
     };
-  }, [api, threadId, revision, accessLost]);
+  }, [api, threadId, revision, accessLost, viewer?.id]);
 
   const displayOnly = composerCapabilities?.displayOnly === true;
   const executionEnabled =
@@ -689,6 +692,7 @@ export function App({
           selectedSequence === snapshotSequence.current
         ) {
           setSnapshot(next);
+          setSnapshotSession(`${viewer?.id ?? ""}:${selected}`);
           setSnapshotError("");
           setConnectionFailed(false);
         }
@@ -1012,13 +1016,22 @@ export function App({
             </p>
           )}
           {snapshot.turns
-            ?.filter((turn) => turn.status === "failed")
+            ?.filter((turn) => turn.status === "failed" && turn.error !== "conversation_cancelled")
             .map((turn) => (
               <p key={turn.id} className="composer-error" role="alert">
                 Repository agent reply failed: {turn.error ?? "Execution unavailable"}. No work was
                 silently replayed.
               </p>
             ))}
+          {viewer && !loading && snapshotSession === `${viewer.id}:${threadId}` && api.stopTurn && (
+            <AgentTurnControls
+              key={`${viewer.id}:${threadId}`}
+              threadId={threadId}
+              turns={snapshot.turns ?? []}
+              stopTurn={api.stopTurn}
+              onAccessLost={accessLost}
+            />
+          )}
           {attachmentCompatibilityError && (
             <p className="composer-error" role="alert">
               {attachmentCompatibilityError}

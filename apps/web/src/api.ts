@@ -28,12 +28,19 @@ export type { Project, Thread, Message, Run, Review } from "@pitcrew/protocol";
 export type SharedMessage = Message & {
   author?: Account;
 };
+export type ConversationTurn = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  /** Computed by the authenticated server for the initiating account. */
+  canStop?: boolean;
+  error?: string;
+};
 export type Snapshot = {
   messages: SharedMessage[];
   runs: Run[];
   reviews: Review[];
   evidence: RunEvidence[];
-  turns?: { id: string; status: "queued" | "running" | "completed" | "failed"; error?: string }[];
+  turns?: ConversationTurn[];
 };
 export type LandingCapabilities = {
   landing: { enabled: boolean; backend: LandingAuthorizationReceipt["backend"] | null };
@@ -181,6 +188,7 @@ export interface Api {
   threads(projectId: string): Promise<Thread[]>;
   setThreadArchived?(projectId: string, threadId: string, archived: boolean): Promise<Thread>;
   snapshot(threadId: string): Promise<Snapshot>;
+  stopTurn?(threadId: string, turnId: string): Promise<ConversationTurn>;
   latestRun?(threadId: string): Promise<Run | undefined>;
   createThread(projectId: string, title: string, key: string): Promise<Thread>;
   setThreadModelSelection?(
@@ -294,6 +302,7 @@ export async function apiFetch(path: string, body?: unknown): Promise<Response> 
         path === "/repository-creations" ||
         repositoryCreation ||
         repositoryDeletion ||
+        path.endsWith("/stop") ||
         path.endsWith("/repository") ||
         path.endsWith("/invitations")
           ? { cache: "no-store" as const }
@@ -943,6 +952,21 @@ export const httpApi: Api = {
       reviews: evidence.flatMap((item) => item.reviews),
       evidence,
     };
+  },
+  stopTurn: async (threadId, turnId) => {
+    const value = await request<ConversationTurn>(
+      `/threads/${encodeURIComponent(threadId)}/turns/${encodeURIComponent(turnId)}/stop`,
+      {},
+    );
+    if (
+      !value ||
+      value.id !== turnId ||
+      !["completed", "failed"].includes(value.status) ||
+      value.canStop !== false ||
+      (value.error !== undefined && typeof value.error !== "string")
+    )
+      throw new ApiError(0);
+    return value;
   },
   createThread: (id, title, idempotencyKey) =>
     request(`/projects/${encodeURIComponent(id)}/threads`, { title, idempotencyKey }),

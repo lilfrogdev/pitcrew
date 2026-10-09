@@ -883,6 +883,153 @@ test("password relay blocks cloud mutation surfaces and missing accounts before 
   assert.throws(() => createBackendRelayMiddleware({ passwordMode: "true" }), /invalid_relay_mode/);
 });
 
+test("turn Stop admits only its exact nonce-guarded route and empty body with the held account", async () => {
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "held-account" }),
+    fetchImpl: async (url, init) => {
+      f.calls.push({ url, init });
+      return Response.json({
+        id: "own-turn",
+        status: "failed",
+        error: "conversation_cancelled",
+        canStop: false,
+      });
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  const path = "/api/threads/thread/turns/own-turn/stop";
+  for (const [options, status] of [
+    [{ headers: { ...headers, "x-pitcrew-local-nonce": "forged" }, body: "{}" }, 403],
+    [{ headers: { ...headers, origin: "https://other.test" }, body: "{}" }, 403],
+    [{ headers, body: JSON.stringify({ actor: "account:someone-else" }) }, 400],
+    [{ headers, body: JSON.stringify({ turnId: "another-turn" }) }, 400],
+    [{ headers, body: JSON.stringify({ models: [] }) }, 400],
+  ]) {
+    assert.equal((await request(f.handler, path, { method: "POST", ...options })).status, status);
+  }
+  for (const [invalid, method] of [
+    [path, "GET"],
+    [path, "DELETE"],
+    ["/api/threads/thread/turns/own-turn/cancel", "POST"],
+    ["/api/turns/own-turn/stop", "POST"],
+    ["/api/runs/own-turn/stop", "POST"],
+  ]) {
+    assert.equal((await request(f.handler, invalid, { method, headers, body: "{}" })).status, 404);
+  }
+  assert.equal(
+    (await request(f.handler, `${path}?actor=forged`, { method: "POST", headers, body: "{}" }))
+      .status,
+    400,
+  );
+  assert.equal(f.calls.length, 0);
+  const response = await request(f.handler, path, {
+    method: "POST",
+    headers: {
+      ...headers,
+      cookie: `${headers.cookie}; forged-browser=secret`,
+      authorization: "forged",
+    },
+    body: "{}",
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.json.error, "conversation_cancelled");
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].url, `${BACKEND_ACCESS.origin}/app${path}`);
+  assert.equal(f.calls[0].init.body, "{}");
+  assert.deepEqual(f.calls[0].init.headers, {
+    Accept: "application/json",
+    Cookie: "held-account",
+    Origin: BACKEND_ACCESS.origin,
+    "Content-Type": "application/json",
+  });
+  assert.equal(f.tokens.length, 0);
+});
+
+test("turn Stop rejects missing or changed held accounts before upstream mutation", async () => {
+  for (const changed of [false, true]) {
+    let captures = 0;
+    const f = fixture({
+      passwordMode: true,
+      sharedApi: true,
+      sessionHeaders: async () => {
+        captures++;
+        return changed ? { Cookie: captures === 1 ? "first-account" : "second-account" } : {};
+      },
+    });
+    const headers = await nativeManagementHeaders(f.handler);
+    const response = await request(f.handler, "/api/threads/thread/turns/turn/stop", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(response.status, changed ? 409 : 401);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("turn Stop can cancel while a message mutation is in flight without unlocking that mutation", async () => {
+  let finishMessage;
+  let messageStarted;
+  const started = new Promise((resolve) => {
+    messageStarted = resolve;
+  });
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "held-account" }),
+    fetchImpl: async (url, init) => {
+      f.calls.push({ url, init });
+      if (url.endsWith("/messages")) {
+        messageStarted();
+        return new Promise((resolve) => {
+          finishMessage = () => resolve(Response.json({ invocation: "queued" }));
+        });
+      }
+      return Response.json({
+        id: "turn",
+        status: "failed",
+        error: "conversation_cancelled",
+        canStop: false,
+      });
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  const message = request(f.handler, "/api/threads/thread/messages", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ content: "Synthetic note", idempotencyKey: "synthetic" }),
+  });
+  await started;
+  try {
+    assert.equal(
+      (
+        await request(f.handler, "/api/threads/thread/turns/turn/stop", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await request(f.handler, "/api/threads/thread/messages", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      409,
+    );
+  } finally {
+    finishMessage();
+    await message;
+  }
+  assert.equal(f.calls.length, 2);
+});
+
 test("password project adoption requires the local nonce and held account cookie", async () => {
   const f = fixture({
     passwordMode: true,
