@@ -1,3 +1,4 @@
+import { resolveInvitationRecipient } from "./invitation-recipient";
 import {
   credentialStorageAvailable,
   providerConnectionRequest,
@@ -1386,6 +1387,23 @@ export class RepositoryAgent extends Agent<Env> {
         : Response.json({ error: "not_found" }, { status: 404 });
     const originalUser = auth ? await authUser(auth, request, accessIdentity) : undefined;
     if (auth && !originalUser) return Response.json({ error: "unauthorized" }, { status: 401 });
+    const invitationPath = /\/invitations(?:\/|$)/.test(path);
+    // Capture the ORIGINAL session before streaming the bounded body. Rechecking
+    // its immutable session ID prevents a later replacement login from adopting work.
+    const invitationGrant =
+      auth && originalUser && invitationPath
+        ? await visualizationGrant(auth, request, accessIdentity)
+        : undefined;
+    if (auth && invitationPath && (!invitationGrant || invitationGrant.userId !== originalUser?.id))
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    const requireInvitationSession = async () => {
+      if (!invitationGrant || !this.env.AUTH_DB) throw new AdmissionError("unauthorized", 401);
+      try {
+        await requireVisualizationSession(this.env.AUTH_DB, invitationGrant);
+      } catch {
+        throw new AdmissionError("unauthorized", 401);
+      }
+    };
     const ownerEmail =
       this.env.ACCESS_EMAIL?.toLowerCase() ??
       (this.env.ENVIRONMENT === "development" && this.env.FIXTURE_IDENTITY === "lilfrogdev"
@@ -2130,7 +2148,43 @@ export class RepositoryAgent extends Agent<Env> {
       new URL(request.url).searchParams.get("projectId"),
     );
     if (!coordinator) return Response.json({ error: "not_found" }, { status: 404 });
-    const access = new Collaboration(coordinator, identity, ownerEmail);
+    const access = new Collaboration(
+      coordinator,
+      identity,
+      ownerEmail,
+      invitationGrant && this.env.AUTH_DB
+        ? {
+            requireSession: requireInvitationSession,
+            resolveRecipient: async (input) => {
+              // The caller's current owner role is checked by Collaboration before this
+              // bounded account lookup; failed lookups count too, limiting enumeration.
+              await requireInvitationSession();
+              const now = Date.now();
+              const admitted = await this.env
+                .AUTH_DB!.prepare(`INSERT INTO auth_admission(key,count,started_at)
+            VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET
+            count=CASE WHEN started_at<=? THEN 1 ELSE count+1 END,
+            started_at=CASE WHEN started_at<=? THEN excluded.started_at ELSE started_at END
+            WHERE started_at<=? OR count<20 RETURNING count`)
+                .bind(
+                  JSON.stringify([identity.actor, "invitation-recipient"]),
+                  now,
+                  now - 60000,
+                  now - 60000,
+                  now - 60000,
+                )
+                .first();
+              if (!admitted) throw new AdmissionError("capacity", 429);
+              await requireInvitationSession();
+              try {
+                return await resolveInvitationRecipient(this.env.AUTH_DB!, input, passwordMode);
+              } finally {
+                await requireInvitationSession();
+              }
+            },
+          }
+        : undefined,
+    );
     // Password credentials occupy new account namespaces. Existing Access AES
     // records remain in their original namespace and are never rebound here.
     const credentialEnv = passwordMode
@@ -2359,6 +2413,7 @@ export class RepositoryAgent extends Agent<Env> {
                 const current = await authUser(auth, request, accessIdentity);
                 if (!current || current.id !== user.id)
                   throw new AdmissionError("unauthorized", 401);
+                if (invitationPath) await requireInvitationSession();
                 return operation({
                   actor: `account:${current.id}`,
                   email: current.email.toLowerCase(),

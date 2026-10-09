@@ -1856,6 +1856,12 @@ test("every native management mutation retains the account captured before a slo
     ],
     [
       "POST",
+      "/api/threads/synthetic-thread/invitations",
+      { recipient: "johncena", role: "editor" },
+    ],
+    ["POST", `/api/invitations/${"a".repeat(64)}/accept`, {}],
+    [
+      "POST",
       `/api/projects/${managedRepository.projectId}/invitations/11111111-2222-4333-8444-555555555555/revoke`,
       {},
     ],
@@ -1961,4 +1967,169 @@ test("percent-encoded native route aliases retain strict body and response proje
   });
   assert.equal(invalid.status, 400);
   assert.equal(forwarded.length, 1);
+});
+
+test("native username and email invitations project safe metadata on project/thread and token routes", async () => {
+  const token = "a".repeat(64);
+  const base = {
+    id: "11111111-2222-4333-8444-555555555555",
+    projectId: managedRepository.projectId,
+    recipient: "@johncena",
+    role: "editor",
+    invitedBy: "account:synthetic-owner",
+    expiresAt: new Date(Date.now() + 100000).toISOString(),
+  };
+  let scope = "project",
+    recipient = "@johncena";
+  const forwarded = [];
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-owner-session" }),
+    fetchImpl: async (url, init) => {
+      forwarded.push({ url, init });
+      const invitation = {
+        ...base,
+        scope,
+        recipient,
+        ...(scope === "thread" ? { threadId: "synthetic-thread" } : {}),
+        recipientActor: "account:private-recipient",
+        digest: "private-digest",
+        token: "private-stored-token",
+      };
+      return Response.json(url.endsWith("/invitations") ? { token, invitation } : invitation, {
+        status: url.endsWith("/invitations") ? 201 : 200,
+      });
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  for (const [path, selector, desiredScope, label] of [
+    [
+      `/api/projects/${managedRepository.projectId}/invitations`,
+      "JoHnCeNa",
+      "project",
+      "@johncena",
+    ],
+    ["/api/threads/synthetic-thread/invitations", "@JOHNCENA", "thread", "@johncena"],
+    [
+      "/api/threads/synthetic-thread/invitations",
+      "EDITOR@SYNTHETIC.TEST",
+      "thread",
+      "editor@synthetic.test",
+    ],
+  ]) {
+    scope = desiredScope;
+    recipient = label;
+    const created = await request(f.handler, path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ recipient: selector, role: "editor" }),
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.json.token, token);
+    assert.equal(created.json.invitation.recipient, label);
+    assert.equal(created.json.invitation.scope, desiredScope);
+    assert.ok(!created.text.includes("private-"));
+    assert.ok(!created.text.includes("recipientActor"));
+    assert.ok(!created.text.includes("email"));
+    for (const [target, method] of [
+      [`/api/invitations/${token}`, "GET"],
+      [`/api/invitations/${token}/accept`, "POST"],
+      [`/api/invitations/${token}/revoke`, "POST"],
+    ]) {
+      const response = await request(f.handler, target, {
+        method,
+        headers,
+        ...(method === "POST" ? { body: "{}" } : {}),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.json.recipient, label);
+      assert.ok(!response.text.includes("private-"));
+      assert.ok(!response.text.includes("token"));
+    }
+  }
+  assert.equal(forwarded.length, 12);
+});
+
+test("native invitation relay rejects identity injection and hides malformed or leaked success metadata", async () => {
+  const token = "a".repeat(64),
+    forwarded = [];
+  let result = { error: "recipient_unavailable", diagnostic: "private-diagnostic" };
+  let status = 400;
+  const f = fixture({
+    passwordMode: true,
+    sharedApi: true,
+    sessionHeaders: async () => ({ Cookie: "synthetic-owner-session" }),
+    fetchImpl: async (url, init) => {
+      forwarded.push({ url, init });
+      return Response.json(result, { status });
+    },
+  });
+  const headers = await nativeManagementHeaders(f.handler);
+  for (const path of [
+    `/api/projects/${managedRepository.projectId}/invitations`,
+    "/api/threads/synthetic-thread/invitations",
+  ]) {
+    for (const input of [
+      { recipient: "johncena", role: "editor", recipientActor: "account:forged" },
+      { recipient: "johncena", email: "other@synthetic.test", role: "editor" },
+      { recipient: "johncena", role: "editor", digest: "forged" },
+      { recipient: "\u00a0johncena\u00a0", role: "editor" },
+    ])
+      assert.equal(
+        (await request(f.handler, path, { method: "POST", headers, body: JSON.stringify(input) }))
+          .status,
+        400,
+      );
+  }
+  assert.equal(
+    (
+      await request(f.handler, `/api/invitations/${token}/accept`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ actor: "account:forged" }),
+      })
+    ).status,
+    400,
+  );
+  assert.equal(forwarded.length, 0);
+  const unknown = await request(f.handler, "/api/threads/synthetic-thread/invitations", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ recipient: "unknown", role: "editor" }),
+  });
+  assert.deepEqual(unknown.json, { error: "recipient_unavailable" });
+  status = 201;
+  result = {
+    token,
+    invitation: {
+      id: "11111111-2222-4333-8444-555555555555",
+      projectId: managedRepository.projectId,
+      scope: "thread",
+      threadId: "wrong-thread",
+      recipient: "@johncena",
+      role: "editor",
+      invitedBy: "account:synthetic-owner",
+      expiresAt: new Date(Date.now() + 100000).toISOString(),
+    },
+  };
+  assert.equal(
+    (
+      await request(f.handler, "/api/threads/synthetic-thread/invitations", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ recipient: "johncena", role: "editor" }),
+      })
+    ).status,
+    503,
+  );
+  result.invitation.threadId = "synthetic-thread";
+  result.invitation.email = "private-email@synthetic.test";
+  const leaked = await request(f.handler, "/api/threads/synthetic-thread/invitations", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ recipient: "johncena", role: "editor" }),
+  });
+  assert.equal(leaked.status, 503);
+  assert.ok(!leaked.text.includes("private-"));
 });

@@ -251,7 +251,10 @@ it("grant-backed JohnCena and LaraCroft share only explicitly invited native wor
           email: john.email,
         })
       ).status,
-    ).toBe(200);
+    ).toBe(400);
+    expect((await f.request(`/invitations/${projectToken}/accept`, lara.email, {})).status).toBe(
+      200,
+    );
     expect((await f.request(`/invitations/${projectToken}/accept`, lara.email, {})).status).toBe(
       410,
     );
@@ -269,6 +272,7 @@ it("grant-backed JohnCena and LaraCroft share only explicitly invited native wor
       ).status,
     ).toBe(403);
     const threadToken = await invite(`/threads/${shared.id}/invitations`);
+    const duplicateThreadToken = await invite(`/threads/${shared.id}/invitations`);
     expect((await f.request(`/invitations/${threadToken}/accept`, lara.email, {})).status).toBe(
       200,
     );
@@ -303,7 +307,6 @@ it("grant-backed JohnCena and LaraCroft share only explicitly invited native wor
       );
       expect(message.author?.displayName).toBe(expectedPersona.name);
     }
-    const duplicateThreadToken = await invite(`/threads/${shared.id}/invitations`);
     expect(
       (
         await f.request(

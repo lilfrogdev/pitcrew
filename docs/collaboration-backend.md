@@ -12,7 +12,8 @@ accounts, independently of the protected legacy Access-bound email surface.
 Native email metadata comes from a consumed recipient-bound enrollment grant.
 Application identity is `account:<Better Auth user id>`; membership is explicit.
 Usernames are canonical lowercase and case-insensitively unique in D1. They are
-display/login data and never select an authorization principal. A verified
+display/login data; invitation lookup resolves them to an immutable account ID
+before issuance, and acceptance never authorizes from the mutable label. A verified
 session refreshes only its existing actor's member profile metadata, preserving
 membership and historical author snapshots. Full name is optional metadata.
 Cloudflare administration and the email allowlist do not grant repository access.
@@ -42,17 +43,37 @@ websocket transport is introduced by this slice.
 - `GET /api/projects/:projectId/members`, `GET /api/threads/:threadId/members`:
   `{actor,email,role,displayName?,username?,avatar?}[]`.
 - `POST /api/projects/:projectId/invitations`,
-  `POST /api/threads/:threadId/invitations`: `{email,role:'editor'}` ->
-  `{token,invitation:{id,projectId,scope,threadId?,email,role,invitedBy,expiresAt,...}}`.
-  Only the scope owner can issue it. The token is returned once; only its SHA-256
-  digest is stored. Default lifetime is 24 hours.
+  `POST /api/threads/:threadId/invitations`: exactly `{recipient,role:'editor'}` ->
+  `{token,invitation:{id,projectId,scope,threadId?,recipient,role,invitedBy,expiresAt,...}}`.
+  Recipient accepts a case-insensitive ASCII username (optionally prefixed with
+  `@`) or email. The server resolves an existing eligible account and stores its
+  immutable `account:<id>` binding. Missing, ineligible and ambiguous email matches
+  return `400 recipient_unavailable`; malformed selectors return `400 invalid_recipient`.
+  Only the current repository owner can issue either scope. Thread issuance also
+  requires the recipient's existing project membership and grants only that thread.
+  Existing members return `409 already_member`. Exact legacy `{email,role:'editor'}`
+  request bodies remain accepted, but native requests use the same account resolver.
+  Extra keys, including actor/digest hints, return `400 invalid_request`.
+  Username requests expose only a canonical `@username` snapshot, not the account's
+  email. Email requests expose the normalized typed address. Public DTOs omit the
+  recipient actor and digest. The token is returned once; only its SHA-256 digest
+  is stored. Default lifetime is 24 hours. Owner lookups are limited to 20/minute;
+  there is no unauthenticated account search endpoint.
 - `GET /api/invitations/:token`, `POST .../accept`, `POST .../revoke`:
   preview/accept is recipient-bound; revoke is owner-only. Native acceptance uses
   the immutable identifier from consumed controlled enrollment, without claiming
   mailbox verification. It requires a current session, live inviter,
-  unused/unexpired/unrevoked token and project membership for thread invitations.
-  Invitation and member operations recheck the original session under the shared
-  auth authority queue through hashing and commit. Acceptance is non-replayable.
+  unused/unexpired/unrevoked token, current repository-owner inviter authority,
+  and project membership for thread invitations. Accept/revoke bodies are exactly
+  `{}`. New invitation authorization compares the bound immutable actor, so username
+  or email changes and later selector reuse cannot transfer a token. Native accounts
+  cannot accept outstanding legacy email-only invitations (`410 invitation_unavailable`);
+  the owner must revoke and reissue them. Trusted legacy Access email invitations
+  retain their prior behavior. No token is silently migrated by an email claim.
+  Invitation operations capture the original session before body reading and recheck
+  that same session under the shared authority queue after lookup/hash awaits and
+  before durable writes. Acceptance is non-replayable. These application fences do
+  not claim to eliminate external administrator races against D1.
 - `DELETE /api/projects/:projectId/members/:actor`,
   `DELETE /api/threads/:threadId/members/:actor`: revokes membership and matching
   pending invitations atomically. Project revocation cascades to threads.

@@ -64,6 +64,9 @@ const safeErrors = new Set([
   "forbidden",
   "invitation_unavailable",
   "invalid_email",
+  "invalid_recipient",
+  "recipient_unavailable",
+  "invalid_request",
   "invalid_role",
   "invalid_member",
   "invalid_mentions",
@@ -344,6 +347,16 @@ function normalizeMutation(path, value) {
 const nativeProjectRepository = /^\/api\/projects\/[A-Za-z0-9:_-]{1,128}\/repository(?:\/delete)?$/;
 const nativeProjectInvitations =
   /^\/api\/projects\/[A-Za-z0-9:_-]{1,128}\/invitations(?:\/[a-f0-9-]{36}\/revoke)?$/;
+const nativeInvitationCreate = /^\/api\/(?:projects|threads)\/[A-Za-z0-9:_-]{1,128}\/invitations$/;
+const nativeInvitationToken = /^\/api\/invitations\/[a-f0-9]{64}(?:\/(?:accept|revoke))?$/;
+const validRecipient = (input) => {
+  if (typeof input !== "string" || input.length > 256) return false;
+  const value = input.replace(/^[\t\n\r\f\v ]+|[\t\n\r\f\v ]+$/g, "");
+  return (
+    /^@?[A-Za-z0-9_]{3,32}$/.test(value) ||
+    (value.length <= 254 && /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(value))
+  );
+};
 const safeText = (value, limit, multiline = false) =>
   typeof value === "string" &&
   value.length <= limit &&
@@ -396,15 +409,14 @@ function normalizeNativeManagement(path, method, value) {
       resourceId.test(value.repositoryId)
     );
   }
-  if (nativeProjectInvitations.test(path)) {
+  if (nativeInvitationToken.test(path)) return keys.length === 0;
+  if (nativeProjectInvitations.test(path) || nativeInvitationCreate.test(path)) {
     if (path.endsWith("/revoke")) return keys.length === 0;
     return (
       keys.length === 2 &&
-      keys.includes("email") &&
+      (keys.includes("recipient") || keys.includes("email")) &&
       keys.includes("role") &&
-      typeof value.email === "string" &&
-      value.email.length <= 254 &&
-      /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(value.email) &&
+      validRecipient(keys.includes("recipient") ? value.recipient : value.email) &&
       value.role === "editor"
     );
   }
@@ -440,8 +452,14 @@ function nativeInvitationProjection(item) {
     !["project", "thread"].includes(item.scope) ||
     !resourceId.test(item.projectId ?? "") ||
     (item.scope === "thread" && !resourceId.test(item.threadId ?? "")) ||
-    !safeText(item.email, 254) ||
-    !/^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(item.email) ||
+    (item.recipient !== undefined
+      ? item.email !== undefined ||
+        !safeText(item.recipient, 254) ||
+        !(
+          /^@[a-z0-9_]{3,32}$/.test(item.recipient) ||
+          /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(item.recipient)
+        )
+      : !safeText(item.email, 254) || !/^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(item.email)) ||
     item.role !== "editor" ||
     !safeText(item.invitedBy, 256) ||
     !item.invitedBy.length ||
@@ -461,7 +479,7 @@ function nativeInvitationProjection(item) {
     scope: item.scope,
     projectId: item.projectId,
     ...(item.scope === "thread" ? { threadId: item.threadId } : {}),
-    email: item.email,
+    ...(item.recipient !== undefined ? { recipient: item.recipient } : { email: item.email }),
     role: item.role,
     invitedBy: item.invitedBy,
     expiresAt: item.expiresAt,
@@ -505,6 +523,25 @@ function nativeRepositoryProjection(item) {
   };
 }
 function cleanResponse(path, value, passwordMode = false, method = "GET", mutation) {
+  if (
+    passwordMode &&
+    ((nativeInvitationCreate.test(path) && method === "POST") || nativeInvitationToken.test(path))
+  ) {
+    const created = nativeInvitationCreate.test(path);
+    const projected = nativeInvitationProjection(created ? value?.invitation : value);
+    if (created) {
+      const scope = path.split("/")[2] === "projects" ? "project" : "thread";
+      const target = path.split("/")[3];
+      if (
+        projected.scope !== scope ||
+        (scope === "project" ? projected.projectId : projected.threadId) !== target ||
+        !/^[a-f0-9]{64}$/.test(value?.token ?? "")
+      )
+        throw Error();
+      return { token: value.token, invitation: projected };
+    }
+    return projected;
+  }
   if (
     passwordMode &&
     nativeProjectInvitations.test(path) &&
@@ -918,7 +955,10 @@ export function createBackendRelayMiddleware({
       passwordMode &&
       shared &&
       write &&
-      (nativeProjectRepository.test(decodedPath) || nativeProjectInvitations.test(decodedPath));
+      (nativeProjectRepository.test(decodedPath) ||
+        nativeProjectInvitations.test(decodedPath) ||
+        nativeInvitationCreate.test(decodedPath) ||
+        nativeInvitationToken.test(decodedPath));
     const accountBoundWrite = uploadWrite || (passwordMode && shared && write);
     const presenceWrite = shared && write && url.pathname.endsWith("/presence");
     if (!read && !write) return reply(res, 405, { error: "method_not_allowed" });
@@ -999,8 +1039,12 @@ export function createBackendRelayMiddleware({
                           : nativeManagementWrite
                             ? decodedPath.endsWith("/repository/delete")
                               ? 2048
-                              : nativeProjectInvitations.test(decodedPath)
-                                ? 512
+                              : nativeProjectInvitations.test(decodedPath) ||
+                                  nativeInvitationCreate.test(decodedPath) ||
+                                  nativeInvitationToken.test(decodedPath)
+                                ? decodedPath.endsWith("/revoke")
+                                  ? 512
+                                  : 1024
                                 : 8192
                             : 16384
                         : 8192,
@@ -1171,6 +1215,8 @@ export function createBackendRelayMiddleware({
             ["/api/repository-creations", "/api/repositories/create"].includes(decodedPath) ||
             (passwordMode &&
               (nativeProjectRepository.test(decodedPath) ||
+                nativeInvitationCreate.test(decodedPath) ||
+                nativeInvitationToken.test(decodedPath) ||
                 (nativeProjectInvitations.test(decodedPath) &&
                   (req.method === "GET" || decodedPath.endsWith("/revoke")))))
           )
