@@ -390,6 +390,7 @@ function canonicalInvitationLabel(item: {
 }): string | undefined {
   if ((item.recipient === undefined) === (item.email === undefined)) return;
   const label = item.recipient ?? item.email;
+  if (typeof label !== "string" || /[\x00-\x1f\x7f]/.test(label)) return;
   const selector = invitationSelector(label);
   if (!selector || (item.email !== undefined && selector.kind !== "email")) return;
   const canonical = selector.kind === "username" ? `@${selector.value}` : selector.value;
@@ -462,7 +463,9 @@ async function createInvitation(
   id: string,
   recipient: string,
 ): Promise<CreatedInvitation> {
-  if (!invitationSelector(recipient)) throw new ApiError(400, "invalid_recipient");
+  const selector = invitationSelector(recipient);
+  if (!selector || /[\x00-\x1f\x7f]/.test(selector.value))
+    throw new ApiError(400, "invalid_recipient");
   const value = await invitationRequest<unknown>(
     `/${scope === "project" ? "projects" : "threads"}/${encodeURIComponent(id)}/invitations`,
     { recipient: recipient.trim(), role: "editor" },

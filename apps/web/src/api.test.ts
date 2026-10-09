@@ -1228,6 +1228,8 @@ it("validates historical invitation labels without binding them to the current p
   expect(await httpApi.collaboration!.acceptInvitation("a".repeat(64))).toEqual(historical);
   for (const fields of [
     { recipient: "freeform person" },
+    { recipient: "john\u0000@example.test" },
+    { recipient: undefined, email: "john\u0000@example.test" },
     { recipient: "@Previous_Name" },
     { recipient: "@previous_name", email: "other@example.test" },
   ]) {
@@ -1247,6 +1249,7 @@ it("rejects invalid submitted recipient selectors before fetching an invitation 
     "@Kelvin",
     "\u00a0johncena\u00a0",
     "missing@example",
+    "john\u0000@example.test",
     "*",
   ]) {
     await expect(httpApi.collaboration!.inviteProject("project", recipient)).rejects.toEqual(
