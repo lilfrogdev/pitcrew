@@ -1763,7 +1763,10 @@ export class RepositoryAgent extends Agent<Env> {
           const admit = (commit: () => void) =>
             this.visualizationAuthority.run(async () => {
               await fresh();
-              if (Object.keys(root.state.ownedProjects ?? {}).length >= 20 && !previous)
+              const currentIntent = broadRequest
+                ? lifecycle.logicalCreation(identity.actor, name)
+                : lifecycle.ownedRecord(name, identity.actor);
+              if (Object.keys(root.state.ownedProjects ?? {}).length >= 20 && !currentIntent)
                 throw new RepositoryCreationError("capacity", 429);
               this.ctx.storage.transactionSync(commit);
             });
