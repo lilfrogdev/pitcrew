@@ -24,8 +24,8 @@ the browser accessibility tree, and observed HTTP requests. No React internals,
 human browser profile, credentials, cookies, or session extraction are used.
 Clipboard permissions apply only to the synthetic origin and empty profile.
 
-Coverage includes arbitrary create metadata and consent, owner/editor/external
-controls, physical identity preservation during metadata edit, invitation
+Coverage includes one canonical create name, optional description, explicit Create consent, owner/editor/external
+controls, physical identity preservation during canonical name/description edit, invitation
 creation/copy/ephemeral cleanup and UUID revoke, selected editor revocation,
 typed permanent deletion, HTTP 202 pending observation, explicit same-resource
 recovery, mismatched-ID observation, generic failures, unknown mutation results,
@@ -37,13 +37,16 @@ and creation. Deleting reserves the owner-scoped logical name; confirmed deletio
 allows that logical name to be recreated with a fresh project UUID and physical
 name. A tombstoned physical identity remains retired.
 Additional naming cases cover ASCII bounds and case/whitespace normalization,
-the distinct logical/display/physical labels, readonly physical identity,
+canonical editable name and separate immutable physical identity, readonly physical identity,
 same-owner known duplicates and concurrent ready intent reuse, explicit partial
 creation recovery, different owners using the same logical name, logical rename
 and owner-scoped collision, and unchanged exact-approved legacy physical names.
 New physical fixture names use the agreed 30-character logical prefix plus the
 32 hexadecimal digits of the project UUID that is persisted before the synthetic
-provider result. Display labels and descriptions remain nonunique.
+provider result. The UI derives its display label from the canonical name; descriptions remain nonunique.
+Ordinary creation/settings have no separate display-name field, and ordinary creation
+has no consent checkbox. Explicit Create emits credentialConsent:true; partial
+creation recovery retains its specific consent control.
 Deletion is an independent `capabilities.delete` boolean: positive destructive
 scenarios explicitly enable it. Separate cases exercise deletion off and absent
 while create/manage remain on, stale `deletable:true` rows, and a false capability

@@ -183,10 +183,9 @@ try {
     await evaluate(`(${labelSource(name, scope)}).select()`);
     await cdp("Input.insertText", { text: value });
   };
-  const checkbox = async () =>
-    clickElement(
-      `document.querySelector('form[aria-label="Create repository"] input[type=checkbox]')`,
-    );
+  const ordinaryControls = async () => {
+    assert.equal(await evaluate("document.querySelector('form[aria-label=\"Create repository\"]')?.querySelectorAll('input[type=checkbox]').length ?? 0"), 0);
+  };
   const control = async (path, body = {}) => {
     const result = await fetch(origin + "/fixture/" + path, {
       method: "POST",
@@ -242,65 +241,62 @@ try {
     "Owner/editor/external constraints",
     "Owner and external-owner metadata are manageable; editor has no management controls; external repository delete disabled.",
   );
-  assert.equal(await disabled("Create empty repository"), true);
+  assert.equal(await disabled("Create repository"), true);
   await fill("Repository name", "qa-arbitrary-slug");
-  await fill("Display name (optional)", "Created display");
   await fill("Description (optional)", "Created description");
-  assert.equal(await disabled("Create empty repository"), true);
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), false);
-  await click("Create empty repository");
-  await includes("Created display");
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), false);
+  await click("Create repository");
+  await includes("qa-arbitrary-slug");
   assert.deepEqual((await calls("/api/repositories/create", "POST"))[0].body, {
     name: "qa-arbitrary-slug",
     credentialConsent: true,
-    displayName: "Created display",
+    displayName: "qa-arbitrary-slug",
     description: "Created description",
   });
   pass(
-    "Arbitrary repository creation with explicit consent",
-    "Real HTTP client emitted the expected synthetic create request only after consent.",
+    "Arbitrary repository creation with explicit Create consent",
+    "One canonical name and optional description emit the expected request with consent only on explicit Create; the ordinary consent checkbox is absent.",
   );
   await navigate();
   await open();
-  await fill("Display name", "Changed display", "Owner display");
+  await fill("Repository name", "changed-display", "Owner display");
   await fill("Description", "Changed description", "Owner display");
   await click("Save repository details", "Owner display");
-  await includes("Changed display");
-  await open("Changed display");
+  await includes("changed-display");
+  await open("changed-display");
   const edited = (await state()).repositories[0];
   assert.equal(edited.repositoryName, "owner-physical");
   assert.equal(edited.repositoryId, "qa-repository-id");
   assert.deepEqual((await calls("/api/projects/qa-owner/repository", "PATCH"))[0].body, {
-    logicalName: "owner-logical",
-    displayName: "Changed display",
+    logicalName: "changed-display",
+    displayName: "changed-display",
     description: "Changed description",
     expectedRevision: 0,
   });
   pass(
-    "Display metadata edit preserves physical identity",
-    "PATCH changed display/description and kept physical name/id; browser still renders permanent identifiers.",
+    "Canonical name and description edit preserves physical identity",
+    "PATCH changed logical/display name together and description while physical name/id remained permanent.",
   );
   await navigate();
   await fill("Repository name", "invalid_name");
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), true);
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), true);
   await fill("Repository name", "a".repeat(64));
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), true);
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), true);
   await fill("Repository name", "Kelvin");
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), true);
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), true);
   await fill("Repository name", "\u00a0name\u00a0");
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), true);
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), true);
   const rawLogical = `  MiXeD-${"A".repeat(57)}  `;
   const canonicalLogical = rawLogical.trim().toLowerCase();
   await fill("Repository name", rawLogical);
-  await fill("Display name (optional)", "Canonical display");
-  await checkbox();
-  await click("Create empty repository");
-  await includes("Canonical display");
+  await ordinaryControls();
+  await click("Create repository");
+  await includes(canonicalLogical);
   const canonicalCreation = (await state()).creations[0];
   assert.equal(canonicalCreation.logicalName, canonicalLogical);
   assert.equal(canonicalCreation.name, canonicalLogical);
@@ -310,34 +306,34 @@ try {
   );
   assert.equal(canonicalCreation.repositoryName.length, 63);
   assert.equal((await calls("/api/repositories/create", "POST"))[0].body.name, canonicalLogical);
-  await open("Canonical display");
+  await open(canonicalLogical);
   await includes(`Repository name: ${canonicalLogical}`);
   await includes(`Physical name: ${canonicalCreation.repositoryName}`);
   assert.equal(
-    await evaluate(`(${labelSource("Repository name", "Canonical display")}).value`),
+    await evaluate(`(${labelSource("Repository name", canonicalLogical)}).value`),
     canonicalLogical,
   );
   assert.equal(
     await evaluate(
-      `(${scopeSource("Canonical display")}).querySelector('dl').innerText.includes(${JSON.stringify(canonicalCreation.repositoryName)})`,
+      `(${scopeSource(canonicalLogical)}).querySelector('dl').innerText.includes(${JSON.stringify(canonicalCreation.repositoryName)})`,
     ),
     true,
   );
   assert.equal(
     await evaluate(
-      `(${scopeSource("Canonical display")}).querySelector('dl').innerText.includes('Physical repository name (permanent)')`,
+      `(${scopeSource(canonicalLogical)}).querySelector('dl').innerText.includes('Physical repository name (permanent)')`,
     ),
     true,
   );
   assert.equal(
     await evaluate(
-      `[...(${scopeSource("Canonical display")}).querySelectorAll('input,textarea')].some(field=>!field.readOnly && field.value===${JSON.stringify(canonicalCreation.repositoryName)})`,
+      `[...(${scopeSource(canonicalLogical)}).querySelectorAll('input,textarea')].some(field=>!field.readOnly && field.value===${JSON.stringify(canonicalCreation.repositoryName)})`,
     ),
     false,
   );
   await fill("Repository name", canonicalLogical.toUpperCase());
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), true);
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), true);
   assert.equal((await calls("/api/repositories/create", "POST")).length, 1);
   await screenshot("07-logical-and-physical-names");
   pass(
@@ -351,9 +347,8 @@ try {
   });
   const existingIntent = (await state()).creations[0];
   await fill("Repository name", "SHARED-LOGICAL");
-  await fill("Display name (optional)", "Ignored second client label");
-  await checkbox();
-  await click("Create empty repository");
+  await ordinaryControls();
+  await click("Create repository");
   await includes("First client display");
   assert.equal((await state()).creations.length, 1);
   assert.equal((await state()).creations[0].projectId, existingIntent.projectId);
@@ -365,9 +360,8 @@ try {
   );
   await navigate("registration-recovery");
   await fill("Repository name", "Recover-Logical");
-  await fill("Display name (optional)", "Recovered display");
-  await checkbox();
-  await click("Create empty repository");
+  await ordinaryControls();
+  await click("Create repository");
   await includes("The repository needs registration");
   const partialIntent = (await state()).creations[0];
   const partialProject = (await state()).pendingProjects[partialIntent.repositoryName];
@@ -376,7 +370,8 @@ try {
     `document.querySelector('section[aria-label="Repository creation recover-logical"] input[type=checkbox]')`,
   );
   await click("Recover repository creation");
-  await includes("Recovered display");
+  await includes("recover-logical");
+  await wait(async () => (await state()).creations[0].status === "ready", "same-resource recovery completed");
   assert.equal((await state()).creations.length, 1);
   assert.equal((await state()).creations[0].repositoryName, partialIntent.repositoryName);
   assert.equal((await state()).creations[0].projectId, partialProject.projectId);
@@ -390,20 +385,18 @@ try {
   );
   await navigate();
   await fill("Repository name", "same-owner-name");
-  await fill("Display name (optional)", "Shared display label");
   await fill("Description (optional)", "Repeated description");
-  await checkbox();
-  await click("Create empty repository");
-  await includes("Shared display label");
+  await ordinaryControls();
+  await click("Create repository");
+  await includes("same-owner-name");
   const firstOwnerCreation = (await state()).creations[0];
   await fill("Repository name", "another-owner-name");
-  await fill("Display name (optional)", "Shared display label");
   await fill("Description (optional)", "Repeated description");
-  await checkbox();
-  await click("Create empty repository");
+  await ordinaryControls();
+  await click("Create repository");
   await wait(
     async () => (await state()).creations.length === 2,
-    "same-owner duplicate display label accepted",
+    "second owner-scoped canonical name accepted",
   );
   await wait(
     async () => !String(await text()).includes("Creating repository…"),
@@ -411,7 +404,7 @@ try {
   );
   assert.equal(
     (await state()).repositories.filter(
-      (item) => item.name === "Shared display label" && item.description === "Repeated description",
+      (item) => ["same-owner-name", "another-owner-name"].includes(item.name) && item.description === "Repeated description",
     ).length,
     2,
   );
@@ -419,11 +412,10 @@ try {
   await click("Switch fixture account");
   await includes("Second account repository");
   await fill("Repository name", "SAME-OWNER-NAME");
-  await fill("Display name (optional)", "Shared display label");
   await fill("Description (optional)", "Repeated description");
-  await checkbox();
-  await click("Create empty repository");
-  await includes("Shared display label");
+  await ordinaryControls();
+  await click("Create repository");
+  await includes("same-owner-name");
   const secondOwnerCreation = (await state()).creations.at(-1);
   assert.equal(secondOwnerCreation.logicalName, firstOwnerCreation.logicalName);
   assert.notEqual(secondOwnerCreation.projectId, firstOwnerCreation.projectId);
@@ -431,8 +423,8 @@ try {
   assert.equal(secondOwnerCreation.name, firstOwnerCreation.name);
   await screenshot("08-owner-scoped-logical-name");
   pass(
-    "Different owners can use the same logical name and display label",
-    "One synthetic account creates two different slugs with identical display labels/descriptions. A second account creates the same canonical slug/display label with a different UUID and physical name, and sees its own repository.",
+    "Different owners can use the same logical name",
+    "One account creates two canonical names with repeated descriptions. Another account creates the same logical name with a distinct UUID and physical name.",
   );
   await navigate();
   await open();
@@ -443,19 +435,19 @@ try {
   assert.equal(renamed.logicalName, "renamed-logical");
   assert.equal(renamed.repositoryName, "owner-physical");
   assert.equal(renamed.repositoryId, "qa-repository-id");
-  await open();
-  await fill("Repository name", "Kelvin", "Owner display");
-  assert.equal(await disabled("Save repository details", "Owner display"), true);
-  await fill("Repository name", "\u00a0name\u00a0", "Owner display");
-  assert.equal(await disabled("Save repository details", "Owner display"), true);
+  await open("renamed-logical");
+  await fill("Repository name", "Kelvin", "renamed-logical");
+  assert.equal(await disabled("Save repository details", "renamed-logical"), true);
+  await fill("Repository name", "\u00a0name\u00a0", "renamed-logical");
+  assert.equal(await disabled("Save repository details", "renamed-logical"), true);
   assert.equal((await calls("/api/projects/qa-owner/repository", "PATCH")).length, 1);
-  await fill("Repository name", "external-logical", "Owner display");
-  await click("Save repository details", "Owner display");
+  await fill("Repository name", "external-logical", "renamed-logical");
+  await click("Save repository details", "renamed-logical");
   await includes("This repository name is already used in your account.");
   assert.equal((await state()).repositories[0].logicalName, "renamed-logical");
   assert.equal((await state()).repositories[0].repositoryName, "owner-physical");
-  await fill("Repository name", "another-logical", "Owner display");
-  await click("Save repository details", "Owner display");
+  await fill("Repository name", "another-logical", "renamed-logical");
+  await click("Save repository details", "renamed-logical");
   await includes("Repository name: another-logical");
   assert.equal((await state()).repositories[0].repositoryName, "owner-physical");
   pass(
@@ -463,11 +455,8 @@ try {
     "Case-normalized logical rename leaves physical name/provider ID unchanged. Non-ASCII Kelvin/NBSP rename drafts send no PATCH. HTTP 409 collision preserves identity and allows correction to an available owner-scoped name.",
   );
   await navigate("legacy-approved");
-  await includes("Create approved empty repository");
-  await clickElement(
-    `document.querySelector('section[aria-label="Approved empty repository legacy-approved-physical"] input[type=checkbox]')`,
-  );
-  await click("Create empty repository");
+  await includes("Create repository");
+  await click("Create repository");
   await includes("legacy-approved-physical");
   await wait(
     async () =>
@@ -487,7 +476,7 @@ try {
   await navigate();
   await open();
   await includes("pending@example.test");
-  await fill("Invitation recipient email", "guest@example.test", "Owner display");
+  await fill("Username or email", "guest@example.test", "Owner display");
   await click("Create invitation link", "Owner display");
   await includes("Invitation created.");
   const link = await evaluate(`(${labelSource("Invitation link", "Owner display")}).value`);
@@ -532,7 +521,7 @@ try {
   );
   await navigate();
   await open();
-  await fill("Invitation recipient email", "guest@example.test", "Owner display");
+  await fill("Username or email", "guest@example.test", "Owner display");
   await click("Create invitation link", "Owner display");
   await includes("Invitation created.");
   await clickElement(
@@ -569,7 +558,7 @@ try {
   assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 1);
   assert.equal(await disabled("Recover repository deletion", "Owner display"), true);
   assert.equal(
-    await evaluate(`Boolean(${labelSource("Invitation recipient email", "Owner display")})`),
+    await evaluate(`Boolean(${labelSource("Username or email", "Owner display")})`),
     false,
   );
   await screenshot("03-pending-deletion");
@@ -592,20 +581,19 @@ try {
   );
   await navigate("normal", true);
   await fill("Repository name", "qa-lifecycle-slug");
-  await fill("Display name (optional)", "Lifecycle display");
-  await checkbox();
-  await click("Create empty repository");
-  await includes("Lifecycle display");
+  await ordinaryControls();
+  await click("Create repository");
+  await includes("qa-lifecycle-slug");
   assert.equal((await state()).creations[0].status, "ready");
   const originalLifecycle = (await state()).creations[0];
-  await open("Lifecycle display");
-  await click("Review deletion", "Lifecycle display");
+  await open("qa-lifecycle-slug");
+  await click("Review deletion", "qa-lifecycle-slug");
   await fill(
     "Type the physical repository name to confirm",
     originalLifecycle.repositoryName,
-    "Lifecycle display",
+    "qa-lifecycle-slug",
   );
-  await click("Permanently delete repository", "Lifecycle display");
+  await click("Permanently delete repository", "qa-lifecycle-slug");
   await includes("Deletion pending");
   assert.equal((await state()).creations[0].status, "deleting");
   await click("Refresh");
@@ -617,19 +605,19 @@ try {
   );
   assert.equal(await evaluate("document.querySelectorAll('button[aria-expanded]').length"), 3);
   await fill("Repository name", "qa-lifecycle-slug");
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), true);
-  await open("Lifecycle display");
-  await click("Refresh deletion status", "Lifecycle display");
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), true);
+  await open("qa-lifecycle-slug");
+  await click("Refresh deletion status", "qa-lifecycle-slug");
   await includes("Confirm the permanent name to recover");
   await fill(
     "Type the physical repository name to confirm",
     originalLifecycle.repositoryName,
-    "Lifecycle display",
+    "qa-lifecycle-slug",
   );
-  await click("Recover repository deletion", "Lifecycle display");
+  await click("Recover repository deletion", "qa-lifecycle-slug");
   await wait(
-    async () => !String(await text()).includes("Lifecycle display"),
+    () => evaluate(`!document.querySelector('section[aria-label="Manage qa-lifecycle-slug"]')`),
     "created repository tombstone removed from directory",
   );
   assert.equal((await state()).creations[0].status, "deleted");
@@ -639,15 +627,15 @@ try {
   );
   assert.equal(String(await text()).includes("Could not check repository creation status"), false);
   await open();
-  await fill("Display name", "Owner after tombstone", "Owner display");
+  await fill("Repository name", "owner-after-tombstone", "Owner display");
   await click("Save repository details", "Owner display");
-  await includes("Owner after tombstone");
+  await includes("owner-after-tombstone");
   await fill("Repository name", "qa-lifecycle-slug");
-  await checkbox();
-  assert.equal(await disabled("Create empty repository"), false);
-  await fill("Display name (optional)", "Created after tombstone");
-  await click("Create empty repository");
-  await includes("Created after tombstone");
+  await ordinaryControls();
+  assert.equal(await disabled("Create repository"), false);
+  await click("Create repository");
+  await includes("qa-lifecycle-slug");
+  await wait(async () => (await state()).creations.length === 2, "fresh UUID recreation completed");
   assert.deepEqual(
     (await state()).creations.map((record) => record.status),
     ["deleted", "ready"],
@@ -663,7 +651,7 @@ try {
   );
   await navigate("edit-conflict");
   await open();
-  await fill("Display name", "Conflict change", "Owner display");
+  await fill("Repository name", "conflict-change", "Owner display");
   await click("Save repository details", "Owner display");
   await includes("This repository changed.");
   assert.equal((await calls("/api/projects/qa-owner/repository", "PATCH")).length, 1);
@@ -698,7 +686,7 @@ try {
   );
   await navigate("invite-failure");
   await open();
-  await fill("Invitation recipient email", "guest@example.test", "Owner display");
+  await fill("Username or email", "guest@example.test", "Owner display");
   await click("Create invitation link", "Owner display");
   await includes("The invitation result is unknown.");
   assert.equal(await disabled("Create invitation link", "Owner display"), true);
@@ -707,15 +695,30 @@ try {
     "Unknown invitation constraint",
     "Creation disabled after uncertain result until access is refreshed.",
   );
+  await navigate("recipient-mismatch");
+  await open();
+  await fill("Username or email", "guest@example.test", "Owner display");
+  await click("Create invitation link", "Owner display");
+  await includes("The invitation result is unknown.");
+  assert.equal(await disabled("Create invitation link", "Owner display"), true);
+  assert.equal(await evaluate(`Boolean(${labelSource("Invitation link", "Owner display")})`), false);
+  assert.equal((await calls("/api/projects/qa-owner/invitations", "POST")).length, 1);
+  await click("Refresh access", "Owner display");
+  await wait(async () => !(await disabled("Create invitation link", "Owner display")), "explicit refresh releases unknown recipient outcome");
+  assert.equal((await calls("/api/projects/qa-owner/invitations", "POST")).length, 1);
+  pass(
+    "Mismatched recipient response cannot expose a usable invitation link",
+    "A successful synthetic mutation returning another canonical recipient is quarantined. No link or automatic retry appears; only explicit access refresh releases the unknown outcome.",
+  );
   await navigate("create-failure");
   await fill("Repository name", "uncertain-create");
-  await checkbox();
-  await click("Create empty repository");
+  await ordinaryControls();
+  await click("Create repository");
   await includes("The creation result is unknown.");
   assert.equal((await calls("/api/repositories/create", "POST")).length, 1);
   await click("Refresh");
   await includes("creation result for uncertain-create is unknown");
-  assert.equal(await disabled("Create empty repository"), true);
+  assert.equal(await disabled("Create repository"), true);
   pass(
     "Unknown creation constraint",
     "GET discovery does not silently retry POST or unlock another create while the prior outcome remains unknown.",
@@ -725,24 +728,23 @@ try {
   await open();
   assert.equal(await disabled("Review deletion", "Owner display"), true);
   await includes("Repository deletion is not enabled for this account.");
-  await fill("Display name", "Owner without delete", "Owner display");
+  await fill("Repository name", "owner-without-delete", "Owner display");
   await click("Save repository details", "Owner display");
-  await includes("Owner without delete");
-  await open("Owner without delete");
+  await includes("owner-without-delete");
+  await open("owner-without-delete");
   await includes("pending@example.test");
-  await fill("Invitation recipient email", "guest@example.test", "Owner without delete");
-  await click("Create invitation link", "Owner without delete");
+  await fill("Username or email", "guest@example.test", "owner-without-delete");
+  await click("Create invitation link", "owner-without-delete");
   await includes("Invitation created.");
   await fill("Repository name", "qa-delete-disabled");
-  await fill("Display name (optional)", "Created without delete");
-  await checkbox();
-  await click("Create empty repository");
-  await includes("Created without delete");
+  await ordinaryControls();
+  await click("Create repository");
+  await includes("qa-delete-disabled");
   assert.equal((await calls("/api/projects/qa-owner/repository/delete", "POST")).length, 0);
   assert.equal((await calls("/api/projects/qa-owner/repository", "PATCH")).length, 1);
   assert.equal((await calls("/api/projects/qa-owner/invitations", "POST")).length, 1);
-  await open("Owner without delete");
-  assert.equal(await disabled("Review deletion", "Owner without delete"), true);
+  await open("owner-without-delete");
+  assert.equal(await disabled("Review deletion", "owner-without-delete"), true);
   await screenshot("06-management-on-delete-off");
   pass(
     "Independent delete-off capability preserves create and access management",
@@ -814,7 +816,7 @@ try {
   );
   await navigate("read-failure");
   await includes("Could not load repositories");
-  assert.equal(await disabled("Create empty repository"), true);
+  assert.equal(await disabled("Create repository"), true);
   assert.equal(String(await text()).includes("private-provider-diagnostic"), false);
   pass(
     "Directory failure constraints",
@@ -822,7 +824,7 @@ try {
   );
   await navigate("late-invite");
   await open();
-  await fill("Invitation recipient email", "late-private@example.test", "Owner display");
+  await fill("Username or email", "late-private@example.test", "Owner display");
   await click("Create invitation link", "Owner display");
   await wait(async () => (await state()).held === 1, "held synthetic invitation");
   const before = await evaluate("document.querySelector('output').value");
@@ -841,7 +843,7 @@ try {
   );
   await navigate("late-invite");
   await open();
-  await fill("Invitation recipient email", "late-unmounted@example.test", "Owner display");
+  await fill("Username or email", "late-unmounted@example.test", "Owner display");
   await click("Create invitation link", "Owner display");
   await wait(async () => (await state()).held === 1, "held before unmount");
   await click("Unmount directory");

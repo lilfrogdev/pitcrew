@@ -321,8 +321,10 @@ export function createFixture() {
         const created = {
           ...invitation,
           id: "00000000-0000-4000-8000-000000000002",
-          email: body.email,
+          recipient: body.recipient,
         };
+        delete created.email; // New native DTO has exactly one recipient label.
+        if (state.scenario === "recipient-mismatch") created.recipient = "@other_synthetic_account";
         state.invitations.push(created);
         const result = { token: "a".repeat(64), invitation: created };
         if (state.scenario === "late-invite") {
