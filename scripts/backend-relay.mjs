@@ -349,14 +349,14 @@ const nativeProjectInvitations =
   /^\/api\/projects\/[A-Za-z0-9:_-]{1,128}\/invitations(?:\/[a-f0-9-]{36}\/revoke)?$/;
 const nativeInvitationCreate = /^\/api\/(?:projects|threads)\/[A-Za-z0-9:_-]{1,128}\/invitations$/;
 const nativeInvitationToken = /^\/api\/invitations\/[a-f0-9]{64}(?:\/(?:accept|revoke))?$/;
-const validRecipient = (input) => {
-  if (typeof input !== "string" || input.length > 256) return false;
+const canonicalRecipient = (input) => {
+  if (typeof input !== "string" || input.length > 256) return;
   const value = input.replace(/^[\t\n\r\f\v ]+|[\t\n\r\f\v ]+$/g, "");
-  return (
-    /^@?[A-Za-z0-9_]{3,32}$/.test(value) ||
-    (value.length <= 254 && /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(value))
-  );
+  if (/^@?[A-Za-z0-9_]{3,32}$/.test(value)) return `@${value.replace(/^@/, "").toLowerCase()}`;
+  if (value.length <= 254 && /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(value))
+    return value.toLowerCase();
 };
+const validRecipient = (input) => canonicalRecipient(input) !== undefined;
 const safeText = (value, limit, multiline = false) =>
   typeof value === "string" &&
   value.length <= limit &&
@@ -455,10 +455,7 @@ function nativeInvitationProjection(item) {
     (item.recipient !== undefined
       ? item.email !== undefined ||
         !safeText(item.recipient, 254) ||
-        !(
-          /^@[a-z0-9_]{3,32}$/.test(item.recipient) ||
-          /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(item.recipient)
-        )
+        canonicalRecipient(item.recipient) !== item.recipient
       : !safeText(item.email, 254) || !/^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/.test(item.email)) ||
     item.role !== "editor" ||
     !safeText(item.invitedBy, 256) ||
@@ -532,7 +529,12 @@ function cleanResponse(path, value, passwordMode = false, method = "GET", mutati
     if (created) {
       const scope = path.split("/")[2] === "projects" ? "project" : "thread";
       const target = path.split("/")[3];
+      // The response must describe the recipient consented to in this held
+      // request. Normalize the SUBMITTED selector, never a wrong response label.
+      const submitted = canonicalRecipient(mutation?.recipient ?? mutation?.email);
       if (
+        !submitted ||
+        (projected.recipient ?? projected.email) !== submitted ||
         projected.scope !== scope ||
         (scope === "project" ? projected.projectId : projected.threadId) !== target ||
         !/^[a-f0-9]{64}$/.test(value?.token ?? "")

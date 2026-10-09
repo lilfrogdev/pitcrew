@@ -2133,3 +2133,77 @@ test("native invitation relay rejects identity injection and hides malformed or 
   assert.equal(leaked.status, 503);
   assert.ok(!leaked.text.includes("private-"));
 });
+
+test("native project and thread invitation codes remain fenced to the submitted canonical recipient", async () => {
+  const token = "b".repeat(64);
+  for (const scope of ["project", "thread"]) {
+    const path =
+      scope === "project"
+        ? `/api/projects/${managedRepository.projectId}/invitations`
+        : "/api/threads/synthetic-thread/invitations";
+    let responseLabel = "@johncena",
+      extra = {};
+    const f = fixture({
+      passwordMode: true,
+      sharedApi: true,
+      sessionHeaders: async () => ({ Cookie: "synthetic-owner-session" }),
+      fetchImpl: async () =>
+        Response.json(
+          {
+            token,
+            invitation: {
+              id: "11111111-2222-4333-8444-555555555555",
+              projectId: managedRepository.projectId,
+              scope,
+              ...(scope === "thread" ? { threadId: "synthetic-thread" } : {}),
+              recipient: responseLabel,
+              role: "editor",
+              invitedBy: "account:synthetic-owner",
+              expiresAt: new Date(Date.now() + 100000).toISOString(),
+              ...extra,
+            },
+          },
+          { status: 201 },
+        ),
+    });
+    const headers = await nativeManagementHeaders(f.handler);
+    const create = (input) =>
+      request(f.handler, path, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...input, role: "editor" }),
+      });
+    for (const input of ["johncena", "JoHnCeNa", "@JOHNCENA", " \t@JohnCena\r\n"]) {
+      const accepted = await create({ recipient: input });
+      assert.equal(accepted.status, 201, scope + input);
+      assert.equal(accepted.json.token, token);
+      assert.equal(accepted.json.invitation.recipient, "@johncena");
+    }
+    for (const wrong of ["@different", "@JohnCena", "johncena@synthetic.test", " @johncena "]) {
+      responseLabel = wrong;
+      const denied = await create({ recipient: "johncena" });
+      assert.equal(denied.status, 503, scope + wrong);
+      assert.ok(!denied.text.includes(token));
+      assert.ok(!denied.text.includes(wrong));
+    }
+    responseLabel = "editor@synthetic.test";
+    for (const key of ["recipient", "email"]) {
+      const accepted = await create({ [key]: "EDITOR@SYNTHETIC.TEST" });
+      assert.equal(accepted.status, 201, scope + key);
+      assert.equal(accepted.json.token, token);
+      for (const wrong of ["other@synthetic.test", "EDITOR@SYNTHETIC.TEST", "@editor"]) {
+        responseLabel = wrong;
+        const denied = await create({ [key]: "EDITOR@SYNTHETIC.TEST" });
+        assert.equal(denied.status, 503, scope + key + wrong);
+        assert.ok(!denied.text.includes(token));
+        assert.ok(!denied.text.includes(wrong));
+      }
+      responseLabel = "editor@synthetic.test";
+    }
+    responseLabel = "@johncena";
+    extra = { email: "johncena@synthetic.test" };
+    const dual = await create({ recipient: "johncena" });
+    assert.equal(dual.status, 503);
+    assert.ok(!dual.text.includes(token));
+  }
+});
