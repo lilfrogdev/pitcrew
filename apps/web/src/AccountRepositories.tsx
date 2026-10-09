@@ -8,6 +8,7 @@ import {
   type SharedRepository,
 } from "./api";
 import styles from "./Repositories.module.css";
+import { canonicalRepositoryName } from "./repository-names";
 import { RepositoryManagement } from "./RepositoryManagement";
 
 const adoptionKey = (item: ApprovedProjectAdoption) =>
@@ -29,6 +30,12 @@ export function AccountRepositories({
   const [newName, setNewName] = useState("");
   const [newDisplayName, setNewDisplayName] = useState("");
   const [newDescription, setNewDescription] = useState("");
+  const canonicalName = canonicalRepositoryName(newName);
+  const activeName = (name: string) =>
+    creations.creations.some((item) => item.name === name && item.status !== "deleted") ||
+    items.some(
+      (item) => item.role === "owner" && (item.logicalName ?? item.repositoryName) === name,
+    );
   const [creationConsent, setCreationConsent] = useState<Record<string, boolean>>({});
   const [creationError, setCreationError] = useState("");
   const [creationReadError, setCreationReadError] = useState("");
@@ -85,7 +92,9 @@ export function AccountRepositories({
     );
     if (managed.status === "fulfilled") {
       setUnknownCreation((name) =>
-        managed.value.creations.some((item) => item.name === name) ? null : name,
+        managed.value.creations.some((item) => item.name === name && item.status !== "deleted")
+          ? null
+          : name,
       );
       const newlyReady = managed.value.creations.filter(
         (item) =>
@@ -150,7 +159,9 @@ export function AccountRepositories({
       (!creations.capabilities?.create && creations.approval?.name !== name) ||
       (creations.capabilities?.create && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) ||
       !!unknownCreation ||
-      creations.creations.some((item) => item.name === name)
+      (creations.capabilities?.create
+        ? activeName(name)
+        : creations.creations.some((item) => item.name === name))
     )
       return;
     const operation = {};
@@ -169,6 +180,7 @@ export function AccountRepositories({
       if (
         result.name !== name ||
         (recovery?.repositoryId && result.repositoryId !== recovery.repositoryId) ||
+        (recovery?.repositoryName && result.repositoryName !== recovery.repositoryName) ||
         (result.status === "ready" && (!result.projectId || !result.repositoryId))
       )
         throw new ApiError(0);
@@ -179,7 +191,12 @@ export function AccountRepositories({
       setCreationConsent({});
       setCreations((value) => ({
         ...value,
-        creations: [...value.creations.filter((item) => item.name !== name), result],
+        creations: [
+          ...value.creations.filter(
+            (item) => (item.repositoryName ?? item.name) !== (result.repositoryName ?? result.name),
+          ),
+          result,
+        ],
       }));
       if (result.status === "ready") {
         readyCreations.current.add(result.projectId!);
@@ -259,7 +276,10 @@ export function AccountRepositories({
                 <div>
                   <strong>{item.name}</strong>
                   <span>{item.role}</span>
-                  {item.repositoryName && <span>Permanent name: {item.repositoryName}</span>}
+                  <span>
+                    Repository name: {item.logicalName ?? item.repositoryName ?? item.name}
+                  </span>
+                  {item.repositoryName && <span>Physical name: {item.repositoryName}</span>}
                   {item.description && <p>{item.description}</p>}
                   {item.status === "deleting" && <span>Deletion pending</span>}
                 </div>
@@ -312,17 +332,15 @@ export function AccountRepositories({
                 aria-label="Create repository"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void create(newName);
+                  if (canonicalName) void create(canonicalName);
                 }}
               >
                 <h2>Create empty repository</h2>
                 <label>
-                  Permanent repository name
+                  Repository name
                   <input
                     value={newName}
                     required
-                    pattern={"[a-z0-9][a-z0-9\\-]{0,62}"}
-                    maxLength={63}
                     autoCapitalize="none"
                     autoComplete="off"
                     spellCheck={false}
@@ -334,8 +352,9 @@ export function AccountRepositories({
                   />
                 </label>
                 <p className={styles.note}>
-                  Use 1–63 lowercase letters, numbers or hyphens, starting with a letter or number.
-                  This name is permanent.
+                  Use 1–63 letters, numbers or hyphens, starting with a letter or number. Names are
+                  saved in lowercase and are unique within your account. You can rename them later;
+                  the physical storage name stays fixed.
                 </p>
                 <label>
                   Display name (optional)
@@ -365,9 +384,11 @@ export function AccountRepositories({
                 <label className={styles.consent}>
                   <input
                     type="checkbox"
-                    checked={creationConsent[newName] ?? false}
+                    checked={creationConsent[canonicalName ?? ""] ?? false}
                     disabled={busy || !!error || !!creationError}
-                    onChange={(event) => setCreationConsent({ [newName]: event.target.checked })}
+                    onChange={(event) =>
+                      setCreationConsent({ [canonicalName ?? ""]: event.target.checked })
+                    }
                   />
                   I consent to storing this empty repository in Cloudflare and to Cloudflare issuing
                   a temporary Git token that is discarded and revoked before repository access is
@@ -379,10 +400,10 @@ export function AccountRepositories({
                     busy ||
                     !!error ||
                     !!creationError ||
-                    !creationConsent[newName] ||
-                    !/^[a-z0-9][a-z0-9-]{0,62}$/.test(newName) ||
+                    !creationConsent[canonicalName ?? ""] ||
+                    !canonicalName ||
                     !!unknownCreation ||
-                    creations.creations.some((item) => item.name === newName)
+                    (!!canonicalName && activeName(canonicalName))
                   }
                 >
                   {busy ? "Creating repository…" : "Create empty repository"}
@@ -439,19 +460,22 @@ export function AccountRepositories({
               .map((item) => (
                 <section
                   className={styles.form}
-                  key={item.name}
+                  key={item.repositoryName ?? item.name}
                   aria-label={`Repository creation ${item.name}`}
                 >
                   <h2>{item.name}</h2>
+                  {item.repositoryName && (
+                    <p className={styles.note}>Physical name: {item.repositoryName}</p>
+                  )}
                   <p>
                     {item.status === "ready"
                       ? "This repository is ready and registered to this account."
                       : item.status === "pending"
                         ? "Creation is pending or its result is unknown. Refresh to check its status, or ask the operator to investigate."
                         : item.status === "deleting"
-                          ? "This repository is being deleted. Use its management controls to refresh deletion status. Its permanent name cannot be reused."
+                          ? "This repository is being deleted. Its repository name remains reserved until deletion is confirmed. Use its management controls to refresh deletion status."
                           : item.status === "deleted"
-                            ? "This repository was deleted. Its permanent name is retired and cannot be reused."
+                            ? "This repository was deleted. You can reuse its repository name for a new repository with a new physical identity."
                             : item.status === "cleanup_required"
                               ? "The repository needs temporary credential cleanup before access is enabled."
                               : "The repository needs registration to this account before access is enabled."}

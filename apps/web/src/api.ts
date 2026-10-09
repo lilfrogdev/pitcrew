@@ -1,3 +1,4 @@
+import { canonicalRepositoryName } from "./repository-names";
 import { createUploadApi, type UploadApi } from "./uploads/api";
 import type { UploadSubmission } from "@pitcrew/protocol";
 import { createRepositoryApi, type RepositoryApi } from "./repository-api";
@@ -67,6 +68,7 @@ export type SharedRepository = {
   projectId: string;
   name: string;
   role: "owner" | "editor";
+  logicalName?: string;
   repositoryName?: string;
   repositoryId?: string;
   description?: string;
@@ -81,6 +83,8 @@ export type ApprovedProjectAdoption = {
 };
 export type RepositoryCreation = {
   name: string;
+  logicalName?: string;
+  repositoryName?: string;
   repositoryId?: string;
   status:
     | "pending"
@@ -97,12 +101,14 @@ export type RepositoryCreations = {
   capabilities?: { create: boolean; manage: boolean; delete: boolean };
 };
 export type RepositoryMetadata = {
+  logicalName?: string;
   displayName: string;
   description: string;
   expectedRevision?: number;
 };
 export type RepositoryDeletion = { confirmation: string; repositoryId: string };
 export type RepositoryStatus = {
+  logicalName?: string;
   projectId: string;
   name: string;
   repositoryName: string;
@@ -188,7 +194,10 @@ export interface Api {
   ): Promise<unknown>;
 }
 export class ApiError extends Error {
-  constructor(public status: number) {
+  constructor(
+    public status: number,
+    public code?: "repository_exists" | "revision_conflict" | "repository_name_retired",
+  ) {
     super(
       status === 403 || status === 401
         ? "Access is unavailable. Ask the project owner to enable protected access."
@@ -302,10 +311,24 @@ function repositoryCapabilities(value: unknown): {
     delete: "delete" in value ? (value.delete as boolean) : false,
   };
 }
+async function repositoryFailure(response: Response): Promise<ApiError> {
+  if (response.status !== 409) return new ApiError(response.status);
+  const value = (await response.json().catch(() => null)) as { error?: unknown } | null;
+  const code = value?.error;
+  return new ApiError(
+    409,
+    ["repository_exists", "revision_conflict", "repository_name_retired"].includes(code as string)
+      ? (code as ApiError["code"])
+      : undefined,
+  );
+}
 function repositoryStatus(value: unknown): RepositoryStatus {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiError(0);
   const item = value as Record<string, unknown>;
   if (
+    (item.logicalName !== undefined &&
+      (typeof item.logicalName !== "string" ||
+        canonicalRepositoryName(item.logicalName) !== item.logicalName)) ||
     !publicIdentifier(item.projectId) ||
     typeof item.name !== "string" ||
     !item.name.trim() ||
@@ -329,6 +352,7 @@ function repositoryStatus(value: unknown): RepositoryStatus {
   )
     throw new ApiError(0);
   return {
+    ...(item.logicalName === undefined ? {} : { logicalName: item.logicalName as string }),
     projectId: item.projectId,
     name: item.name,
     repositoryName: item.repositoryName,
@@ -388,7 +412,7 @@ async function repositoryMutation(
   }
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
-    throw new ApiError(response.status);
+    throw await repositoryFailure(response);
   }
   try {
     const value: unknown = await response.json();
@@ -421,6 +445,14 @@ function repositoryCreation(value: unknown): RepositoryCreation {
       "deleting",
       "deleted",
     ].includes(item.status) ||
+    (item.logicalName !== undefined &&
+      (typeof item.logicalName !== "string" ||
+        item.logicalName !== item.name ||
+        canonicalRepositoryName(item.logicalName) !== item.logicalName ||
+        typeof item.repositoryName !== "string")) ||
+    (item.repositoryName !== undefined &&
+      (typeof item.repositoryName !== "string" ||
+        !/^[a-z0-9][a-z0-9-]{0,62}$/.test(item.repositoryName))) ||
     (item.repositoryId !== undefined && !identifier(item.repositoryId)) ||
     (item.projectId !== undefined && !identifier(item.projectId)) ||
     (item.status === "ready" && (!identifier(item.repositoryId) || !identifier(item.projectId))) ||
@@ -430,6 +462,8 @@ function repositoryCreation(value: unknown): RepositoryCreation {
   // Keep only public identifiers and lifecycle state; provider diagnostics and credentials stay out.
   return {
     name: item.name as string,
+    ...(item.logicalName === undefined ? {} : { logicalName: item.logicalName as string }),
+    ...(item.repositoryName === undefined ? {} : { repositoryName: item.repositoryName as string }),
     status: item.status as RepositoryCreation["status"],
     ...(item.repositoryId === undefined ? {} : { repositoryId: item.repositoryId as string }),
     ...(item.projectId === undefined ? {} : { projectId: item.projectId as string }),
@@ -441,6 +475,11 @@ async function createAccountRepository(
   metadata?: { displayName: string; description: string },
 ): Promise<RepositoryCreation> {
   if (typeof name !== "string" || !name || credentialConsent !== true) throw new ApiError(0);
+  if (metadata) {
+    const canonical = canonicalRepositoryName(name);
+    if (!canonical) throw new ApiError(400);
+    name = canonical;
+  }
   let response: Response;
   try {
     response = await apiFetch("/repositories/create", { name, credentialConsent, ...metadata });
@@ -449,7 +488,7 @@ async function createAccountRepository(
   }
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event("pitcrew-auth-required"));
-    throw new ApiError(response.status);
+    throw await repositoryFailure(response);
   }
   let result: RepositoryCreation;
   try {
@@ -597,7 +636,9 @@ export const httpApi: Api = {
       )
         throw new ApiError(0);
       const creations = envelope.creations.map(repositoryCreation);
-      if (new Set(creations.map((item) => item.name)).size !== creations.length)
+      if (
+        new Set(creations.map((item) => item.repositoryName ?? item.name)).size !== creations.length
+      )
         throw new ApiError(0);
       return {
         approval: approval === null ? null : { name: (approval as { name: string }).name },
@@ -641,6 +682,9 @@ export const httpApi: Api = {
             !["present", "deleting"].includes(item.status) ||
             !["registered", "deleting"].includes(item.lifecycle) ||
             typeof item.deletable !== "boolean" ||
+            (item.logicalName !== undefined &&
+              (typeof item.logicalName !== "string" ||
+                canonicalRepositoryName(item.logicalName) !== item.logicalName)) ||
             (item.repositoryName !== undefined && !publicIdentifier(item.repositoryName)) ||
             (item.repositoryId !== undefined && !publicIdentifier(item.repositoryId)) ||
             (item.description !== undefined && typeof item.description !== "string") ||
@@ -656,18 +700,26 @@ export const httpApi: Api = {
         status: item.status,
         lifecycle: item.lifecycle,
         deletable: item.deletable,
+        ...(item.logicalName === undefined ? {} : { logicalName: item.logicalName }),
         ...(item.repositoryName === undefined ? {} : { repositoryName: item.repositoryName }),
         ...(item.repositoryId === undefined ? {} : { repositoryId: item.repositoryId }),
         ...(item.description === undefined ? {} : { description: item.description }),
         ...(item.metadataRevision === undefined ? {} : { metadataRevision: item.metadataRevision }),
       })) as SharedRepository[];
     },
-    updateRepository: (id, metadata) =>
-      repositoryMutation(
+    updateRepository: async (id, metadata) => {
+      let input = metadata;
+      if (metadata.logicalName !== undefined) {
+        const logicalName = canonicalRepositoryName(metadata.logicalName);
+        if (!logicalName) throw new ApiError(400);
+        input = { ...metadata, logicalName };
+      }
+      return (await repositoryMutation(
         `/projects/${encodeURIComponent(id)}/repository`,
-        metadata,
+        input,
         "PATCH",
-      ) as Promise<Project>,
+      )) as Project;
+    },
     deleteRepository: async (id, target) =>
       repositoryStatus(
         await repositoryMutation(
