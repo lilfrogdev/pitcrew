@@ -226,7 +226,13 @@ export async function readyCreation(
   // The admitted operation continues; observe its durable result without a POST retry.
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const saved = (await f.discovery(email)).creations.find((entry) => entry.name === expectedName);
+    const saved = (await f.discovery(email)).creations.find(
+      (entry) =>
+        entry.name === expectedName &&
+        (record.repositoryName
+          ? entry.repositoryName === record.repositoryName
+          : entry.status !== "deleted"),
+    );
     if (saved?.status === "ready")
       return { ...saved, repositoryName: saved.repositoryName ?? saved.name };
     await new Promise((resolve) => setTimeout(resolve, 25));
