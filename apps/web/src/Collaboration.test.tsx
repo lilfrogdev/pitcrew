@@ -141,13 +141,13 @@ it("drops the share view when access is revoked during refresh", async () => {
   await waitFor(() => expect(lost).toHaveBeenCalledOnce());
 });
 
-it("keeps thread-only owners from creating invitations that require repository ownership", async () => {
+it("keeps thread-only owners from inviting or removing members without repository ownership", async () => {
   const api = collaboration();
   vi.mocked(api.projectMembers).mockResolvedValue([
     { ...owner, role: "editor" },
     { ...bryan, role: "owner" },
   ]);
-  vi.mocked(api.threadMembers).mockResolvedValue([{ ...owner, role: "owner" }]);
+  vi.mocked(api.threadMembers).mockResolvedValue([{ ...owner, role: "owner" }, bryan]);
   const user = userEvent.setup();
   render(<Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "Share" }));
@@ -156,6 +156,10 @@ it("keeps thread-only owners from creating invitations that require repository o
   expect(screen.queryByRole("button", { name: "Create invite code" })).toBeNull();
   expect(api.inviteThread).not.toHaveBeenCalled();
   expect(api.inviteProject).not.toHaveBeenCalled();
+  expect(screen.getByRole("region", { name: "Thread members" }).textContent).toContain(bryan.email);
+  expect(screen.queryByRole("button", { name: /Remove / })).toBeNull();
+  expect(api.removeProjectMember).not.toHaveBeenCalled();
+  expect(api.removeThreadMember).not.toHaveBeenCalled();
 });
 
 it("ignores an invitation response after switching its repository and thread", async () => {
@@ -526,4 +530,28 @@ it("rejects an acceptance response for a different immutable invitation resource
   await screen.findByRole("alert");
   expect(accepted).not.toHaveBeenCalled();
   expect(screen.getByText(/Repository invitation for/)).toBeTruthy();
+});
+
+it("allows repository owners to remove a thread member even when their thread role is editor", async () => {
+  const api = collaboration();
+  vi.mocked(api.threadMembers).mockResolvedValue([{ ...owner, role: "editor" }, bryan]);
+  const user = userEvent.setup();
+  render(<Collaborators api={api} projectId="repo-1" threadId="thread-1" onAccessLost={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Share" }));
+  const thread = await screen.findByRole("region", { name: "Thread members" });
+  await user.click(
+    within(thread).getByRole("button", { name: "Remove bryan@example.com from thread" }),
+  );
+  expect(api.removeThreadMember).toHaveBeenCalledExactlyOnceWith("thread-1", bryan.actor);
+  expect(api.removeProjectMember).not.toHaveBeenCalled();
+  await screen.findByText(/removed from thread/);
+  vi.mocked(api.projectMembers).mockResolvedValue([
+    { ...owner, role: "editor" },
+    { ...bryan, role: "owner" },
+  ]);
+  vi.mocked(api.threadMembers).mockResolvedValue([{ ...owner, role: "owner" }, bryan]);
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await screen.findByRole("region", { name: "Thread members" });
+  expect(screen.queryByRole("button", { name: /Remove / })).toBeNull();
+  expect(api.removeThreadMember).toHaveBeenCalledOnce();
 });

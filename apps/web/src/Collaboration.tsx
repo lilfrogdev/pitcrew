@@ -422,9 +422,6 @@ export function Collaborators({
   const projectOwner = projectMembers.some(
     (member) => member.actor === account?.actor && member.role === "owner",
   );
-  const threadOwner = threadMembers.some(
-    (member) => member.actor === account?.actor && member.role === "owner",
-  );
   const canInvite = projectOwner;
   const makeInvite = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -481,12 +478,7 @@ export function Collaborators({
     }
   };
   const remove = async (kind: "project" | "thread", member: Member) => {
-    if (
-      busy ||
-      (kind === "project" ? !projectOwner : !(projectOwner || threadOwner)) ||
-      member.actor === account?.actor
-    )
-      return;
+    if (busy || !projectOwner || member.actor === account?.actor) return;
     setBusy(true);
     setError("");
     const current = mutationGeneration.current;
@@ -568,7 +560,7 @@ export function Collaborators({
                   title="Thread"
                   members={threadMembers}
                   account={account}
-                  owner={projectOwner || threadOwner}
+                  owner={projectOwner}
                   busy={busy}
                   onRemove={(member) => void remove("thread", member)}
                 />
