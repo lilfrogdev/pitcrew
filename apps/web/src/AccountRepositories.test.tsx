@@ -179,7 +179,7 @@ function creationApi(creations: RepositoryCreation[] = []) {
   } as unknown as CollaborationApi;
 }
 
-it("creates only the discovered approved empty repository after credential consent and refreshes directories only when ready", async () => {
+it("creates only the discovered approved repository on explicit action and refreshes directories only when ready", async () => {
   const api = creationApi();
   vi.mocked(api.repositories)
     .mockResolvedValueOnce([])
@@ -198,15 +198,12 @@ it("creates only the discovered approved empty repository after credential conse
   const onAdopted = vi.fn();
   const user = userEvent.setup();
   render(<AccountRepositories api={api} onAdopted={onAdopted} />);
-  const button = await screen.findByRole("button", { name: "Create empty repository" });
-  expect(button).toHaveProperty("disabled", true);
+  const button = await screen.findByRole("button", { name: "Create repository" });
+  expect(button).toHaveProperty("disabled", false);
   expect(screen.queryByRole("textbox")).toBeNull();
-  expect(screen.getByText(/creates no code, threads, or invitations/i)).toBeTruthy();
-  await user.click(button);
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(screen.queryByText(/creates no code/i)).toBeNull();
   expect(api.createRepository).not.toHaveBeenCalled();
-  await user.click(
-    screen.getByRole("checkbox", { name: /I consent to storing this empty repository/ }),
-  );
   fireEvent.click(button);
   fireEvent.click(button);
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith(approvedName, true);
@@ -216,7 +213,7 @@ it("creates only the discovered approved empty repository after credential conse
   expect(await screen.findByText("owner")).toBeTruthy();
   expect(onAdopted).toHaveBeenCalledOnce();
   expect(api.repositories).toHaveBeenCalledTimes(2);
-  expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create repository" })).toBeNull();
 });
 
 it("keeps pending creation visible without resubmitting and refreshes Work only after registration is confirmed", async () => {
@@ -228,9 +225,8 @@ it("keeps pending creation visible without resubmitting and refreshes Work only 
   const onAdopted = vi.fn();
   const user = userEvent.setup();
   render(<AccountRepositories api={api} onAdopted={onAdopted} />);
-  await screen.findByRole("button", { name: "Create empty repository" });
-  await user.click(screen.getByRole("checkbox"));
-  await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+  await screen.findByRole("button", { name: "Create repository" });
+  await user.click(screen.getByRole("button", { name: "Create repository" }));
   expect(await screen.findByText(/Creation is pending or its result is unknown/)).toBeTruthy();
   expect(onAdopted).not.toHaveBeenCalled();
   expect(screen.queryByRole("checkbox")).toBeNull();
@@ -251,7 +247,7 @@ it.each(["cleanup_required", "registration_required"] as const)(
     const user = userEvent.setup();
     render(<AccountRepositories api={api} />);
     const button = await screen.findByRole("button", { name: "Recover repository creation" });
-    expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create repository" })).toBeNull();
     expect(button).toHaveProperty("disabled", true);
     await user.click(screen.getByRole("checkbox"));
     await user.click(button);
@@ -267,22 +263,21 @@ it("keeps an unknown creation outcome blocked until discovery finds its managed 
   const onAdopted = vi.fn();
   const user = userEvent.setup();
   render(<AccountRepositories api={api} onAdopted={onAdopted} />);
-  await screen.findByRole("button", { name: "Create empty repository" });
-  await user.click(screen.getByRole("checkbox"));
-  await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+  await screen.findByRole("button", { name: "Create repository" });
+  await user.click(screen.getByRole("button", { name: "Create repository" }));
   expect(await screen.findByRole("alert")).toHaveProperty(
     "textContent",
     expect.stringContaining("creation result is unknown"),
   );
   expect(screen.queryByText(/secret provider/)).toBeNull();
-  expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create repository" })).toBeNull();
   await user.click(screen.getByRole("button", { name: "Refresh" }));
   await screen.findByText(/creation result for account-approved-empty is unknown/);
   expect(api.createRepository).toHaveBeenCalledOnce();
   expect(onAdopted).not.toHaveBeenCalled();
 });
 
-it("keeps creation discovery failure separate from registered repositories and clears consent after refresh", async () => {
+it("keeps creation discovery failure separate from registered repositories and requires fresh approval", async () => {
   const api = creationApi();
   vi.mocked(api.repositories).mockResolvedValue([repository]);
   vi.mocked(api.repositoryCreations!)
@@ -294,17 +289,18 @@ it("keeps creation discovery failure separate from registered repositories and c
   expect(screen.getByRole("alert").textContent).toContain(
     "Could not check repository creation status",
   );
-  expect(screen.queryByRole("button", { name: "Create empty repository" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create repository" })).toBeNull();
   await user.click(screen.getByRole("button", { name: "Refresh" }));
-  await screen.findByRole("checkbox");
-  await user.click(screen.getByRole("checkbox"));
+  await screen.findByRole("button", { name: "Create repository" });
   await user.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Create empty repository" })).toHaveProperty(
+    expect(screen.getByRole("button", { name: "Create repository" })).toHaveProperty(
       "disabled",
-      true,
+      false,
     ),
   );
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(api.createRepository).not.toHaveBeenCalled();
 });
 
 it.each(["unmount", "account change", "API change"])(
@@ -322,9 +318,8 @@ it.each(["unmount", "account change", "API change"])(
     const view = render(
       <AccountRepositories key="first-account" api={api} onAdopted={onAdopted} />,
     );
-    await screen.findByRole("checkbox");
-    await user.click(screen.getByRole("checkbox"));
-    await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+    await screen.findByRole("button", { name: "Create repository" });
+    await user.click(screen.getByRole("button", { name: "Create repository" }));
     if (change === "unmount") view.unmount();
     else {
       view.rerender(
@@ -334,7 +329,7 @@ it.each(["unmount", "account change", "API change"])(
           onAdopted={onAdopted}
         />,
       );
-      await screen.findByRole("button", { name: "Create empty repository" });
+      await screen.findByRole("button", { name: "Create repository" });
     }
     await act(async () => resolve(readyCreation));
     await waitFor(() => expect(api.createRepository).toHaveBeenCalledOnce());
@@ -373,25 +368,28 @@ it("ignores late approval discovery from the previous account", async () => {
   expect(onAdopted).not.toHaveBeenCalled();
 });
 
-it("requires a fresh approval read after creation rejection before allowing renewed consent", async () => {
+it("requires a fresh approval read after creation rejection before allowing another explicit create", async () => {
   const api = creationApi();
   vi.mocked(api.createRepository!)
     .mockRejectedValueOnce(new ApiError(403))
     .mockResolvedValueOnce(readyCreation);
   const user = userEvent.setup();
   render(<AccountRepositories api={api} />);
-  await screen.findByRole("checkbox");
-  await user.click(screen.getByRole("checkbox"));
-  await user.click(screen.getByRole("button", { name: "Create empty repository" }));
+  await screen.findByRole("button", { name: "Create repository" });
+  await user.click(screen.getByRole("button", { name: "Create repository" }));
   await screen.findByRole("alert");
-  expect(screen.getByRole("checkbox")).toHaveProperty("disabled", true);
-  expect(screen.getByRole("button", { name: "Create empty repository" })).toHaveProperty(
+  expect(screen.getByRole("button", { name: "Create repository" })).toHaveProperty(
     "disabled",
     true,
   );
   await user.click(screen.getByRole("button", { name: "Refresh" }));
-  await waitFor(() => expect(screen.getByRole("checkbox")).toHaveProperty("disabled", false));
-  expect(screen.getByRole("checkbox")).toHaveProperty("checked", false);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Create repository" })).toHaveProperty(
+      "disabled",
+      false,
+    ),
+  );
+  expect(screen.queryByRole("checkbox")).toBeNull();
   expect(api.createRepository).toHaveBeenCalledOnce();
 });
 

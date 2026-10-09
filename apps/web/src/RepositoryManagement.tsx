@@ -25,7 +25,6 @@ export function RepositoryManagement({
   const [open, setOpen] = useState(false);
   const [logicalName, setLogicalName] = useState(item.logicalName ?? item.repositoryName ?? "");
   const canonicalName = canonicalRepositoryName(logicalName);
-  const [displayName, setDisplayName] = useState(item.name);
   const [description, setDescription] = useState(item.description ?? "");
   const [confirmation, setConfirmation] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -63,7 +62,6 @@ export function RepositoryManagement({
     setConfirmation("");
     setDeleteOpen(false);
     setLogicalName(item.logicalName ?? item.repositoryName ?? "");
-    setDisplayName(item.name);
     setDescription(item.description ?? "");
     setDeleting(item.status === "deleting");
     setDeletionUnknown(false);
@@ -260,19 +258,13 @@ export function RepositoryManagement({
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
-                  if (
-                    unavailable ||
-                    !canonicalName ||
-                    !displayName.trim() ||
-                    !api.updateRepository ||
-                    !targetReady
-                  )
+                  if (unavailable || !canonicalName || !api.updateRepository || !targetReady)
                     return;
                   const version = generation.current;
                   void mutate(async () => {
                     const result = await api.updateRepository!(item.projectId, {
                       logicalName: canonicalName,
-                      displayName: displayName.trim(),
+                      displayName: canonicalName,
                       description: description.trim(),
                       expectedRevision: item.metadataRevision ?? 0,
                     });
@@ -298,20 +290,7 @@ export function RepositoryManagement({
                     onChange={(event) => setLogicalName(event.target.value)}
                   />
                 </label>
-                <p className={styles.note}>
-                  Unique within your account and saved in lowercase. Renaming keeps the physical
-                  name, repository ID and history.
-                </p>
-                <label>
-                  Display name
-                  <input
-                    value={displayName}
-                    maxLength={80}
-                    required
-                    disabled={unavailable}
-                    onChange={(event) => setDisplayName(event.target.value)}
-                  />
-                </label>
+                <p className={styles.note}>Renaming keeps the physical identity and history.</p>
                 <label>
                   Description
                   <textarea
@@ -321,18 +300,9 @@ export function RepositoryManagement({
                     onChange={(event) => setDescription(event.target.value)}
                   />
                 </label>
-                <p className={styles.note}>
-                  Display names are labels and do not need to be unique.
-                </p>
                 <button
                   type="submit"
-                  disabled={
-                    unavailable ||
-                    !canonicalName ||
-                    !targetReady ||
-                    !api.updateRepository ||
-                    !displayName.trim()
-                  }
+                  disabled={unavailable || !canonicalName || !targetReady || !api.updateRepository}
                 >
                   Save repository details
                 </button>
@@ -434,10 +404,7 @@ export function RepositoryManagement({
                         onChange={(event) => setRecipient(event.target.value)}
                       />
                     </label>
-                    <p className={styles.note}>
-                      Editors can work in this repository. Share the link yourself; no email is
-                      sent.
-                    </p>
+                    <p className={styles.note}>Share the link yourself; no email is sent.</p>
                     <button
                       type="submit"
                       disabled={unavailable || invitationUncertain || !recipient.trim()}
@@ -457,10 +424,7 @@ export function RepositoryManagement({
                         Invitation link
                         <input readOnly value={link.url} />
                       </label>
-                      <p className={styles.note}>
-                        Copy now. This link is shown only here and is cleared when you close
-                        management.
-                      </p>
+                      <p className={styles.note}>Copy this link before closing management.</p>
                       <button
                         type="button"
                         disabled={busy}

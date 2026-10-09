@@ -84,23 +84,26 @@ async function open(api: CollaborationApi) {
   await screen.findByText("editor@example.test");
   return { user, view };
 }
-it("creates the selected permanent name with optional metadata only after consent", async () => {
+it("creates with one canonical repository name and optional description on explicit action", async () => {
   const api = managementApi();
   const user = userEvent.setup();
   render(<AccountRepositories api={api} />);
   const form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "Invalid_Name");
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   await user.clear(within(form).getByLabelText("Repository name"));
   await user.type(within(form).getByLabelText("Repository name"), "new-physical");
-  await user.type(within(form).getByLabelText("Display name (optional)"), " Friendly name ");
+  expect(within(form).queryByLabelText(/Display name/)).toBeNull();
+  expect(within(form).queryByRole("checkbox")).toBeNull();
+  expect(within(form).queryByText(/Cloudflare repository storage|creates no code/)).toBeNull();
   await user.type(within(form).getByLabelText("Description (optional)"), " A description ");
-  expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
-  await user.click(within(form).getByRole("checkbox"));
+  expect(within(form).getByRole("button", { name: "Create repository" })).toHaveProperty(
+    "disabled",
+    false,
+  );
   await user.click(within(form).getByRole("button"));
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("new-physical", true, {
-    displayName: "Friendly name",
+    displayName: "new-physical",
     description: "A description",
   });
   expect(await screen.findByText(/Creation is pending/)).toBeTruthy();
@@ -130,12 +133,14 @@ it("gates all management controls on discovered capability and owner role", asyn
 it("saves only metadata with the discovered revision, without changing the physical target", async () => {
   const api = managementApi();
   const { user } = await open(api);
-  await user.clear(screen.getByLabelText("Display name"));
-  await user.type(screen.getByLabelText("Display name"), " New label ");
+  const panel = screen.getByRole("region", { name: `Manage ${repository.name}` });
+  expect(within(panel).queryByLabelText("Display name")).toBeNull();
+  await user.clear(within(panel).getByLabelText("Repository name"));
+  await user.type(within(panel).getByLabelText("Repository name"), " New-Name ");
   await user.click(screen.getByRole("button", { name: "Save repository details" }));
   expect(api.updateRepository).toHaveBeenCalledExactlyOnceWith(repository.projectId, {
-    logicalName: repository.repositoryName,
-    displayName: "New label",
+    logicalName: "new-name",
+    displayName: "new-name",
     description: "Existing description",
     expectedRevision: 3,
   });
@@ -309,7 +314,6 @@ it("keeps an unresolved creation quarantined across refresh and cannot create a 
   render(<AccountRepositories api={api} />);
   let form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "unknown-target");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   await screen.findByText(/creation result is unknown/i);
   await user.click(screen.getByRole("button", { name: "Refresh" }));
@@ -317,7 +321,6 @@ it("keeps an unresolved creation quarantined across refresh and cannot create a 
   form = screen.getByRole("form", { name: "Create repository" });
   await user.clear(within(form).getByLabelText("Repository name"));
   await user.type(within(form).getByLabelText("Repository name"), "other-target");
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   expect(api.createRepository).toHaveBeenCalledOnce();
 });
@@ -428,12 +431,10 @@ it("keeps live directory management and new creation usable after another reposi
   for (const retiredName of ["retiring-repo"]) {
     await user.clear(name);
     await user.type(name, retiredName);
-    await user.click(within(form).getByRole("checkbox"));
     expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   }
   await user.clear(name);
   await user.type(name, "retired-repo");
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", false);
   expect(fetch.mock.calls.some(([path]) => path.endsWith("/create"))).toBe(false);
 });
@@ -569,7 +570,6 @@ it("creates a canonical logical name from mixed case and ASCII padding while sho
   render(<AccountRepositories api={api} />);
   const form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "  New-PrOjEcT  ");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("new-project", true, {
     displayName: "new-project",
@@ -598,7 +598,6 @@ it("allows an owner to use the same logical name as a shared repository from ano
   render(<AccountRepositories api={api} />);
   const form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "SAMPLE");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   expect(api.createRepository).toHaveBeenCalledExactlyOnceWith("sample", true, {
     displayName: "sample",
@@ -633,7 +632,7 @@ it("recovers an owner logical-name collision by choosing another name, preservin
   await user.click(screen.getByRole("button", { name: "Save repository details" }));
   expect(api.updateRepository).toHaveBeenNthCalledWith(2, repository.projectId, {
     logicalName: "available-name",
-    displayName: repository.name,
+    displayName: "available-name",
     description: repository.description,
     expectedRevision: 3,
   });
@@ -660,13 +659,11 @@ it("keeps an unknown reused-name creation quarantined when refresh finds only th
   render(<AccountRepositories api={api} />);
   let form = await screen.findByRole("form", { name: "Create repository" });
   await user.type(within(form).getByLabelText("Repository name"), "reusable");
-  await user.click(within(form).getByRole("checkbox"));
   await user.click(within(form).getByRole("button"));
   await screen.findByText(/creation result is unknown/);
   await user.click(screen.getByRole("button", { name: "Refresh" }));
   await screen.findByText(/creation result for reusable is unknown/);
   form = screen.getByRole("form", { name: "Create repository" });
-  await user.click(within(form).getByRole("checkbox"));
   expect(within(form).getByRole("button")).toHaveProperty("disabled", true);
   expect(api.createRepository).toHaveBeenCalledOnce();
 });
@@ -710,7 +707,6 @@ it.each(["Kelvin", "\u00a0Sample\u00a0"])(
     const { user } = await open(api);
     const form = screen.getByRole("form", { name: "Create repository" });
     await user.type(within(form).getByLabelText("Repository name"), name);
-    await user.click(within(form).getByRole("checkbox"));
     const create = within(form).getByRole("button");
     expect(create).toHaveProperty("disabled", true);
     fireEvent.click(create);
