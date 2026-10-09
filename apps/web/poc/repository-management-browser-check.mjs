@@ -184,7 +184,12 @@ try {
     await cdp("Input.insertText", { text: value });
   };
   const ordinaryControls = async () => {
-    assert.equal(await evaluate("document.querySelector('form[aria-label=\"Create repository\"]')?.querySelectorAll('input[type=checkbox]').length ?? 0"), 0);
+    assert.equal(
+      await evaluate(
+        "document.querySelector('form[aria-label=\"Create repository\"]')?.querySelectorAll('input[type=checkbox]').length ?? 0",
+      ),
+      0,
+    );
   };
   const control = async (path, body = {}) => {
     const result = await fetch(origin + "/fixture/" + path, {
@@ -371,7 +376,10 @@ try {
   );
   await click("Recover repository creation");
   await includes("recover-logical");
-  await wait(async () => (await state()).creations[0].status === "ready", "same-resource recovery completed");
+  await wait(
+    async () => (await state()).creations[0].status === "ready",
+    "same-resource recovery completed",
+  );
   assert.equal((await state()).creations.length, 1);
   assert.equal((await state()).creations[0].repositoryName, partialIntent.repositoryName);
   assert.equal((await state()).creations[0].projectId, partialProject.projectId);
@@ -404,7 +412,9 @@ try {
   );
   assert.equal(
     (await state()).repositories.filter(
-      (item) => ["same-owner-name", "another-owner-name"].includes(item.name) && item.description === "Repeated description",
+      (item) =>
+        ["same-owner-name", "another-owner-name"].includes(item.name) &&
+        item.description === "Repeated description",
     ).length,
     2,
   );
@@ -701,10 +711,16 @@ try {
   await click("Create invitation link", "Owner display");
   await includes("The invitation result is unknown.");
   assert.equal(await disabled("Create invitation link", "Owner display"), true);
-  assert.equal(await evaluate(`Boolean(${labelSource("Invitation link", "Owner display")})`), false);
+  assert.equal(
+    await evaluate(`Boolean(${labelSource("Invitation link", "Owner display")})`),
+    false,
+  );
   assert.equal((await calls("/api/projects/qa-owner/invitations", "POST")).length, 1);
   await click("Refresh access", "Owner display");
-  await wait(async () => !(await disabled("Create invitation link", "Owner display")), "explicit refresh releases unknown recipient outcome");
+  await wait(
+    async () => !(await disabled("Create invitation link", "Owner display")),
+    "explicit refresh releases unknown recipient outcome",
+  );
   assert.equal((await calls("/api/projects/qa-owner/invitations", "POST")).length, 1);
   pass(
     "Mismatched recipient response cannot expose a usable invitation link",
