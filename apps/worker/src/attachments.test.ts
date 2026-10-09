@@ -95,6 +95,7 @@ describe("bounded text attachment admission", () => {
       });
     const invalid = await post(
       JSON.stringify({
+        destination: "team",
         content: "fix",
         idempotencyKey: "bad",
         attachments: [{ ...attachment, name: "file.pdf" }],
@@ -108,6 +109,7 @@ describe("bounded text attachment admission", () => {
     expect((await post(new Uint8Array([0xff]).buffer)).status).toBe(400);
     const valid = await post(
       JSON.stringify({
+        destination: "team",
         content: "fix",
         idempotencyKey: "valid",
         attachments: [
@@ -117,7 +119,9 @@ describe("bounded text attachment admission", () => {
       }),
     );
     expect(valid.status).toBe(201);
-    expect(dispatched).toBe(1);
+    expect(dispatched).toBe(0);
+    expect(core.state.runs).toEqual([]);
+    expect(core.state.conversationTurns ?? []).toEqual([]);
     expect((core.state.messages[0].attachments![0] as TextAttachment).text).toHaveLength(
       ATTACHMENT_LIMITS.fileBytes,
     );

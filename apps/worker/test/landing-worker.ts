@@ -48,6 +48,9 @@ export class LandingFixtureAgent extends RepositoryAgent {
       idempotencyKey: "approval",
     };
   }
+  nextChange(threadId: string) {
+    return this.getCoordinator().submit(threadId, "next fixture change", "second-message");
+  }
   async blockAndConfigure(authorizationId: string, runId: string) {
     const store = new SqliteLandingStore(this.ctx.storage);
     store.begin(authorizationId, "lilfrogdev", runId, Date.now());
@@ -76,6 +79,8 @@ export default {
       env.REPOSITORY.idFromName(new URL(request.url).searchParams.get("object") ?? "fixture"),
     );
     if (new URL(request.url).pathname === "/__seed") return Response.json(await stub.seed());
+    if (new URL(request.url).pathname === "/__next-change")
+      return Response.json(await stub.nextChange(new URL(request.url).searchParams.get("thread")!));
     if (new URL(request.url).pathname === "/__block-config") {
       const body = (await request.json()) as { authorizationId: string; runId: string };
       return Response.json(await stub.blockAndConfigure(body.authorizationId, body.runId));

@@ -83,7 +83,7 @@ it("uses pointer/Tab/arrow selection, maintains multiple references, and dedupli
   fireEvent.select(field);
   await screen.findByRole("option", { name: "@johncena" });
   fireEvent.keyDown(field, { key: "Tab" });
-  await user.type(field, "and @");
+  await user.type(field, "and @al");
   await screen.findByRole("option", { name: "@alice" });
   fireEvent.keyDown(field, { key: "ArrowDown" });
   fireEvent.keyDown(field, { key: "ArrowUp" });

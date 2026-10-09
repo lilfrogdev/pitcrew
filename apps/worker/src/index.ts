@@ -1,10 +1,5 @@
 import { resolveInvitationRecipient } from "./invitation-recipient";
-import {
-  credentialStorageAvailable,
-  providerConnectionRequest,
-  userCredential,
-  userModelEnv,
-} from "./user-credentials";
+import { providerConnectionRequest, userCredential, userModelEnv } from "./user-credentials";
 export { UserCredentials } from "./user-credentials-agent";
 import {
   RepositoryLifecycle,
@@ -42,7 +37,14 @@ import { configureSelectedModels } from "./model-selection";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { RepoConversationAgent } from "./repo-conversation-agent";
 export { RepoConversationAgent };
-import { resolveCatalog, validateFrozenModels, requiresUserOpenRouter } from "./model-selection";
+import {
+  resolveCatalog,
+  validateFrozenModels,
+  requiresUserOpenRouter,
+  conversationModelEnv,
+  conversationsEnabled,
+  codingEnabled,
+} from "./model-selection";
 import { providerModelsRequest } from "./provider-models";
 import { attachmentStore, type AttachmentStore } from "./attachment-store";
 import { sqlUploadStore, type UploadStore } from "./uploads";
@@ -221,7 +223,7 @@ export class RepositoryAgent extends Agent<Env> {
   }
   protected async compressRepoMemory(input: ConversationInput, job: RepoMemoryCompression) {
     const { models, model, selection } = configureSelectedModels(
-      userModelEnv(this.env, input.credentialActor),
+      userModelEnv(conversationModelEnv(this.env), input.credentialActor),
       input.models.repoAgent,
       input.models.catalogRevision,
     );
@@ -433,7 +435,46 @@ export class RepositoryAgent extends Agent<Env> {
     return structuredClone(turn.input);
   }
   async freshConversationMemory(turnId: string): Promise<ConversationInput> {
+    this.assertConversationMemory(turnId);
+    if (["password-only", "better-auth"].includes(this.env.AUTH_MODE ?? "")) {
+      const grant = this.getVisualizationGrants().get(turnId);
+      if (!grant || !this.env.AUTH_DB) throw Error("conversation_access_revoked");
+      await requireVisualizationSession(this.env.AUTH_DB, grant);
+    }
     return this.assertConversationMemory(turnId);
+  }
+  async authorizeConversationTool(turnId: string, callId: string) {
+    await this.freshConversationMemory(turnId);
+    if (typeof callId !== "string" || !callId || callId.length > 256)
+      throw Error("conversation_budget_exhausted");
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS conversation_tool_requests(turn_id TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(turn_id,id))",
+    );
+    this.ctx.storage.transactionSync(() => {
+      this.assertConversationMemory(turnId);
+      if (
+        this.ctx.storage.sql
+          .exec(
+            "SELECT id FROM conversation_tool_requests WHERE turn_id=? AND id=?",
+            turnId,
+            callId,
+          )
+          .toArray().length
+      )
+        return;
+      const count = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM conversation_tool_requests WHERE turn_id=?",
+          turnId,
+        )
+        .toArray()[0].n;
+      if (count >= 32) throw Error("conversation_budget_exhausted");
+      this.ctx.storage.sql.exec(
+        "INSERT INTO conversation_tool_requests VALUES(?,?)",
+        turnId,
+        callId,
+      );
+    });
   }
   private assertRunMemory(core: Coordinator, runId: string) {
     const run = core.state.runs.find((candidate) => candidate.id === runId);
@@ -479,7 +520,7 @@ export class RepositoryAgent extends Agent<Env> {
     operation: "view" | "search" | "zoom",
     args: MemoryToolArguments,
   ): Promise<RepoMemoryPage> {
-    await this.freshConversationMemory(turnId);
+    await this.authorizeConversationTool(turnId, `memory:${callId}`);
     const current = this.memoryTurn(turnId);
     const page =
       operation === "view"
@@ -518,7 +559,7 @@ export class RepositoryAgent extends Agent<Env> {
   ) {
     await this.freshConversationMemory(turnId);
     const core = this.turnCoordinator(turnId)!;
-    if (!core.conversationTurn(turnId).input!.memoryEnabled) return;
+    const memoryEnabled = !!core.conversationTurn(turnId).input!.memoryEnabled;
     const maximumInput = Math.max(
       0,
       Math.min(core.conversationTurn(turnId).contextBudgetBytes ?? 196608, 196608) - 8192,
@@ -533,9 +574,27 @@ export class RepositoryAgent extends Agent<Env> {
       (requestId !== undefined && !/^[a-f0-9-]{36}$/.test(requestId))
     )
       throw Error("conversation_budget_exhausted");
+    this.memoryContextTable();
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS conversation_model_budget(turn_id TEXT PRIMARY KEY,calls INTEGER NOT NULL DEFAULT 0,input_bytes INTEGER NOT NULL DEFAULT 0,output_bytes INTEGER NOT NULL DEFAULT 0,native_input_bytes INTEGER NOT NULL DEFAULT 0)",
+    );
     this.ctx.storage.transactionSync(() => {
       this.assertConversationMemory(turnId);
-      const current = this.memoryContext(turnId)!;
+      if (!memoryEnabled)
+        this.ctx.storage.sql.exec(
+          "INSERT OR IGNORE INTO conversation_model_budget(turn_id) VALUES(?)",
+          turnId,
+        );
+      const current = memoryEnabled
+        ? this.memoryContext(turnId)!
+        : this.ctx.storage.sql
+            .exec<{
+              calls: number;
+              input_bytes: number;
+              output_bytes: number;
+              native_input_bytes: number;
+            }>("SELECT * FROM conversation_model_budget WHERE turn_id=?", turnId)
+            .toArray()[0];
       const reservation =
         requestId && response
           ? this.ctx.storage.sql
@@ -573,7 +632,7 @@ export class RepositoryAgent extends Agent<Env> {
           requestId,
         );
       this.ctx.storage.sql.exec(
-        "UPDATE repo_memory_turn_context SET calls=calls+?,input_bytes=input_bytes+?,output_bytes=?,native_input_bytes=native_input_bytes+? WHERE turn_id=?",
+        `UPDATE ${memoryEnabled ? "repo_memory_turn_context" : "conversation_model_budget"} SET calls=calls+?,input_bytes=input_bytes+?,output_bytes=?,native_input_bytes=native_input_bytes+? WHERE turn_id=?`,
         response ? 0 : 1,
         inputBytes,
         nextOutput,
@@ -635,9 +694,10 @@ export class RepositoryAgent extends Agent<Env> {
     // Bound and copy pending payloads before retaining them in the FIFO.
     const bounded = readVisualizationContent(content);
     if (bounded.kind === "document") documentFragment(bounded);
-    return this.visualizationAuthority.run(() =>
-      this.publishVisualizationExclusive(turnId, invocationId, bounded),
-    );
+    return this.visualizationAuthority.run(async () => {
+      await this.authorizeConversationTool(turnId, `visualization:${invocationId}`);
+      return this.publishVisualizationExclusive(turnId, invocationId, bounded);
+    });
   }
   private async publishVisualizationExclusive(
     turnId: string,
@@ -875,12 +935,7 @@ export class RepositoryAgent extends Agent<Env> {
     return this.repositoryLifecycle;
   }
   private conversationsEnabled() {
-    return (
-      this.env.EXECUTION_MODE === "fake" ||
-      (this.env.EXECUTION_MODE === "cloud" &&
-        this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
-        this.env.CLOUD_CONVERSATION_ENABLED === "true")
-    );
+    return conversationsEnabled(this.env);
   }
   private landingStore?: SqliteLandingStore;
   private getLandingStore() {
@@ -1020,14 +1075,17 @@ export class RepositoryAgent extends Agent<Env> {
   }
   private readonly conversationJobs: DurableJobs;
   private async dispatchRun(id: string) {
+    if (!codingEnabled(this.env)) throw new AdmissionError("execution_disabled", 503);
     const core = this.runCoordinator(id);
     if (!core) throw Error("run_not_found");
     if (this.env.EXECUTION_MODE === "fake") this.ctx.waitUntil(core.dispatch(id, fakeExecution));
     if (this.env.EXECUTION_MODE === "cloud") await this.jobs.enqueue(id, { runId: id });
   }
-  async delegateRepoTurn(turnId: string) {
+  async delegateRepoTurn(turnId: string, callId?: string) {
+    if (!codingEnabled(this.env)) throw new AdmissionError("execution_disabled", 503);
     const core = this.turnCoordinator(turnId);
     if (!core) throw Error("turn_not_found");
+    if (callId) await this.authorizeConversationTool(turnId, `delegate:${callId}`);
     await this.freshConversationMemory(turnId);
     const run = core.delegateConversation(turnId);
     await this.dispatchRun(run.id);
@@ -1513,7 +1571,7 @@ export class RepositoryAgent extends Agent<Env> {
     this.jobs = new DurableJobs(
       "repository-results",
       async (jobs) => {
-        if (this.env.EXECUTION_MODE !== "cloud") return;
+        if (this.env.EXECUTION_MODE !== "cloud" || !codingEnabled(this.env)) return;
         for (const core of this.coordinators())
           for (const run of core.state.runs)
             if (["queued", "running", "awaiting_review"].includes(run.status))
@@ -1524,6 +1582,10 @@ export class RepositoryAgent extends Agent<Env> {
         const core = this.runCoordinator(runId);
         if (!core) return;
         const run = core.evidence(runId).run;
+        if (!codingEnabled(this.env)) {
+          core.fail(runId, true);
+          return;
+        }
         if (!core.runAuthorized(runId) && !this.getAdmission().hasReservation(runId)) {
           core.fail(runId, true);
           return;
@@ -1741,7 +1803,7 @@ export class RepositoryAgent extends Agent<Env> {
             ))
           )
             throw Error("provider_credential_unavailable");
-          validateFrozenModels(this.env, input.models);
+          validateFrozenModels(conversationModelEnv(this.env), input.models);
         } catch {
           core.completeConversation(id, undefined, "model_configuration_changed");
           return;
@@ -1785,11 +1847,15 @@ export class RepositoryAgent extends Agent<Env> {
             return;
           }
         } catch {
-          if (turn.input?.memoryEnabled) {
+          if (turn.input) {
             try {
-              this.assertConversationMemory(id);
+              await this.freshConversationMemory(id);
             } catch {
-              core.completeConversation(id, undefined, "memory_access_revoked");
+              core.completeConversation(
+                id,
+                undefined,
+                turn.input.memoryEnabled ? "memory_access_revoked" : "conversation_access_revoked",
+              );
               return;
             }
           }
@@ -1917,6 +1983,25 @@ export class RepositoryAgent extends Agent<Env> {
     const originalUser = auth ? await authUser(auth, request, accessIdentity) : undefined;
     if (auth && !originalUser) return Response.json({ error: "unauthorized" }, { status: 401 });
     const invitationPath = /\/invitations(?:\/|$)/.test(path);
+    const messagePath = request.method === "POST" && /^\/api\/threads\/[^/]+\/messages$/.test(path);
+    const originalMessageGrant =
+      auth && originalUser && messagePath
+        ? await visualizationGrant(auth, request, accessIdentity)
+        : undefined;
+    if (
+      auth &&
+      messagePath &&
+      (!originalMessageGrant || originalMessageGrant.userId !== originalUser?.id)
+    )
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    const requireOriginalMessageSession = async () => {
+      if (!originalMessageGrant || !this.env.AUTH_DB) throw new AdmissionError("unauthorized", 401);
+      try {
+        await requireVisualizationSession(this.env.AUTH_DB, originalMessageGrant);
+      } catch {
+        throw new AdmissionError("unauthorized", 401);
+      }
+    };
     // Capture the ORIGINAL session before streaming the bounded body. Rechecking
     // its immutable session ID prevents a later replacement login from adopting work.
     const invitationGrant =
@@ -2716,14 +2801,7 @@ export class RepositoryAgent extends Agent<Env> {
     );
     // Password credentials occupy new account namespaces. Existing Access AES
     // records remain in their original namespace and are never rebound here.
-    const credentialEnv = passwordMode
-      ? {
-          ...this.env,
-          EXECUTION_MODE: "disabled",
-          INFRASTRUCTURE_ADMISSION_ENABLED: "false",
-          CLOUD_CONVERSATION_ENABLED: "false",
-        }
-      : this.env;
+    const credentialEnv = this.env;
     if (/^\/api\/projects\/[^/]+\/threads\/[^/]+\/visualizations(?:\/[^/]+)?$/.test(path)) {
       if (!auth || !user)
         return Response.json(
@@ -2809,33 +2887,30 @@ export class RepositoryAgent extends Agent<Env> {
           : 16384;
     if (Number(request.headers.get("content-length") ?? 0) > bodyLimit)
       return Response.json({ error: "body_too_large" }, { status: 413 });
-    let providerReady =
-      !passwordMode && (this.env.EXECUTION_MODE === "fake" || !requiresUserOpenRouter(this.env));
-    if (!passwordMode && !providerReady && credentialStorageAvailable(this.env)) {
-      try {
-        providerReady = await userCredential(this.env, credentialActor).configured(credentialActor);
-      } catch {
-        /* Fail closed. */
-      }
-    }
+    // Only explicit execution routes inspect provider readiness. Team notes remain available.
     if (
       !passwordMode &&
+      codingEnabled(this.env) &&
       this.env.EXECUTION_MODE === "cloud" &&
-      !providerReady &&
       request.method === "POST" &&
-      (/^\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url).pathname) ||
-        /^\/api\/changes\/[^/]+\/runs$/.test(new URL(request.url).pathname) ||
-        /^\/api\/projects\/[^/]+\/intake\/dispatch$/.test(new URL(request.url).pathname))
+      (/^\/api\/changes\/[^/]+\/runs$/.test(path) ||
+        /^\/api\/projects\/[^/]+\/intake\/dispatch$/.test(path)) &&
+      requiresUserOpenRouter(this.env)
     ) {
       try {
-        if (path.startsWith("/api/threads/")) access.requireThread(path.split("/")[3]);
-        else if (path.startsWith("/api/changes/"))
+        if (path.startsWith("/api/changes/"))
           access.requireThread(coordinator.change(path.split("/")[3]).threadId);
         else access.requireProject(coordinator.state.project.id);
-      } catch {
-        return Response.json({ error: "not_found" }, { status: 404 });
+        if (!(await userCredential(this.env, credentialActor).configured(credentialActor)))
+          return Response.json({ error: "provider_credential_unavailable" }, { status: 409 });
+      } catch (error) {
+        return Response.json(
+          {
+            error: error instanceof AdmissionError ? error.code : "provider_credential_unavailable",
+          },
+          { status: error instanceof AdmissionError ? error.status : 409 },
+        );
       }
-      return Response.json({ error: "provider_credential_unavailable" }, { status: 409 });
     }
     const app = api(
       coordinator,
@@ -2845,44 +2920,59 @@ export class RepositoryAgent extends Agent<Env> {
           : this.dispatchRun(id),
       passwordMode ? undefined : this.landing(coordinator, credentialActor),
       passwordMode ? identity : accessIdentity!,
-      !passwordMode &&
-        this.env.CONVERSATION &&
-        providerReady &&
-        this.conversationsEnabled() &&
-        (this.env.EXECUTION_MODE === "fake" || !!this.env.MODEL_CONFIGURATION)
+      this.env.CONVERSATION && this.conversationsEnabled()
         ? {
-            catalog: resolveCatalog(userModelEnv(this.env, credentialActor)),
-            dispatch: async (id) => {
-              if (auth && user) {
-                await this.visualizationAuthority.run(async () => {
-                  const grant = await visualizationGrant(auth, request, accessIdentity),
-                    turn = coordinator.conversationTurn(id);
-                  if (!grant || grant.actor !== identity.actor)
-                    throw new VisualizationError("unauthorized", 401);
-                  await requireVisualizationSession(this.env.AUTH_DB!, grant);
-                  access.requireProject(coordinator.state.project.id);
-                  access.requireThread(turn.threadId);
-                  if (
-                    (turn.membershipActor ?? turn.actor) !== grant.actor ||
-                    turn.actor !== grant.accessActor
-                  )
-                    throw new VisualizationError("visualization_authority_revoked", 403);
-                  this.ctx.storage.transactionSync(() =>
-                    this.getVisualizationGrants().bind({
-                      ...grant,
-                      repositoryId: coordinator.state.project.id,
-                      threadId: turn.threadId,
-                      turnId: id,
-                    }),
-                  );
-                });
-              }
-              return this.enqueueConversation(id);
+            get catalog() {
+              return resolveCatalog(
+                userModelEnv(conversationModelEnv(credentialEnv), credentialActor),
+              );
             },
+            admit: async () => {
+              if (!this.conversationsEnabled()) throw new AdmissionError("execution_disabled", 503);
+              if (requiresUserOpenRouter(this.env)) {
+                try {
+                  if (
+                    !(await userCredential(this.env, credentialActor).configured(credentialActor))
+                  )
+                    throw Error("provider_credential_unavailable");
+                } catch {
+                  throw new AdmissionError("provider_credential_unavailable", 409);
+                }
+              }
+              if (originalMessageGrant) await requireOriginalMessageSession();
+              access.requireProject(coordinator.state.project.id);
+              access.requireThread(path.split("/")[3]);
+              try {
+                return resolveCatalog(
+                  userModelEnv(conversationModelEnv(this.env), credentialActor),
+                );
+              } catch {
+                throw new AdmissionError("model_not_configured", 503);
+              }
+            },
+            bind: (turn) => {
+              if (!auth || !user) return;
+              const grant = originalMessageGrant;
+              if (
+                !grant ||
+                grant.actor !== identity.actor ||
+                (turn.membershipActor ?? turn.actor) !== grant.actor ||
+                turn.actor !== grant.accessActor
+              )
+                throw new AdmissionError("unauthorized", 401);
+              // Same SQLite transaction as the frozen message, turn and admission receipt.
+              this.getVisualizationGrants().bind({
+                ...grant,
+                repositoryId: coordinator.state.project.id,
+                threadId: turn.threadId,
+                turnId: turn.id,
+              });
+            },
+            dispatch: (id) => this.enqueueConversation(id),
           }
         : undefined,
       access,
-      passwordMode || this.env.EXECUTION_MODE === "disabled",
+      passwordMode || !codingEnabled(this.env),
       this.env.ARTIFACTS
         ? new SourceReader(
             this.env.ARTIFACTS,
@@ -2919,6 +3009,7 @@ export class RepositoryAgent extends Agent<Env> {
       (operation) =>
         this.visualizationAuthority
           .run(async () => {
+            if (originalMessageGrant) await requireOriginalMessageSession();
             if (auth && user) {
               // Recheck original session eligibility inside the same queue as logout
               // and membership changes, immediately before byte/state work.

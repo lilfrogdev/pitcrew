@@ -15,6 +15,8 @@ import type {
   LandingResultReceipt,
   SubmittedAttachment,
   AttachmentCapabilities,
+  AgentMention,
+  MessageDestination,
   ModelChoice,
   ModelSelection,
   ModelSettings,
@@ -195,6 +197,8 @@ export interface Api {
     attachments?: (SubmittedAttachment | UploadSubmission)[],
     selection?: ModelSelection,
     mentions?: import("@pitcrew/protocol").SubmittedMention[],
+    destination?: MessageDestination,
+    agentMentions?: AgentMention[],
   ): Promise<unknown>;
 }
 export class ApiError extends Error {
@@ -949,12 +953,23 @@ export const httpApi: Api = {
     ),
   setModelSettings: (projectId, settings) =>
     request(`/projects/${encodeURIComponent(projectId)}/model-settings`, { settings }),
-  send: (id, content, idempotencyKey, attachments, modelSelection, mentions) =>
+  send: (
+    id,
+    content,
+    idempotencyKey,
+    attachments,
+    modelSelection,
+    mentions,
+    destination = "team",
+    agentMentions,
+  ) =>
     request(`/threads/${encodeURIComponent(id)}/messages`, {
       content,
       idempotencyKey,
       attachments,
       modelSelection,
       mentions,
+      destination,
+      agentMentions,
     }),
 };

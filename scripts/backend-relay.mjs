@@ -70,6 +70,8 @@ const safeErrors = new Set([
   "invalid_role",
   "invalid_member",
   "invalid_mentions",
+  "invalid_destination",
+  "invalid_agent_mentions",
   "already_member",
   "capacity",
   "idempotency_conflict",

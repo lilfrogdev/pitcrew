@@ -8,7 +8,13 @@ import { memoryRequestBytes } from "./repo-memory-orchestration";
 import { repositoryMemoryTools } from "./repo-memory-tools";
 import { repositoryConversationTools } from "./repo-conversation-tools";
 import { visualizationRpcTools } from "./visualization-tools";
-import { configureSelectedModels, configureConversation } from "./model-selection";
+import {
+  configureSelectedModels,
+  configureConversation,
+  conversationModelEnv,
+  conversationsEnabled,
+  codingEnabled,
+} from "./model-selection";
 import { DurableJobs } from "./durable-jobs";
 import { AdmittedPiHarness, type PiEnv } from "./pi-agents";
 import type { ConversationInput, ConversationReceipt } from "./conversation";
@@ -42,7 +48,15 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
           const input = this.input();
           await this.assertFreshConversation();
           const configured = configureSelectedModels(
-            userModelEnv(env, input.credentialActor),
+            {
+              ...userModelEnv(conversationModelEnv(env), input.credentialActor),
+              openRouterKey: async () => {
+                await this.assertFreshConversation();
+                const key = await userModelEnv(env, input.credentialActor).openRouterKey();
+                await this.assertFreshConversation();
+                return key;
+              },
+            },
             input.models.repoAgent,
             input.models.catalogRevision,
           );
@@ -59,7 +73,7 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
             configured.models.setProvider(fixture.provider);
           }
 
-          if (input.memoryEnabled) {
+          {
             const provider = configured.models.getProvider(configured.model.provider);
             if (!provider) throw Error("model_not_configured");
             configured.models.setProvider({
@@ -72,51 +86,52 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
                   timeoutMs: 20000,
                 }),
             });
-            this.registry.install(
-              repositoryMemoryTools((callId, operation, args) =>
-                this.repository().readRepoMemory(input.turnId, `tool:${callId}`, operation, args),
-              ),
-            );
+            if (input.memoryEnabled)
+              this.registry.install(
+                repositoryMemoryTools((callId, operation, args) =>
+                  this.repository().readRepoMemory(input.turnId, `tool:${callId}`, operation, args),
+                ),
+              );
           }
           const requests = new Map<string, string>();
-          if (input.memoryEnabled)
-            this.registry.install({
-              name: "repository-authority-fence",
-              hooks: [
-                hook(GenerationTask, {
-                  beforeRequest: async (request, api) => {
-                    await this.assertFreshConversation();
-                    const requestId = crypto.randomUUID();
-                    requests.set(String(api.taskId), requestId);
-                    const bytes = memoryRequestBytes(request.messages);
-                    await this.repository().authorizeConversationModel(
-                      input.turnId,
-                      bytes.inputBytes,
-                      0,
-                      false,
-                      requestId,
-                      bytes.nativeInputBytes,
-                    );
-                  },
-                  afterResponse: async (message, api) => {
-                    await this.assertFreshConversation();
-                    await this.repository().authorizeConversationModel(
-                      input.turnId,
-                      0,
-                      new TextEncoder().encode(JSON.stringify(message.content)).byteLength,
-                      true,
-                      requests.get(String(api.taskId)),
-                    );
-                  },
-                }),
-              ],
-            });
-          this.registry.install(
-            repositoryConversationTools(() => {
-              this.assertConversationAllowed();
-              return this.repository().delegateRepoTurn(this.input().turnId);
-            }),
-          );
+          this.registry.install({
+            name: "repository-authority-fence",
+            hooks: [
+              hook(GenerationTask, {
+                beforeRequest: async (request, api) => {
+                  await this.assertFreshConversation();
+                  const requestId = crypto.randomUUID();
+                  requests.set(String(api.taskId), requestId);
+                  const bytes = memoryRequestBytes(request.messages);
+                  await this.repository().authorizeConversationModel(
+                    input.turnId,
+                    bytes.inputBytes,
+                    0,
+                    false,
+                    requestId,
+                    bytes.nativeInputBytes,
+                  );
+                },
+                afterResponse: async (message, api) => {
+                  await this.assertFreshConversation();
+                  await this.repository().authorizeConversationModel(
+                    input.turnId,
+                    0,
+                    new TextEncoder().encode(JSON.stringify(message.content)).byteLength,
+                    true,
+                    requests.get(String(api.taskId)),
+                  );
+                },
+              }),
+            ],
+          });
+          if (codingEnabled(env))
+            this.registry.install(
+              repositoryConversationTools((callId) => {
+                this.assertConversationAllowed();
+                return this.repository().delegateRepoTurn(this.input().turnId, callId);
+              }),
+            );
           this.registry.install(
             visualizationRpcTools((invocationId, content) => {
               this.assertConversationAllowed();
@@ -132,13 +147,11 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
             {
               models: configured.models,
               registry: this.registry,
-              settings: input.memoryEnabled
-                ? {
-                    retry: { enabled: false, maxRetries: 0 },
-                    compaction: { enabled: false },
-                    stream: { maxRetries: 0, timeoutMs: 20000 },
-                  }
-                : { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
+              settings: {
+                retry: { enabled: false, maxRetries: 0 },
+                compaction: { enabled: false },
+                stream: { maxRetries: 0, timeoutMs: 20000 },
+              },
             },
             context,
           );
@@ -156,10 +169,6 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
           const resume = harness.resume.bind(harness);
           harness.resume = () => {
             if (this.conversationAllowed()) {
-              if (!input.memoryEnabled) {
-                resume();
-                return;
-              }
               void this.assertFreshConversation()
                 .then(() => {
                   if (this.conversationAllowed()) resume();
@@ -221,17 +230,10 @@ export class RepoConversationAgent extends Agent<PiEnv, unknown, ConversationInp
   }
   protected conversationAllowed() {
     const row = this.sql<{ status: string }>`SELECT status FROM conversation_receipt WHERE id=1`[0];
-    return (
-      row?.status !== "failed" &&
-      (this.env.EXECUTION_MODE === "fake" ||
-        (this.env.EXECUTION_MODE === "cloud" &&
-          this.env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
-          this.env.CLOUD_CONVERSATION_ENABLED === "true"))
-    );
+    return row?.status !== "failed" && conversationsEnabled(this.env);
   }
-  private async assertFreshConversation() {
+  protected async assertFreshConversation(): Promise<ConversationInput> {
     this.assertConversationAllowed();
-    if (!this.input().memoryEnabled) return this.input();
     const input = await this.repository().freshConversationMemory(this.input().turnId);
     if (JSON.stringify(input) !== JSON.stringify(this.input()))
       throw Error("conversation_conflict");

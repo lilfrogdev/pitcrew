@@ -1,7 +1,7 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 import type { Run } from "@pitcrew/protocol";
-export function repositoryConversationTools(delegate: () => Promise<Run>) {
+export function repositoryConversationTools(delegate: (callId: string) => Promise<Run>) {
   return {
     name: "repository-conversation",
     sections: [
@@ -20,8 +20,8 @@ export function repositoryConversationTools(delegate: () => Promise<Run>) {
         parameters: Type.Object({}),
         replay: "safe",
         executionMode: "sequential" as const,
-        execute: async () => {
-          const run = await delegate();
+        execute: async (_args, api) => {
+          const run = await delegate(api.callId);
           return {
             content: [
               {

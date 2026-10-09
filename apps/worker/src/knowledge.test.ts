@@ -116,7 +116,7 @@ describe("repository knowledge", () => {
     expect(response.status).toBe(201);
     expect(f.core.repositoryContext().acceptedDecisions).toHaveLength(1);
     expect(
-      f.core.state.events.find((event) => event.type === "change.created")?.provenance?.actor,
+      f.core.state.events.find((event) => event.type === "message.created")?.provenance?.actor,
     ).toEqual({ kind: "principal", id: "access:owner" });
     const accepted = await app.request("/api/projects/pitcrew/knowledge", {
       method: "POST",

@@ -61,7 +61,15 @@ export interface Change {
   originMessageIds: string[];
   contextRevision: string;
 }
+export type MessageDestination = "team" | "agent";
+export interface AgentMention {
+  start: number;
+  end: number;
+}
 export interface Message {
+  /** Server-validated explicit routing; legacy history may omit it. */
+  destination?: MessageDestination;
+  agentMentions?: AgentMention[];
   mentions?: import("./mentions.ts").MessageMention[];
   /** Verified application identity snapshot; never supplied by the message body. */
   author?: {
@@ -154,6 +162,9 @@ export interface Event {
   createdAt: string;
 }
 export interface SubmitMessage {
+  /** Omitted destinations are human Team notes. */
+  destination?: MessageDestination;
+  agentMentions?: AgentMention[];
   mentions?: import("./mentions.ts").SubmittedMention[];
   attachments?: SubmittedAttachment[];
   content: string;

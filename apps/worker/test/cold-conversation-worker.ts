@@ -7,6 +7,14 @@ import type { ConversationInput } from "../src/conversation";
 import type { PiEnv } from "../src/pi-agents";
 
 export class ColdConversationFixture extends RepoConversationAgent {
+  // This fixture isolates child lifecycle gates; full repository authority is tested separately.
+  protected async assertFreshConversation() {
+    if (!this.conversationAllowed()) throw Error("execution_disabled");
+    const [row] = this.ctx.storage.sql
+      .exec<{ value: string }>("SELECT value FROM conversation_input WHERE id=1")
+      .toArray();
+    return JSON.parse(row.value) as ConversationInput;
+  }
   protected openHarness() {
     const sql = this.ctx.storage.sql;
     sql.exec("UPDATE fixture_counters SET opens=opens+1 WHERE id=1");

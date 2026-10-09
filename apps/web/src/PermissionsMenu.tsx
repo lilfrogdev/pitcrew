@@ -13,10 +13,10 @@ export function PermissionsMenu({ executionEnabled }: { executionEnabled: boolea
   const position = useUpwardPopup(open, trigger, popup, setOpen, 300);
   const label =
     executionEnabled === null
-      ? "Permissions unavailable"
+      ? "Agent status unavailable"
       : executionEnabled
-        ? "Runs enabled"
-        : "Runs disabled";
+        ? "Agent available"
+        : "Agent unavailable";
   return (
     <>
       <button
@@ -41,9 +41,9 @@ export function PermissionsMenu({ executionEnabled }: { executionEnabled: boolea
             className={styles.popup}
             id={id}
             role="dialog"
-            aria-label="Permissions status"
+            aria-label="Agent availability"
           >
-            <div className={styles.heading}>Permissions</div>
+            <div className={styles.heading}>Agent availability</div>
             <div className={styles.status} role="status">
               <div>
                 <IconLock size={15} stroke={1.5} aria-hidden="true" />

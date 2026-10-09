@@ -133,6 +133,7 @@ describe("durable repository conversation", () => {
     ).toBe(200);
     expect(f.reload().thread(f.thread.id).modelSelection).toEqual(catalog.defaultSelection);
     const response = await post(`/api/threads/${f.thread.id}/messages`, {
+      destination: "agent",
       content: "Question",
       idempotencyKey: "one",
     });

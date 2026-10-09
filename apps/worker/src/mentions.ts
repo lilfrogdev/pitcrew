@@ -1,6 +1,7 @@
 import {
   MENTION_LIMIT,
   mentionTokens,
+  validAgentMentions,
   validMentionUsername,
   type MessageMention,
 } from "@pitcrew/protocol";
@@ -52,4 +53,22 @@ export function validateMentions(
       end: item.end - shift,
     };
   });
+}
+
+/** The reserved agent is an invocation token, never an account/member identity. */
+export function validateInvocation(content: unknown, destination: unknown, value: unknown) {
+  if (destination !== undefined && destination !== "team" && destination !== "agent")
+    throw new AdmissionError("invalid_destination");
+  if (typeof content !== "string") throw new AdmissionError("invalid_content");
+  if (value !== undefined && !validAgentMentions(content, value))
+    throw new AdmissionError("invalid_agent_mentions");
+  const shift = content.length - content.trimStart().length;
+  const agentMentions = ((value ?? []) as import("@pitcrew/protocol").AgentMention[]).map(
+    (item) => ({ start: item.start - shift, end: item.end - shift }),
+  );
+  return {
+    destination: (destination ?? "team") as import("@pitcrew/protocol").MessageDestination,
+    agentMentions,
+    invokeAgent: destination === "agent" || agentMentions.length > 0,
+  };
 }

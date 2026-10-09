@@ -60,6 +60,7 @@ it("executes a durable repo Pi conversation through the real DO lifecycle and su
     ).json()) as any;
     const receipt = (await (
       await post(`/threads/${thread.id}/messages`, {
+        destination: "agent",
         content: "Explain the architecture",
         idempotencyKey: "question",
       })
@@ -86,6 +87,7 @@ it("executes a durable repo Pi conversation through the real DO lifecycle and su
     expect(await get(`/threads/${thread.id}/messages`)).toEqual(messages);
     const replay = (await (
       await post(`/threads/${thread.id}/messages`, {
+        destination: "agent",
         content: "Explain the architecture",
         idempotencyKey: "question",
       })

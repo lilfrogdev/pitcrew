@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { Coordinator, initialState, fakeExecution, type State } from "./coordinator";
 import { api } from "./api";
+import { resolveCatalog } from "./model-selection";
 function fixture() {
   let saved = initialState(),
     n = 0;
@@ -65,19 +66,34 @@ describe("thread/change/run traceability", () => {
     });
     expect(again.state.changes).toHaveLength(2);
   });
-  it("exposes additive change and retry APIs while existing message/runs clients remain compatible", async () => {
+  it("exposes change and retry APIs after an explicitly invoked main turn delegates a change", async () => {
     const f = fixture(),
       thread = f.core.createThread("conversation", "thread");
-    const app = api(f.core, async (id) => {
-      await f.core.dispatch(id, fakeExecution);
-    });
+    const app = api(
+      f.core,
+      async (id) => {
+        await f.core.dispatch(id, fakeExecution);
+      },
+      undefined,
+      { actor: "fixture" },
+      {
+        catalog: resolveCatalog({ MODEL_CONFIGURATION: '{"provider":"fake"}' }),
+        dispatch: async (id) => {
+          f.core.beginConversation(id);
+          const run = f.core.delegateConversation(id);
+          await f.core.dispatch(run.id, fakeExecution);
+        },
+      },
+    );
     const response = await app.request(`/api/threads/${thread.id}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: "intent", idempotencyKey: "message" }),
+      body: JSON.stringify({ destination: "agent", content: "intent", idempotencyKey: "message" }),
     });
     expect(response.status).toBe(201);
-    const submitted = (await response.json()) as ReturnType<Coordinator["submit"]>;
+    const receipt = (await response.json()) as ReturnType<Coordinator["queueTurn"]>;
+    expect(receipt.turn).toBeDefined();
+    const submitted = { change: f.core.state.changes![0] };
     expect(await (await app.request(`/api/threads/${thread.id}/changes`)).json()).toHaveLength(1);
     const retry = await app.request(`/api/changes/${submitted.change!.id}/runs`, {
       method: "POST",

@@ -137,6 +137,7 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
     const thread = (await threadResponse.json()) as { id: string },
       path = `/api/projects/pitcrew/threads/${thread.id}/visualizations`;
     const queued = await request(`/api/threads/${thread.id}/messages`, 0, "POST", {
+      destination: "agent",
       content: "Show a chart",
       idempotencyKey: "message",
     });
@@ -204,6 +205,7 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
     await stub.finish(turn.id);
     expect(await stub.tool(turn.id, "completed-turn", content)).toMatchObject({ denied: true });
     const colleagueQueued = await request(`/api/threads/${thread.id}/messages`, 1, "POST", {
+      destination: "agent",
       content: "Show another chart",
       idempotencyKey: "colleague-message",
     });
@@ -226,6 +228,7 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
     });
     await stub.finish(colleagueTurn.id);
     const revocationQueued = await request(`/api/threads/${thread.id}/messages`, 0, "POST", {
+      destination: "agent",
       content: "Check revocation",
       idempotencyKey: "revocation-message",
     });
@@ -294,6 +297,7 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
     // binding. Subsequent revocation makes this captured publisher unusable.
     await stub.armSessionPause(0);
     const racingAdmission = request(`/api/threads/${thread.id}/messages`, 0, "POST", {
+      destination: "agent",
       content: "Grant capture ordering",
       idempotencyKey: "grant-race",
     });
@@ -321,6 +325,7 @@ it("registered JWT/Better Auth/thread/tool/RPC/read path enforces session and me
       await db.prepare("DELETE FROM auth_admission").run();
       await db.prepare("DELETE FROM rate_limit").run();
       const queued = await request(`/api/threads/${thread.id}/messages`, 0, "POST", {
+        destination: "agent",
         content: "Revocation ordering",
         idempotencyKey: `race-${action}`,
       });

@@ -2,6 +2,7 @@ import { protectedFetch } from "./access";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { httpApi } from "../../web/src/api";
 import { api } from "./api";
+import { resolveCatalog } from "./model-selection";
 import { Coordinator, initialState } from "./coordinator";
 import { applyChange, reviewCandidate, type DurablePrompt } from "./pi-drivers";
 import {
@@ -115,13 +116,27 @@ it("browser API admits two concurrent isolated edits, tests and reviews exact ev
     { argv: ["fake-test"], timeoutMs: 1000, maxOutputBytes: 1024 },
   );
   const pending: Promise<void>[] = [];
-  const router = api(core, (id) => {
+  const dispatch = (id: string) => {
     pending.push(
       core.dispatch(id, {
         delegate: (input) => adapter.delegate({ ...input, repository: "fixture-artifact" }),
       }),
     );
-  });
+  };
+  const catalog = resolveCatalog({ MODEL_CONFIGURATION: '{"provider":"fake"}' });
+  const router = api(
+    core,
+    dispatch,
+    undefined,
+    { actor: "local-fixture" },
+    {
+      catalog,
+      dispatch: (id) => {
+        core.beginConversation(id);
+        dispatch(core.delegateConversation(id).id);
+      },
+    },
+  );
   let cookie = "";
   vi.stubGlobal("fetch", async (path: string, options?: RequestInit) => {
     const headers = new Headers(options?.headers);
@@ -137,7 +152,10 @@ it("browser API admits two concurrent isolated edits, tests and reviews exact ev
   });
   const a = await httpApi.createThread("pitcrew", "Change A", "a"),
     b = await httpApi.createThread("pitcrew", "Change B", "b");
-  await Promise.all([httpApi.send(a.id, "A only", "a"), httpApi.send(b.id, "B only", "b")]);
+  await Promise.all([
+    httpApi.send(a.id, "A only", "a", undefined, undefined, undefined, "agent"),
+    httpApi.send(b.id, "B only", "b", undefined, undefined, undefined, "agent"),
+  ]);
   await Promise.all(pending);
   const [as, bs] = await Promise.all([httpApi.snapshot(a.id), httpApi.snapshot(b.id)]);
   expect(peak).toBe(2);
@@ -151,8 +169,15 @@ it("browser API admits two concurrent isolated edits, tests and reviews exact ev
   expect(published).toHaveLength(2);
   expect(stopped.size).toBe(2);
   const recovered = new Coordinator(structuredClone(core.state), () => {});
-  const replay = recovered.submit(a.id, "A only", "a");
-  expect(replay.run.id).toBe(as.runs[0].id);
+  const replay = recovered.inspectMessageAdmission(
+    a.id,
+    { content: "A only", idempotencyKey: "a", destination: "agent" },
+    "local-fixture",
+  ).replay;
+  expect(replay && "turn" in replay ? replay.turn.id : undefined).toBe(
+    core.state.conversationTurns![0].id,
+  );
+  expect(recovered.conversationTurn(core.state.conversationTurns![0].id).runId).toBe(as.runs[0].id);
   expect(recovered.state.runs).toHaveLength(2);
   expect(
     (

@@ -18,7 +18,7 @@ export function mentionTokens(text: string) {
   let fence: { char: string; length: number } | undefined;
   let offset = 0;
   for (const line of text.split(/(?<=\n)/)) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    const marker = /^ {0,3}(?:(?:[-+*]|\d+[.)])\s+)?(`{3,}|~{3,})/.exec(line)?.[1];
     if (fence || marker || /^( {4}|\t)/.test(line)) {
       blocked.fill(1, offset, offset + line.length);
       if (fence) {
@@ -64,7 +64,11 @@ export function mentionQuery(text: string, caret: number) {
 }
 
 /** Retain only untouched selected tokens; arbitrary edits cannot silently retarget a ping. */
-export function rebaseMentions(before: string, after: string, mentions: SubmittedMention[]) {
+export function rebaseMentions<T extends { start: number; end: number }>(
+  before: string,
+  after: string,
+  mentions: T[],
+) {
   if (before === after) return mentions;
   let start = 0;
   while (start < before.length && start < after.length && before[start] === after[start]) start++;
@@ -92,5 +96,56 @@ export function rebaseMentions(before: string, after: string, mentions: Submitte
       )
       ? [next]
       : [];
+  });
+}
+
+/** Reserved invocation tokens exclude quotations as well as code and escapes. */
+export function agentMentionTokens(text: string) {
+  const quoted = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    const closeCharacter = ({ '"': '"', "'": "'", "“": "”", "‘": "’" } as Record<string, string>)[
+      text[i]
+    ];
+    if (!closeCharacter || (text[i] === "'" && i > 0 && /[a-zA-Z0-9]/.test(text[i - 1]))) continue;
+    const close = text.indexOf(closeCharacter, i + 1);
+    const limit = close < 0 ? text.length : close + 1;
+    quoted.fill(1, i, limit);
+    i = limit - 1;
+  }
+  let offset = 0,
+    blockquote = false;
+  for (const line of text.split(/(?<=\n)/)) {
+    if (!line.trim()) blockquote = false;
+    if (/^(?:\s*(?:[-+*]|\d+[.)])\s+)?\s*>/.test(line)) blockquote = true;
+    // Markdown allows lazy continuation lines until the paragraph ends.
+    if (blockquote) quoted.fill(1, offset, offset + line.length);
+    offset += line.length;
+  }
+  return mentionTokens(text).filter(
+    (token) =>
+      text.slice(token.start, token.end) === "@agent" &&
+      !quoted.subarray(token.start, token.end).some(Boolean),
+  );
+}
+export function validAgentMentions(
+  text: string,
+  value: unknown,
+): value is import("./index.ts").AgentMention[] {
+  if (!Array.isArray(value) || value.length > MENTION_LIMIT) return false;
+  const tokens = agentMentionTokens(text);
+  let lastEnd = -1;
+  return value.every((item) => {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      Object.keys(item).sort().join(",") !== "end,start" ||
+      !Number.isSafeInteger(item.start) ||
+      !Number.isSafeInteger(item.end) ||
+      item.start < lastEnd ||
+      !tokens.some((token) => token.start === item.start && token.end === item.end)
+    )
+      return false;
+    lastEnd = item.end;
+    return true;
   });
 }

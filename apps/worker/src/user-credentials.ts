@@ -96,11 +96,7 @@ export async function providerConnectionRequest(
     available: true,
     storageAvailable: credentialStorageAvailable(env),
     configured,
-    executionEnabled:
-      configured &&
-      env.EXECUTION_MODE === "cloud" &&
-      env.INFRASTRUCTURE_ADMISSION_ENABLED === "true" &&
-      env.CLOUD_CONVERSATION_ENABLED === "true",
+    executionEnabled: configured && env.CLOUD_CONVERSATION_ENABLED === "true",
   });
   if (new URL(request.url).search) return reply({ error: "provider_request_invalid" }, 400);
   if (!["GET", "POST"].includes(request.method))

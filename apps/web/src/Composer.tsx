@@ -1,6 +1,6 @@
 import { useMentionPicker } from "./mentions/Picker";
 import type { Member } from "./api";
-import type { SubmittedMention } from "@pitcrew/protocol";
+import type { AgentMention, MessageDestination, SubmittedMention } from "@pitcrew/protocol";
 import { useLayoutEffect, useRef, useState } from "react";
 import {
   ATTACHMENT_LIMITS,
@@ -60,9 +60,13 @@ export function Composer({
   onTypingStop,
   mentionMembers = [],
   onMention,
+  onAgentMention,
+  destination = "team",
+  onDestination,
+  invoking = false,
 }: {
   draft: string;
-  onDraft: (text: string) => void;
+  onDraft: (text: string, typed?: boolean, replaced?: AgentMention) => void;
   attachments: AttachmentDraft[];
   onFiles: (files: File[]) => void;
   onRemove: (id: string) => void;
@@ -81,6 +85,10 @@ export function Composer({
   onTypingStop?: () => void;
   mentionMembers?: Member[];
   onMention?: (text: string, mention: SubmittedMention) => void;
+  onAgentMention?: (text: string, mention: AgentMention) => void;
+  destination?: MessageDestination;
+  onDestination?: (destination: MessageDestination) => void;
+  invoking?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -91,7 +99,10 @@ export function Composer({
     textarea,
     onDraft,
     onMention,
+    onAgentMention,
   );
+  const escapeTab = useRef(false);
+  const literalInput = useRef(false);
   const [dragging, setDragging] = useState(false);
   const dictation = useDictation(draft, onDraft, dictationEnabled && !disabled, sessionKey);
   const imagesSupported = capabilities?.images === true;
@@ -147,6 +158,7 @@ export function Composer({
       onDrop={(event) => {
         event.preventDefault();
         setDragging(false);
+        if (!event.dataTransfer.files.length) literalInput.current = true;
         if (!disabled && attachmentsEnabled) onFiles(Array.from(event.dataTransfer.files));
       }}
     >
@@ -202,16 +214,26 @@ export function Composer({
       <textarea
         role="combobox"
         {...mentions.aria}
-        onFocus={(event) => mentions.selection(event.currentTarget)}
+        onFocus={(event) => {
+          escapeTab.current = false;
+          mentions.selection(event.currentTarget);
+        }}
         onSelect={(event) => mentions.selection(event.currentTarget)}
         ref={textarea}
         id="message"
-        placeholder="Describe a change or ask about the work…"
+        placeholder={
+          destination === "agent" ? "Ask the agent about the work…" : "Message your team…"
+        }
+        aria-describedby="composer-keyboard"
         rows={1}
         value={draft}
         disabled={disabled}
         onChange={(event) => {
-          mentions.change(event.target);
+          const inputType = (event.nativeEvent as InputEvent).inputType;
+          mentions.change(
+            event.target,
+            !literalInput.current && inputType === "insertText" && !mentions.composing,
+          );
           onTyping?.(event.target.value.length > 0);
         }}
         onCompositionStart={() => {
@@ -229,13 +251,52 @@ export function Composer({
           onTypingStop?.();
         }}
         onPaste={(event) => {
+          const replaced = {
+            start: event.currentTarget.selectionStart,
+            end: event.currentTarget.selectionEnd,
+          };
           if (event.clipboardData.files.length) {
             event.preventDefault();
             if (!disabled && attachmentsEnabled) onFiles(Array.from(event.clipboardData.files));
+          } else {
+            literalInput.current = true;
+            // React emits no change when a paste replaces a token with identical text.
+            mentions.change(event.currentTarget, false, replaced);
           }
         }}
         onKeyDown={(event) => {
+          if (
+            event.key.length === 1 &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.altKey &&
+            !mentions.composing &&
+            !event.nativeEvent.isComposing &&
+            event.keyCode !== 229
+          )
+            literalInput.current = false;
+          if (event.key === "Escape") escapeTab.current = true;
           if (mentions.key(event)) return;
+          if (
+            event.key === "Tab" &&
+            !event.shiftKey &&
+            !event.altKey &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !mentions.composing &&
+            !event.nativeEvent.isComposing &&
+            event.keyCode !== 229 &&
+            onDestination
+          ) {
+            if (escapeTab.current) {
+              escapeTab.current = false;
+              return;
+            }
+            event.preventDefault();
+            onDestination(destination === "team" ? "agent" : "team");
+            return;
+          }
+          if (event.key !== "Escape") escapeTab.current = false;
           if (
             event.key === "Enter" &&
             !event.shiftKey &&
@@ -259,7 +320,31 @@ export function Composer({
           4 files · 8 MiB each · 16 MiB total. Stored files are private to this thread.
         </p>
       )}
+      <span id="composer-keyboard" className="sr-only">
+        Tab switches between Team and Agent. Escape then Tab moves to the next control. Shift+Tab
+        moves to the previous control.
+      </span>
       <div className="composer-footer">
+        <div className="composer-destination" role="group" aria-label="Message destination">
+          {(["team", "agent"] as const).map((value) => (
+            <button
+              type="button"
+              key={value}
+              aria-pressed={destination === value}
+              disabled={disabled}
+              onClick={() => onDestination?.(value)}
+            >
+              {value === "team" ? "Team" : "Agent"}
+            </button>
+          ))}
+        </div>
+        <span className="sr-only" role="status" aria-live="polite">
+          {destination === "agent"
+            ? "Destination: Agent"
+            : invoking
+              ? "Destination: Team, agent mentioned"
+              : "Destination: Team"}
+        </span>
         <input
           ref={input}
           type="file"
@@ -312,7 +397,9 @@ export function Composer({
           <button
             type="submit"
             className="composer-send"
-            aria-label={sending ? "Sending message" : "Send message"}
+            aria-label={
+              sending ? (invoking ? "Sending to agent" : "Sending team message") : "Send message"
+            }
             title="Send message"
             disabled={!canSend || dictation.active}
           >

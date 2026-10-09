@@ -39,6 +39,7 @@ async function fixtureOptions() {
       ENVIRONMENT: "development",
       EXECUTION_MODE: "cloud",
       INFRASTRUCTURE_ADMISSION_ENABLED: "true",
+      CLOUD_CONVERSATION_ENABLED: "true",
       FIXTURE_IDENTITY: "lilfrogdev",
       MODEL_CONFIGURATION: '{"provider":"fake"}',
       PROJECT_BASE_SHA: "a".repeat(40),
@@ -49,6 +50,7 @@ async function fixtureOptions() {
     durableObjects: {
       REPOSITORY: { className: "DeliveryRepositoryAgent", useSQLite: true },
       CHANGE: { className: "DeliveryChangeAgent", useSQLite: true },
+      CONVERSATION: { className: "DeliveryConversationAgent", useSQLite: true },
     },
     resourcePersistencePath: `/tmp/pitcrew-delivery-${crypto.randomUUID()}`,
   };
@@ -73,20 +75,25 @@ it("denies disabled infrastructure before activating the child lifecycle", async
     ).json()) as { id: string };
     const submission = (await (
       await post(`/threads/${thread.id}/messages`, {
+        destination: "agent",
         content: "Denied change",
         idempotencyKey: "denied-message",
       })
     ).json()) as SubmitResult;
-    let status: string | undefined;
+    const turn = (submission as any).turn;
+    expect(turn).toBeDefined();
+    let turns: any[] = [];
     for (let attempt = 0; attempt < 50; attempt++) {
-      const evidence = (await (
-        await mf.dispatchFetch(`http://localhost/api/runs/${submission.run.id}/evidence`)
-      ).json()) as RunEvidence;
-      status = evidence.run.status;
-      if (status === "waiting_user") break;
+      turns = (await (
+        await mf.dispatchFetch(`http://localhost/api/threads/${thread.id}/turns`)
+      ).json()) as any[];
+      if (turns[0]?.status === "failed") break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    expect(status).toBe("waiting_user");
+    expect(turns[0].status).toBe("failed");
+    expect(
+      await (await mf.dispatchFetch(`http://localhost/api/threads/${thread.id}/runs`)).json(),
+    ).toEqual([]);
     expect(await (await mf.dispatchFetch("http://localhost/fixture/activations")).json()).toBe(0);
   } finally {
     await mf.dispose();
@@ -147,11 +154,14 @@ it("redelivers a committed result and releases admission after key deletion, los
     expect(threadResponse.status).toBe(201);
     const thread = (await threadResponse.json()) as { id: string };
     const submission = await post(`/threads/${thread.id}/messages`, {
+      destination: "agent",
       content: "fixture change",
       idempotencyKey: "message",
     });
     expect(submission.status).toBe(201);
-    const { run } = (await submission.json()) as SubmitResult;
+    const receipt = (await submission.json()) as any;
+    const run = await waitForDelegatedRun(mf, thread.id);
+    expect(receipt.turn).toBeDefined();
     const pending = await waitForDelivery(run.id, (delivery) => delivery.ack_attempts > 0);
     expect(pending).toMatchObject({ effects: 1, acknowledged: 0, observed_commit: 1 });
     const committed = await get<RunEvidence>(`/api/runs/${run.id}/evidence`);
@@ -289,12 +299,24 @@ async function submitFixture(mf: Miniflare) {
     title: "preflight",
     idempotencyKey: "thread",
   });
-  return (
-    await post<SubmitResult>(`/threads/${thread.id}/messages`, {
-      content: "fixture",
-      idempotencyKey: "message",
-    })
-  ).run;
+  const receipt = await post<any>(`/threads/${thread.id}/messages`, {
+    destination: "agent",
+    content: "fixture",
+    idempotencyKey: "message",
+  });
+  expect(receipt.turn).toBeDefined();
+  return waitForDelegatedRun(mf, thread.id);
+}
+async function waitForDelegatedRun(mf: Miniflare, threadId: string) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const runs = await readFixture<import("@pitcrew/protocol").Run[]>(
+      mf,
+      `/api/threads/${threadId}/runs`,
+    );
+    if (runs[0]) return runs[0];
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw Error("explicit_delegation_fixture_timeout");
 }
 async function waitForFixture(
   mf: Miniflare,

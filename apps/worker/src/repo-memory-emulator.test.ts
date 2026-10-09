@@ -205,7 +205,11 @@ it("runs the actual main Pi lifecycle with bounded historical context and keeps 
     const seeded = await call("long-history");
     expect(seeded.status).toBe(200);
     const threadId = seeded.result.threadId;
-    const input = { content: "Explain safe import retry behavior", idempotencyKey: "bounded-turn" };
+    const input = {
+      destination: "agent",
+      content: "Explain safe import retry behavior",
+      idempotencyKey: "bounded-turn",
+    };
     const response = await post(`/threads/${threadId}/messages`, input);
     expect(response.status).toBe(201);
     const queued = (await response.json()) as any;
@@ -240,6 +244,7 @@ it("runs the actual main Pi lifecycle with bounded historical context and keeps 
     expect(await get(`/threads/${threadId}/messages`)).toEqual(messages);
     const second = (await (
       await post(`/threads/${threadId}/messages`, {
+        destination: "agent",
         content: "Use the earlier retry discussion to explain its impact",
         idempotencyKey: "continuation",
       })
@@ -268,6 +273,7 @@ it("delivers a large admitted native image without charging its base64 as memory
     const threadId = seeded.result.threadId;
     const image = largeSyntheticPng();
     const input = {
+      destination: "agent",
       content: "Explain this synthetic image and the earlier retry incidents",
       idempotencyKey: "native-image",
       attachments: [
@@ -322,7 +328,11 @@ it("retains ordinary full-history admission when the memory gate is absent", asy
       {
         method: "POST",
         headers: await localHeaders(mf),
-        body: JSON.stringify({ content: "Explain import retries", idempotencyKey: "memory-off" }),
+        body: JSON.stringify({
+          destination: "agent",
+          content: "Explain import retries",
+          idempotencyKey: "memory-off",
+        }),
       },
     );
     expect(response.status).toBe(413);

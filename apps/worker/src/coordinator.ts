@@ -1,5 +1,6 @@
 import { logicalRepositoryName } from "../../../packages/protocol/src/repository-name";
-import { validateMentions } from "./mentions";
+import { createHash } from "node:crypto";
+import { validateMentions, validateInvocation } from "./mentions";
 import type { ConversationTurn, ConversationInput } from "./conversation";
 import type { ModelCatalog } from "./model-selection";
 import { validateSelection, resolveRunModels } from "./model-selection";
@@ -160,7 +161,55 @@ function delegationPolicy(project: Project): KnowledgeRecord {
     configurationRevision: project.configurationRevision,
   };
 }
+export interface MessageAdmission {
+  storageKey: string;
+  fingerprint: string;
+  destination: import("@pitcrew/protocol").MessageDestination;
+  agentMentions: import("@pitcrew/protocol").AgentMention[];
+  /** Trusted synchronous grant binding inside the message/turn/receipt transaction. */
+  bindTurn?: (turn: ConversationTurn) => void;
+}
+export type MessageAdmissionResult = Message | { message: Message; turn: ConversationTurn };
 export class Coordinator {
+  /** One receipt namespace binds an authenticated request across note/turn routing and restarts. */
+  inspectMessageAdmission(threadId: string, body: Record<string, unknown>, actor: string) {
+    this.thread(threadId);
+    this.validateKey(body.idempotencyKey as string);
+    const intent = validateInvocation(body.content, body.destination, body.agentMentions);
+    const storageKey = `message_${JSON.stringify([actor, body.idempotencyKey])}`;
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          threadId,
+          content: body.content,
+          destination: intent.destination,
+          agentMentions: intent.agentMentions,
+          mentions:
+            Array.isArray(body.mentions) && !body.mentions.length ? undefined : body.mentions,
+          attachments:
+            Array.isArray(body.attachments) && !body.attachments.length
+              ? undefined
+              : body.attachments,
+          modelSelection: body.modelSelection,
+        }),
+      )
+      .digest("hex");
+    const admission: MessageAdmission = {
+      storageKey,
+      fingerprint,
+      destination: intent.destination,
+      agentMentions: intent.agentMentions,
+    };
+    const previous = this.state.keys[storageKey];
+    if (previous && previous.body !== JSON.stringify({ fingerprint }))
+      throw new AdmissionError("idempotency_conflict", 409);
+    return {
+      admission,
+      invokeAgent: intent.invokeAgent,
+      replay: previous ? (structuredClone(previous.result) as MessageAdmissionResult) : undefined,
+    };
+  }
+
   /** Runtime-only trusted feature admission, never client-selected. */
   repoMemoryEnabled = false;
   /** Synchronous repository-owned source fences around durable side effects. */
@@ -1075,9 +1124,10 @@ export class Coordinator {
     attachments?: unknown,
     author?: Message["author"],
     mentions?: unknown,
+    admission?: MessageAdmission,
   ) {
     this.validateKey(key);
-    const storageKey = `conversation_${JSON.stringify([actor, key])}`;
+    const storageKey = admission?.storageKey ?? `conversation_${JSON.stringify([actor, key])}`;
     // Leave room for the bounded pending replies and terminal worker/event records.
     if (
       !this.state.keys[storageKey] &&
@@ -1127,18 +1177,20 @@ export class Coordinator {
     );
     return this.transaction(
       storageKey,
-      {
-        threadId,
-        content,
-        actor,
-        selection: chosen,
-        attachments: descriptor,
-        ...(Array.isArray(mentions) && !mentions.length
-          ? {}
-          : mentions === undefined
-            ? {}
-            : { mentions }),
-      },
+      admission
+        ? { fingerprint: admission.fingerprint }
+        : {
+            threadId,
+            content,
+            actor,
+            selection: chosen,
+            attachments: descriptor,
+            ...(Array.isArray(mentions) && !mentions.length
+              ? {}
+              : mentions === undefined
+                ? {}
+                : { mentions }),
+          },
       () => {
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
           throw new AdmissionError("invalid_content");
@@ -1184,6 +1236,14 @@ export class Coordinator {
           id: "$pending",
           threadId,
           role: "user",
+          ...(admission
+            ? {
+                destination: admission.destination,
+                ...(admission.agentMentions.length
+                  ? { agentMentions: admission.agentMentions }
+                  : {}),
+              }
+            : {}),
           ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           content: content.trim(),
           attachments: accepted.map((item) =>
@@ -1235,6 +1295,14 @@ export class Coordinator {
           id: this.id(),
           threadId,
           role: "user",
+          ...(admission
+            ? {
+                destination: admission.destination,
+                ...(admission.agentMentions.length
+                  ? { agentMentions: admission.agentMentions }
+                  : {}),
+              }
+            : {}),
           ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
           ...(author ? { author: structuredClone(author) } : {}),
           content: content.trim(),
@@ -1262,6 +1330,7 @@ export class Coordinator {
           configurationRevision: this.state.project.configurationRevision,
           createdAt: this.now(),
         };
+        admission?.bindTurn?.(turn);
         thread.modelSelection = structuredClone(chosen);
         this.state.messages.push(message);
         turns.push(turn);
@@ -1399,17 +1468,12 @@ export class Coordinator {
     author?: Message["author"],
     attachments?: unknown,
     mentions?: unknown,
+    admission?: MessageAdmission,
   ): Message {
     this.validateKey(key);
-    if (
-      attachments !== undefined &&
-      (!Array.isArray(attachments) ||
-        attachments.some((item) => !item || typeof item !== "object" || !("uploadId" in item)))
-    )
-      throw new AdmissionError("note_attachments_unavailable");
     if (new TextEncoder().encode(JSON.stringify(this.state)).byteLength > 15 * 1024 * 1024)
       throw new AdmissionError("repository_storage_limit", 413);
-    const storageKey = `note_${JSON.stringify([actor, key])}`;
+    const storageKey = admission?.storageKey ?? `note_${JSON.stringify([actor, key])}`;
     const previous = this.state.keys[storageKey]?.result as Message | undefined;
     const resolved = this.uploads?.resolve(
       attachments,
@@ -1418,20 +1482,42 @@ export class Coordinator {
       undefined,
       previous?.id,
     );
-    if (!this.uploads && Array.isArray(attachments) && attachments.length)
-      throw new AdmissionError("note_attachments_unavailable");
+    const accepted = resolved?.attachments ?? validateMessageAttachments(attachments);
+    if (previous)
+      accepted.forEach((item, index) => {
+        if (!("data" in item)) return;
+        const ref = previous.attachments?.[index];
+        if (
+          !this.attachments ||
+          !ref ||
+          !("attachmentId" in ref) ||
+          isStoredFile(ref) ||
+          !this.attachments.matches(ref, item)
+        )
+          throw new AdmissionError("idempotency_conflict", 409);
+      });
     return this.transaction(
-      `note_${JSON.stringify([actor, key])}`,
-      {
-        threadId,
-        content,
-        ...(Array.isArray(mentions) && !mentions.length
-          ? {}
-          : mentions === undefined
-            ? {}
-            : { mentions }),
-        ...(resolved?.attachments.length ? { attachments: resolved.attachments } : {}),
-      },
+      storageKey,
+      admission
+        ? { fingerprint: admission.fingerprint }
+        : {
+            threadId,
+            content,
+            ...(Array.isArray(mentions) && !mentions.length
+              ? {}
+              : mentions === undefined
+                ? {}
+                : { mentions }),
+            ...(accepted.length
+              ? {
+                  attachments: accepted.map((item) =>
+                    "data" in item
+                      ? { id: item.id, name: item.name, mediaType: item.mediaType }
+                      : item,
+                  ),
+                }
+              : {}),
+          },
       () => {
         this.thread(threadId);
         if (typeof content !== "string" || !content.trim() || content.length > 8000)
@@ -1447,12 +1533,22 @@ export class Coordinator {
           id: this.id(),
           threadId,
           role: "user",
-          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
-          ...(resolved?.attachments.length
+          ...(admission
             ? {
-                attachments: resolved.attachments.map((item) =>
-                  "data" in item ? this.attachments!.put(item) : item,
-                ),
+                destination: admission.destination,
+                ...(admission.agentMentions.length
+                  ? { agentMentions: admission.agentMentions }
+                  : {}),
+              }
+            : {}),
+          ...(acceptedMentions.length ? { mentions: acceptedMentions } : {}),
+          ...(accepted.length
+            ? {
+                attachments: accepted.map((item) => {
+                  if (!("data" in item)) return item;
+                  if (!this.attachments) throw new AdmissionError("image_storage_unavailable", 503);
+                  return this.attachments.put(item);
+                }),
               }
             : {}),
           content: content.trim(),

@@ -831,7 +831,22 @@ export class ChangeAgent extends TaskAgent {
     return { coordinator, transport };
   }
   async start(input: ExecutionInput) {
+    const rejected = {
+      runId: input.runId,
+      stage: "blocked" as const,
+      error: "reconciliation_required" as const,
+    };
     if (this.pipeline.status()) {
+      // Terminal observation validates the immutable request without binding models,
+      // opening Pi or scheduling work, even when execution has since been disabled.
+      const existing = this.pipeline.start(input);
+      if (["done", "blocked"].includes(existing.stage))
+        return { runId: input.runId, stage: existing.stage };
+      if (
+        this.env.EXECUTION_MODE !== "cloud" ||
+        this.env.INFRASTRUCTURE_ADMISSION_ENABLED !== "true"
+      )
+        return rejected;
       this.bindModelAdmission(
         input.runModels,
         "implementer",
@@ -839,20 +854,12 @@ export class ChangeAgent extends TaskAgent {
         input.credentialActor,
         input.artifactAdmission,
       );
-      const existing = this.pipeline.start(input); // Validate the immutable request identity.
-      if (
-        existing.stage === "stop" ||
-        (this.taskActive() && !["done", "blocked"].includes(existing.stage))
-      )
+      if (existing.stage === "stop" || this.taskActive())
         await this.jobs.enqueue("pipeline", { runId: input.runId });
       return { runId: input.runId, stage: existing.stage };
     }
-    const rejected = {
-      runId: input.runId,
-      stage: "blocked" as const,
-      error: "reconciliation_required" as const,
-    };
-    if (this.env.EXECUTION_MODE !== "cloud") return rejected;
+    if (this.env.EXECUTION_MODE !== "cloud" || this.env.INFRASTRUCTURE_ADMISSION_ENABLED !== "true")
+      return rejected;
     if (
       !this.env.MODEL_CONFIGURATION ||
       !this.env.CONFIGURATION_REVISION ||

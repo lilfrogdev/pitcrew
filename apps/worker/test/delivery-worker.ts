@@ -6,6 +6,7 @@ import { LifecycleCapability } from "agents/lifecycle";
 import { ChangeAgent, type PiEnv } from "../src/pi-agents";
 import worker, { RepositoryAgent } from "../src/index";
 import type { State } from "../src/coordinator";
+import type { ConversationInput } from "../src/conversation";
 import type { ExecutionInput, ExecutionResult } from "@pitcrew/protocol";
 interface Env {
   PAUSE_ACK?: string;
@@ -44,6 +45,41 @@ export class DeliveryRepositoryAgent extends RepositoryAgent {
       testsPresent: !!state.evidence[runId],
       reviewCount: state.reviews.filter((review) => review.runId === runId).length,
     };
+  }
+}
+/** Explicit main delegation fixture; provider-free, preserving real HTTP and coding admission. */
+export class DeliveryConversationAgent extends Agent<Env> {
+  async start(input: ConversationInput) {
+    const repository = this.env.REPOSITORY.get(this.env.REPOSITORY.idFromName("pitcrew"));
+    try {
+      await repository.delegateRepoTurn(input.turnId);
+      this.ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS main_receipt(id INTEGER PRIMARY KEY,value TEXT)",
+      );
+      this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO main_receipt VALUES(1,?)",
+        JSON.stringify({ status: "completed", text: "Synthetic explicit delegation." }),
+      );
+    } catch {
+      this.ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS main_receipt(id INTEGER PRIMARY KEY,value TEXT)",
+      );
+      this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO main_receipt VALUES(1,?)",
+        JSON.stringify({ status: "failed", error: "execution_disabled" }),
+      );
+    }
+    return this.result();
+  }
+  async result(_turnId?: string) {
+    return JSON.parse(
+      this.ctx.storage.sql
+        .exec<{ value: string }>("SELECT value FROM main_receipt WHERE id=1")
+        .toArray()[0].value,
+    );
+  }
+  async stop(_turnId: string) {
+    return { status: "failed" };
   }
 }
 class FixtureActivation extends LifecycleCapability {

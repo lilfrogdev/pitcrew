@@ -30,7 +30,12 @@ export function api(
   dispatch: (id: string) => void | Promise<void>,
   landing?: LandingApi,
   identity: { actor: string } = { actor: "local-fixture" },
-  conversation?: { catalog: ModelCatalog; dispatch: (id: string) => void | Promise<void> },
+  conversation?: {
+    catalog: ModelCatalog;
+    admit?: () => Promise<ModelCatalog>;
+    bind?: (turn: import("./conversation").ConversationTurn) => void;
+    dispatch: (id: string) => void | Promise<void>;
+  },
   access?: Collaboration,
   executionDisabled = false,
   sourceReader?: {
@@ -539,60 +544,51 @@ export function api(
             return operation();
           })
         : operation();
-    if (executionDisabled) {
-      if (
-        !uploads &&
-        body.attachments !== undefined &&
-        (!Array.isArray(body.attachments) || body.attachments.length)
-      )
-        throw new AdmissionError("note_attachments_unavailable");
-      return c.json(
-        publicMessage(
-          await admit(() =>
-            coordinator.appendNote(
-              c.req.param("threadId"),
-              body.content as string,
-              body.idempotencyKey as string,
-              identity.actor,
-              access?.identity,
-              body.attachments,
-              body.mentions,
-            ),
-          ),
-        ),
-        201,
+    const result = await admit(async () => {
+      const inspected = coordinator.inspectMessageAdmission(
+        c.req.param("threadId"),
+        body,
+        identity.actor,
       );
-    }
-    if (conversation) {
-      const result = await admit(() =>
-        coordinator.queueTurn(
+      if (inspected.replay) return inspected.replay;
+      if (!inspected.invokeAgent) {
+        return coordinator.appendNote(
           c.req.param("threadId"),
           body.content as string,
           body.idempotencyKey as string,
           identity.actor,
-          conversation.catalog,
-          body.modelSelection,
-          body.attachments,
           access?.identity,
+          body.attachments,
           body.mentions,
-        ),
-      );
-      await conversation.dispatch(result.turn.id);
-      return c.json({ ...result, message: publicMessage(result.message) }, 201);
-    }
-    const result = await admit(() =>
-      coordinator.submit(
+          inspected.admission,
+        );
+      }
+      if (!conversation) throw new AdmissionError("execution_disabled", 503);
+      const catalog = conversation.admit ? await conversation.admit() : conversation.catalog;
+      if (!catalog) throw new AdmissionError("model_not_configured", 503);
+      access?.requireThread(c.req.param("threadId"));
+      inspected.admission.bindTurn = conversation.bind;
+      return coordinator.queueTurn(
         c.req.param("threadId"),
         body.content as string,
         body.idempotencyKey as string,
         identity.actor,
+        catalog,
+        body.modelSelection,
         body.attachments,
         access?.identity,
         body.mentions,
-      ),
-    );
-    await dispatch(result.run.id);
-    return c.json({ ...result, message: publicMessage(result.message) }, 201);
+        inspected.admission,
+      );
+    });
+    if ("turn" in result) {
+      if (conversation) await conversation.dispatch(result.turn.id);
+      return c.json(
+        { ...result, invocation: "queued" as const, message: publicMessage(result.message) },
+        201,
+      );
+    }
+    return c.json({ ...publicMessage(result), invocation: "none" as const }, 201);
   });
   // Source-scoped internal briefs are reauthorized only inside agent orchestration.
   // Public change readers must never receive a saved brief via destination-thread access.
@@ -650,32 +646,34 @@ export function api(
     c.header("X-Next-Sequence", String(scanned.at(-1)?.sequence ?? after));
     return c.json(page);
   });
-  app.get("/api/capabilities", (c) =>
-    c.json({
+  app.get("/api/capabilities", (c) => {
+    let catalog: ModelCatalog | undefined;
+    try {
+      catalog = conversation?.catalog;
+    } catch {
+      /* Notes remain available without a configured model. */
+    }
+    return c.json({
       landing: { enabled: !!landing, backend: landing?.backend ?? null },
       ...(uploads && access && uploadAuthority ? { uploads: UPLOAD_LIMITS } : {}),
-      ...(executionDisabled ? { notesEnabled: true } : {}),
-      ...(conversation
+      notesEnabled: true,
+      ...(catalog
         ? {
             composer: {
               conversation: true,
-              models: conversation.catalog.choices,
+              models: catalog.choices,
               settings: coordinator.state.project.modelSettings ?? {
-                default: conversation.catalog.defaultSelection,
+                default: catalog.defaultSelection,
               },
               attachments: selectionAttachmentCapabilities(
-                conversation.catalog.choices,
-                resolveRunModels(
-                  conversation.catalog,
-                  undefined,
-                  coordinator.state.project.modelSettings,
-                ),
+                catalog.choices,
+                resolveRunModels(catalog, undefined, coordinator.state.project.modelSettings),
               ),
             },
           }
         : {}),
-    }),
-  );
+    });
+  });
   const configured = () => {
     if (!landing) throw new AdmissionError("landing_unconfigured", 503);
     return landing;

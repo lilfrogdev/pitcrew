@@ -45,7 +45,7 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       BETTER_AUTH_URL: base,
       BETTER_AUTH_SECRET: "synthetic-password-ingress-secret-never-live-123456",
       ENVIRONMENT: "production",
-      // Even a mistaken paid configuration cannot make password notes execute.
+      // Team notes never execute, even while explicit authenticated chat is enabled.
       EXECUTION_MODE: "cloud",
       INFRASTRUCTURE_ADMISSION_ENABLED: "true",
       CLOUD_CONVERSATION_ENABLED: "true",
@@ -515,7 +515,7 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
       key: newKey,
     });
     expect(saved.status).toBe(200);
-    expect(await saved.json()).toMatchObject({ configured: true, executionEnabled: false });
+    expect(await saved.json()).toMatchObject({ configured: true, executionEnabled: true });
     expect(await credentials(actor(emails[0])).read(actor(emails[0]))).toBe(newKey);
     expect(await (await app("/provider-connection/openrouter", emails[1])).json()).toMatchObject({
       configured: false,
@@ -645,7 +645,7 @@ it("real scoped Worker isolates enrolled accounts, ACLs and credential namespace
     expect(await credentials("access:legacy").ciphertext()).toBe(legacyCiphertext);
     expect(await (await connection()).json()).toMatchObject({
       configured: true,
-      executionEnabled: false,
+      executionEnabled: true,
     });
     expect(await (await app(`/threads/${thread.id}/messages`, emails[1])).json()).toHaveLength(10);
     for (const file of syntheticFiles) {

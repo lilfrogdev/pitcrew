@@ -8,6 +8,7 @@ it("returns explicit unconfigured landing capability and rejects malformed reque
   const app = api(new Coordinator(initialState(), () => {}), () => {});
   expect(await (await app.request("/api/capabilities")).json()).toEqual({
     landing: { enabled: false, backend: null },
+    notesEnabled: true,
   });
   expect(
     (
@@ -144,11 +145,9 @@ it("runs production repository routes with trusted evidence, one-use SQLite appr
       idempotencyKey: "second-thread",
     });
     const thread = (await threadResponse.json()) as { id: string };
+    // Trusted fixture setup admits a coding run; public Team messages only record notes.
     const second = (await (
-      await post(`/api/threads/${thread.id}/messages`, {
-        content: "next fixture change",
-        idempotencyKey: "second-message",
-      })
+      await mf.dispatchFetch(`http://localhost/__next-change?thread=${thread.id}`)
     ).json()) as { run: { baseSha: string } };
     expect(second.run.baseSha).toBe(input.candidateSha);
     const replay = (await (

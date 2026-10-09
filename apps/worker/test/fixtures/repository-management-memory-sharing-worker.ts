@@ -1,6 +1,7 @@
 import backend from "../../src/index";
 import type { Coordinator } from "../../src/coordinator";
 import { resolveCatalog } from "../../src/model-selection";
+import { VisualizationTurnGrants } from "../../src/visualization-turn-grants";
 import { RepositorySharingFixture } from "./repository-management-sharing-worker";
 export { PasswordCredentialsFixture } from "./repository-management-sharing-worker";
 
@@ -18,6 +19,26 @@ export class RepositoryMemorySharingFixture extends RepositorySharingFixture {
       actor,
       resolveCatalog(this.env),
     );
+    // This trusted setup still uses a genuine enrolled native account/session.
+    // Production freshness now fences ordinary as well as memory-enabled turns.
+    const userId = actor.slice("account:".length);
+    const session = await this.env
+      .AUTH_DB!.prepare(`SELECT s.id AS sessionId,s.expires_at AS expiresAt,u.email,e.id AS enrollmentId
+      FROM session s JOIN user u ON u.id=s.user_id JOIN auth_enrollment e ON e.consumed_user_id=u.id
+      WHERE s.user_id=? AND s.expires_at>? AND e.consumed_at IS NOT NULL ORDER BY s.created_at DESC LIMIT 1`)
+      .bind(userId, Date.now())
+      .first<{ sessionId: string; expiresAt: number; email: string; enrollmentId: string }>();
+    if (!session) throw Error("synthetic_native_session_required");
+    new VisualizationTurnGrants(this.ctx.storage.sql).bind({
+      ...session,
+      mode: "password-only",
+      actor,
+      userId,
+      accessActor: actor,
+      repositoryId: core.state.project.id,
+      threadId,
+      turnId: queued.turn.id,
+    });
     const input = core.beginConversation(queued.turn.id)!;
     if (input.memoryEnabled) await this.prepareRepoMemory(core, input.turnId);
     return this.freshConversationMemory(input.turnId);

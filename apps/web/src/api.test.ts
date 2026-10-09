@@ -202,7 +202,11 @@ describe("canonical HTTP adapter", () => {
         method: "POST",
         signal: expect.any(AbortSignal),
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: "change", idempotencyKey: "retry-key" }),
+        body: JSON.stringify({
+          content: "change",
+          idempotencyKey: "retry-key",
+          destination: "team",
+        }),
       },
     ]);
   });
@@ -269,6 +273,7 @@ it("obtains a session nonce before local mutations and never sends it in the bod
   expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
     content: "change",
     idempotencyKey: "retry-key",
+    destination: "team",
   });
 });
 it("fails closed before a mutation when session bootstrap is denied or malformed", async () => {
@@ -304,6 +309,7 @@ it("sends stable mention references and gives a bounded stale-member recovery er
     content: "@johncena review",
     idempotencyKey: "mention-retry",
     mentions,
+    destination: "team",
   });
 });
 it("shares bootstrap between simultaneous first mutations", async () => {
@@ -1260,4 +1266,27 @@ it("rejects invalid submitted recipient selectors before fetching an invitation 
     );
   }
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it("submits explicit destination and agent ranges separately from human mentions", async () => {
+  const fetch = vi.fn().mockImplementation(async () => Response.json({ invocation: "queued" }));
+  withSession(fetch);
+  const agents = [{ start: 0, end: 6 }];
+  await httpApi.send(
+    "thread",
+    "@agent @johncena",
+    "agent-retry",
+    undefined,
+    undefined,
+    [{ actor: "account:john", start: 7, end: 16 }],
+    "team",
+    agents,
+  );
+  expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+    content: "@agent @johncena",
+    idempotencyKey: "agent-retry",
+    destination: "team",
+    mentions: [{ actor: "account:john", start: 7, end: 16 }],
+    agentMentions: agents,
+  });
 });

@@ -676,7 +676,7 @@ test("shared routes bind server-held account cookies, nonce writes, deny arbitra
   assert.equal((await request(loggedOut.handler, "/api/projects")).status, 401);
   assert.equal(loggedOut.calls.length, 1); // Access protection check only, no product read.
 });
-test("shared message writes preserve actor mentions and sanitize stale-mention errors", async () => {
+test("shared message writes preserve destination and structured human/agent mentions and sanitize errors", async () => {
   const writes = [];
   const f = fixture({
     sharedApi: true,
@@ -696,9 +696,11 @@ test("shared message writes preserve actor mentions and sanitize stale-mention e
   });
   const local = await request(f.handler, "/api/local-session");
   const body = {
-    content: "@johncena please review",
+    content: "@johncena @agent please review",
     idempotencyKey: "mention-retry",
     mentions: [{ actor: "account:john", start: 0, end: 9 }],
+    destination: "team",
+    agentMentions: [{ start: 10, end: 16 }],
   };
   const result = await request(f.handler, "/api/threads/task/messages", {
     method: "POST",
