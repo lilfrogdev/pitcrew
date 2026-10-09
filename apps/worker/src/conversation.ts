@@ -1,4 +1,9 @@
-import type { FrozenRunModels, Message, RepositoryContext } from "@pitcrew/protocol";
+import type {
+  FrozenRunModels,
+  Message,
+  RepositoryContext,
+  RepositoryMemoryBrief,
+} from "@pitcrew/protocol";
 export interface ConversationTurn {
   id: string;
   threadId: string;
@@ -17,6 +22,11 @@ export interface ConversationTurn {
   input?: ConversationInput;
 }
 export interface ConversationInput {
+  /** Server-frozen source admission; excluded from the model prompt. */
+  memoryMessageIds?: string[];
+  memoryEventSequence?: number;
+  memoryEnabled?: boolean;
+  memoryBrief?: RepositoryMemoryBrief;
   credentialActor?: string;
   turnId: string;
   threadId: string;
