@@ -6,22 +6,28 @@ import {
   IconFiles,
   IconGitCompare,
   IconGitPullRequest,
+  IconListCheck,
+  IconRoute,
   IconLayoutSidebarRightCollapse,
   IconLayoutSidebarRightExpand,
 } from "@tabler/icons-react";
+import { PlanApproval } from "./MissionPanel";
+import { FlowBoard } from "./flow/FlowBoard";
 import type { Api, Project, Snapshot } from "./api";
 import "./Workspace.css";
 import { Select } from "./Select";
 import { RepositoryFiles, RepositoryDiffs } from "./RepositoryViewers";
 import { runDisplayStatus } from "./landing-receipt";
 
-type Tab = "browser" | "files" | "diffs" | "review" | "visualizations";
+type Tab = "plans" | "flow" | "browser" | "files" | "diffs" | "review" | "visualizations";
 const baseTabs = [
-  { id: "browser", label: "Browser", Icon: IconWorld },
-  { id: "files", label: "Files", Icon: IconFiles },
-  { id: "diffs", label: "Diffs", Icon: IconGitCompare },
-  { id: "review", label: "Review / PR", Icon: IconGitPullRequest },
-] as const;
+  { id: "plans" as const, label: "Plans", Icon: IconListCheck },
+  { id: "flow" as const, label: "Flow", Icon: IconRoute },
+  { id: "browser" as const, label: "Browser", Icon: IconWorld },
+  { id: "files" as const, label: "Files", Icon: IconFiles },
+  { id: "diffs" as const, label: "Diffs", Icon: IconGitCompare },
+  { id: "review" as const, label: "Review / PR", Icon: IconGitPullRequest },
+];
 type Selection = {
   tab: Tab;
   file?: string;
@@ -39,6 +45,9 @@ export function Workspace({
   children,
   collapsed,
   onCollapse,
+  executionEnabled = false,
+  plansRequest = 0,
+  onPlanReady,
   visualizations,
 }: {
   scope: string;
@@ -49,6 +58,9 @@ export function Workspace({
   children: ReactNode;
   collapsed: boolean;
   onCollapse: (value: boolean) => void;
+  executionEnabled?: boolean;
+  plansRequest?: number;
+  onPlanReady?: (ready: boolean) => void;
   visualizations?: ReactNode;
 }) {
   const tabs = visualizations
@@ -66,6 +78,23 @@ export function Workspace({
       [scope]: { ...(all[scope] ?? { tab: "browser" }), ...next },
     }));
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const openedPlan = useRef<string | undefined>(undefined);
+  const openedRun = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    openedPlan.current = undefined;
+    openedRun.current = undefined;
+  }, [scope]);
+  useEffect(() => {
+    const run = snapshot.runs.at(-1);
+    if (!run || run.id === openedRun.current) return;
+    if (!["running", "queued", "awaiting_review"].includes(run.status)) return;
+    openedRun.current = run.id;
+    update({ tab: "flow" });
+  }, [snapshot.runs, scope]);
+  useEffect(() => {
+    if (!plansRequest) return;
+    update({ tab: "plans" });
+  }, [plansRequest]);
   const files = snapshot.messages.flatMap((message) =>
     (message.attachments ?? []).map((attachment) => ({
       ...attachment,
@@ -135,6 +164,36 @@ export function Workspace({
           ))}
         </div>
         <div className="workspace-context">{project?.repository ?? "No repository selected"}</div>
+        <section
+          className="workspace-panel"
+          role="tabpanel"
+          id="workspace-panel-plans"
+          aria-labelledby="workspace-tab-plans"
+          hidden={state.tab !== "plans"}
+          tabIndex={0}
+        >
+          <PlanApproval
+            api={api}
+            threadId={threadId ?? ""}
+            executionEnabled={executionEnabled}
+            onReady={(revision) => {
+              onPlanReady?.(!!revision);
+              if (!revision || revision === openedPlan.current) return;
+              openedPlan.current = revision;
+              update({ tab: "plans" });
+            }}
+          />
+        </section>
+        <section
+          className="workspace-panel"
+          role="tabpanel"
+          id="workspace-panel-flow"
+          aria-labelledby="workspace-tab-flow"
+          hidden={state.tab !== "flow"}
+          tabIndex={0}
+        >
+          {state.tab === "flow" && threadId && <FlowBoard api={api} threadId={threadId} />}
+        </section>
         {!collapsed && state.tab === "visualizations" && visualizations && (
           <section
             className="workspace-panel"
