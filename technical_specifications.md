@@ -40,10 +40,50 @@ Before the implementer is prompted, the change pipeline writes the snapshot to `
 | `TestAgent`             | Exploratory probes in a disposable checkout      |
 | `ReviewAgent`           | Independent review of code and both test results |
 | `UserCredentials`       | Per-user encrypted OpenRouter key                |
+| Artifacts               | Fork, candidate ref, and baseline repository     |
+| React Work GUI          | Request, answers, approval, evidence, and Flow   |
+
+### Agent orchestration
+
+Happy path from request through verified completion. Flow stages are coordinator-owned
+traces (`request` → `plan` → `assign` → `prepare` → `change` → `publish` → `test` →
+`explore` → `review` → `stop` → `done`). Inline `pnpm test` is the `test` stage; exploratory
+probes go through `TestAgent`.
+
+```mermaid
+flowchart TD
+  U[User: chat or Mission panel] --> RA[RepositoryAgent / Coordinator]
+  RA --> CONV{Chat turn?}
+  CONV -->|yes| RCA[RepoConversationAgent]
+  RCA --> PLAN[PlanAgent]
+  PLAN --> PROP[proposeMission / ensureChatProposal]
+  CONV -->|Mission answers| DRAFT[draftProposal]
+  DRAFT --> PROPOSED[Mission: proposed]
+  PROP --> PROPOSED
+  PROPOSED --> APPROVE[User: approveMission]
+  APPROVE --> ASSIGN[activateMission / startMission]
+  ASSIGN --> DISP[dispatchRun]
+  DISP --> CA[ChangeAgent]
+  CA --> PREP[prepare]
+  PREP --> MODE{EXECUTION_MODE}
+  MODE -->|local / local-agent| LEX[Local executor<br/>scripts/local-executor.mjs]
+  MODE -->|cloud + admission| CF[Artifacts fork + sandbox]
+  LEX --> CHG[change: Pi implementer]
+  CF --> CHG
+  CHG --> PUB[publish]
+  PUB --> TEST[test: pnpm test]
+  TEST --> EXP[explore: TestAgent]
+  EXP --> REV[review: ReviewAgent]
+  REV --> STOP[stop / cleanup]
+  STOP --> DONE[done]
+  DONE --> COMP[completeVerified]
+  COMP --> FLOW[GET /api/threads/:id/trace<br/>Flow tab live / replay]
+  CA -.->|publishTrace| FLOW
+  ASSIGN -.->|recordStage| FLOW
+  PROP -.->|recordStage| FLOW
+```
 
 The Flow tab reads `GET /api/threads/:threadId/trace`. Trace nodes and edges are coordinator-owned, idempotent, and safe to replay. They contain status, revisions, candidate SHAs, and sanitized probe output. They do not contain prompts, credentials, or model reasoning. Deterministic command results stay authoritative. A test-agent probe blocks approval only when the same failure reproduces; suggestions do not override a passing check. Probes never commit to the candidate.
-| Artifacts               | Fork, candidate ref, and baseline repository    |
-| React Work GUI          | Request, answers, approval, and evidence        |
 
 The backend stays at `EXECUTION_MODE=disabled` until a digest-pinned sandbox image, baseline SHA, protected ingress, and an explicit execution approval exist. Workers logs and traces must not include prompts, credentials, repository tokens, or provider secrets.
 
