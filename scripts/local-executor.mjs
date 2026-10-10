@@ -1,5 +1,10 @@
 import { createServer } from "node:http";
-import { ExecutionError, LocalBaselineFork, LocalGitWorkspace, resolveLocalPaths } from "../packages/execution/src/index.ts";
+import {
+  ExecutionError,
+  LocalBaselineFork,
+  LocalGitWorkspace,
+  resolveLocalPaths,
+} from "../packages/execution/src/index.ts";
 
 const token = process.env.LOCAL_EXECUTOR_TOKEN ?? "local-agent-v1";
 const port = Number(process.env.LOCAL_EXECUTOR_PORT ?? 8791);

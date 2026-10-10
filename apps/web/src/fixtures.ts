@@ -23,8 +23,7 @@ const node = (
   stage,
   status,
   title,
-  summary:
-    status === "active" ? `${title} is working on ${stage}.` : `${title} finished ${stage}.`,
+  summary: status === "active" ? `${title} is working on ${stage}.` : `${title} finished ${stage}.`,
   sequence,
   createdAt: "2026-10-07T00:00:00.000Z",
   updatedAt: "2026-10-07T00:00:00.000Z",

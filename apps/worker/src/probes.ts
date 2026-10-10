@@ -31,7 +31,9 @@ export function sanitizeProbeSource(source: string) {
   return text;
 }
 
-export function blockingProbe(probe: Pick<ProbeEvidence, "exitCode" | "reproducible" | "truncated">) {
+export function blockingProbe(
+  probe: Pick<ProbeEvidence, "exitCode" | "reproducible" | "truncated">,
+) {
   return probe.reproducible && !probe.truncated && probe.exitCode !== 0;
 }
 

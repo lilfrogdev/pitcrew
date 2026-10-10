@@ -750,7 +750,11 @@ export class RepositoryAgent extends Agent<Env> {
   recordStage(input: Parameters<Coordinator["recordStage"]>[0]) {
     return this.getCoordinator().recordStage(input);
   }
-  recordProbes(threadId: string, runId: string, probes: Parameters<Coordinator["recordProbes"]>[2]) {
+  recordProbes(
+    threadId: string,
+    runId: string,
+    probes: Parameters<Coordinator["recordProbes"]>[2],
+  ) {
     return this.getCoordinator().recordProbes(threadId, runId, probes);
   }
   private async stopConversationChild(core: Coordinator, turnId: string) {

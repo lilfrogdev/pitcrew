@@ -307,24 +307,26 @@ export function PlanApproval({
           <p className="plan-meta">{proposal.affectedArea}</p>
         </div>
         {waiting && (
-        <button
-          type="button"
-          disabled={busy || !executionEnabled}
-          onClick={() => {
-            setBusy(true);
-            setError("");
-            void api.missions
-              .approve(mission.id, proposal.revision, crypto.randomUUID())
-              .then(() => api.missions.start(mission.id, crypto.randomUUID()))
-              .then((started) => setMission(started.mission))
-              .catch((cause: unknown) =>
-                setError(cause instanceof Error ? cause.message : "The plan could not be approved."),
-              )
-              .finally(() => setBusy(false));
-          }}
-        >
-          {busy ? "Starting…" : "Approve this plan"}
-        </button>
+          <button
+            type="button"
+            disabled={busy || !executionEnabled}
+            onClick={() => {
+              setBusy(true);
+              setError("");
+              void api.missions
+                .approve(mission.id, proposal.revision, crypto.randomUUID())
+                .then(() => api.missions.start(mission.id, crypto.randomUUID()))
+                .then((started) => setMission(started.mission))
+                .catch((cause: unknown) =>
+                  setError(
+                    cause instanceof Error ? cause.message : "The plan could not be approved.",
+                  ),
+                )
+                .finally(() => setBusy(false));
+            }}
+          >
+            {busy ? "Starting…" : "Approve this plan"}
+          </button>
         )}
       </div>
       {checks.length > 0 && <p className="plan-meta">Checks: {checks.join(" · ")}</p>}

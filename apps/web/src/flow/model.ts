@@ -57,7 +57,8 @@ export function orderedSteps(trace: OrchestrationTrace, runId = "") {
   return [...source]
     .filter((node) => !runId || node.runId === runId)
     .sort(
-      (a, b) => a.sequence - b.sequence || stageOrder.indexOf(a.stage) - stageOrder.indexOf(b.stage),
+      (a, b) =>
+        a.sequence - b.sequence || stageOrder.indexOf(a.stage) - stageOrder.indexOf(b.stage),
     );
 }
 
@@ -93,7 +94,8 @@ export function traceView(trace: OrchestrationTrace, cursor: number, runId = "")
   const ids = new Set(nodes.map((node) => node.id));
   return {
     nodes: [...nodes].sort(
-      (a, b) => stageOrder.indexOf(a.stage) - stageOrder.indexOf(b.stage) || a.sequence - b.sequence,
+      (a, b) =>
+        stageOrder.indexOf(a.stage) - stageOrder.indexOf(b.stage) || a.sequence - b.sequence,
     ),
     edges: trace.edges.filter(
       (edge) => edge.sequence <= cursor && ids.has(edge.from) && ids.has(edge.to),

@@ -5,9 +5,7 @@ import { MessageText } from "./MessageText";
 it("renders bold, code, and a list from an agent reply", () => {
   render(
     <MessageText
-      content={
-        'Summary:\n\n- **Edit:** only `src/greet.js`.\n- **Check:** `pnpm test` must pass.'
-      }
+      content={"Summary:\n\n- **Edit:** only `src/greet.js`.\n- **Check:** `pnpm test` must pass."}
     />,
   );
   expect(screen.getByText("Summary:")).toBeTruthy();

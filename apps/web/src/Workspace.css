@@ -275,7 +275,9 @@
 }
 .crew-flow-node.is-selected {
   border-color: #24262b;
-  box-shadow: 0 0 0 1px #24262b, 0 12px 28px rgba(36, 38, 43, 0.1);
+  box-shadow:
+    0 0 0 1px #24262b,
+    0 12px 28px rgba(36, 38, 43, 0.1);
 }
 .crew-flow-node.is-live {
   border-color: #7d8794;

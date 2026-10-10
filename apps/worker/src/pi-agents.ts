@@ -715,9 +715,7 @@ export class ChangeAgent extends TaskAgent {
             // PiHarness opens on lifecycle startup, before a new pipeline is admitted.
             // Publish reporting tools once the frozen request and task context are bound.
             this.installKnowledgeReporting();
-            const signal = AbortSignal.timeout(
-              this.env.EXECUTION_MODE === "local" ? 120_000 : 500,
-            );
+            const signal = AbortSignal.timeout(this.env.EXECUTION_MODE === "local" ? 120_000 : 500);
             try {
               const change = await applyChange(
                 await this.prompt(),

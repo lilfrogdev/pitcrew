@@ -1918,7 +1918,13 @@ export class Coordinator {
       }
       book.steps.push(structuredClone(node));
       if (input.note)
-        this.crewNote(input.threadId, input.note.id, input.note.role, input.note.content, input.note.crew);
+        this.crewNote(
+          input.threadId,
+          input.note.id,
+          input.note.role,
+          input.note.content,
+          input.note.crew,
+        );
       this.event("orchestration.updated", id);
       return structuredClone(node);
     });
@@ -1928,7 +1934,8 @@ export class Coordinator {
     return this.durableUpdate(() => {
       const book = (this.state.orchestration ??= { nodes: [], edges: [], steps: [], probes: [] });
       for (const probe of probes) {
-        if (probe.threadId !== threadId || probe.runId !== runId) throw new AdmissionError("invalid_probe");
+        if (probe.threadId !== threadId || probe.runId !== runId)
+          throw new AdmissionError("invalid_probe");
         if (probe.command.join(" ").length > 500 || probe.purpose.length > 500)
           throw new AdmissionError("invalid_probe");
         const clean = {
@@ -1969,17 +1976,23 @@ export class Coordinator {
     this.event("mission.updated", mission.id, { kind: "principal", id: actor });
   }
   private threadActive(threadId: string): Mission | undefined {
-    return [...(this.state.missions ?? [])].reverse().find(
-      (item) =>
-        item.threadId === threadId &&
-        ["clarifying", "proposed", "approved", "running", "awaiting_review"].includes(item.status),
-    );
+    return [...(this.state.missions ?? [])]
+      .reverse()
+      .find(
+        (item) =>
+          item.threadId === threadId &&
+          ["clarifying", "proposed", "approved", "running", "awaiting_review"].includes(
+            item.status,
+          ),
+      );
   }
   private missionForTurn(threadId: string): Mission | undefined {
     return this.threadActive(threadId) ?? this.failedPlan(threadId);
   }
   private failedPlan(threadId: string): Mission | undefined {
-    const latest = [...(this.state.missions ?? [])].reverse().find((item) => item.threadId === threadId);
+    const latest = [...(this.state.missions ?? [])]
+      .reverse()
+      .find((item) => item.threadId === threadId);
     return latest?.status === "failed" && latest.proposal ? latest : undefined;
   }
   private activeMission(): Mission | undefined {

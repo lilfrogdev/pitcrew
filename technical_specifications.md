@@ -31,8 +31,8 @@ Before the implementer is prompted, the change pipeline writes the snapshot to `
 
 ## Runtime
 
-| Piece                   | Role                                            |
-| ----------------------- | ----------------------------------------------- |
+| Piece                   | Role                                             |
+| ----------------------- | ------------------------------------------------ |
 | `RepositoryAgent`       | Coordinator, missions, trace, admission, and API |
 | `RepoConversationAgent` | Questions and handoff to the planner             |
 | `PlanAgent`             | The only drafter of the proposal                 |

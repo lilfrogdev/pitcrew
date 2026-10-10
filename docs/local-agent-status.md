@@ -21,11 +21,11 @@ Uncommitted follow-up fixes after the first live test:
 
 ## Three ways to run
 
-| Address | What it is |
-| --- | --- |
-| `http://127.0.0.1:5173` with `VITE_PITCREW_DEMO=true` | Browser demo. Scripted data. No model and no Git. Contract ids look like `rev-42-src-2`. |
-| `http://127.0.0.1:8787` with `--env development` | Real Worker, fake execution. No model. |
-| `http://127.0.0.1:8787` with `--env local-agent` | Real Worker, OpenRouter `qwen/qwen3.8-flash`, Git checkout on disk. This is the test to use. |
+| Address                                               | What it is                                                                                   |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `http://127.0.0.1:5173` with `VITE_PITCREW_DEMO=true` | Browser demo. Scripted data. No model and no Git. Contract ids look like `rev-42-src-2`.     |
+| `http://127.0.0.1:8787` with `--env development`      | Real Worker, fake execution. No model.                                                       |
+| `http://127.0.0.1:8787` with `--env local-agent`      | Real Worker, OpenRouter `qwen/qwen3.8-flash`, Git checkout on disk. This is the test to use. |
 
 The OpenRouter key lives in `apps/worker/.dev.vars` as `OPENROUTER_API_KEY`. Git ignores that file. It is not in the repo and it is not the Profile "Set up a provider" button. Cloud runs still use the encrypted per-user credential in Cloudflare.
 

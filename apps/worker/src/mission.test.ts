@@ -152,7 +152,13 @@ describe("mission approval", () => {
     const older = f.core.queueTurn(first.id, "Older request", "old", "alice", catalog);
     f.core.beginConversation(older.turn.id);
     f.core.askMission(older.turn.id, ["What should the tests assert?"]);
-    const next = f.core.queueTurn(second.id, "Change greet to hello, pitcrew", "new", "alice", catalog);
+    const next = f.core.queueTurn(
+      second.id,
+      "Change greet to hello, pitcrew",
+      "new",
+      "alice",
+      catalog,
+    );
     f.core.beginConversation(next.turn.id);
     const proposed = await f.core.proposeMission(next.turn.id, {
       summary: "Change greet",

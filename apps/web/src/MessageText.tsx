@@ -9,8 +9,7 @@ function inline(text: string): ReactNode[] {
     const token = match[0];
     const index = match.index ?? 0;
     if (index > last) parts.push(text.slice(last, index));
-    if (token.startsWith("**"))
-      parts.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    if (token.startsWith("**")) parts.push(<strong key={key}>{token.slice(2, -2)}</strong>);
     else parts.push(<code key={key}>{token.slice(1, -1)}</code>);
     key += 1;
     last = index + token.length;

@@ -106,7 +106,9 @@ export function FlowBoard({ api, threadId }: { api: Api; threadId: string }) {
             total={view.total}
             value={Math.min(cursor, view.total)}
             label={
-              stepLabel ? `${stepLabel.title} · ${statusLabel(stepLabel.status, stepLabel.role)}` : ""
+              stepLabel
+                ? `${stepLabel.title} · ${statusLabel(stepLabel.status, stepLabel.role)}`
+                : ""
             }
             onChange={(step) => {
               setCursor((current) => (current === step ? current : step));
@@ -194,10 +196,18 @@ function ReplayScrubber({
     <div className="replay-scrubber">
       <div className="replay-controls">
         <span id="replay-position-label">Replay position</span>
-        <button type="button" aria-label="Previous handoff" onClick={() => onChange(Math.max(0, value - 1))}>
+        <button
+          type="button"
+          aria-label="Previous handoff"
+          onClick={() => onChange(Math.max(0, value - 1))}
+        >
           −
         </button>
-        <button type="button" aria-label="Next handoff" onClick={() => onChange(Math.min(total, value + 1))}>
+        <button
+          type="button"
+          aria-label="Next handoff"
+          onClick={() => onChange(Math.min(total, value + 1))}
+        >
           +
         </button>
         <span className="replay-readout">
@@ -241,13 +251,7 @@ function ReplayScrubber({
   );
 }
 
-function FlowDetails({
-  node,
-  probes,
-}: {
-  node?: TraceNode;
-  probes: OrchestrationTrace["probes"];
-}) {
+function FlowDetails({ node, probes }: { node?: TraceNode; probes: OrchestrationTrace["probes"] }) {
   if (!node) return null;
   const related = node.stage === "explore" ? probes : [];
   return (
@@ -265,7 +269,8 @@ function FlowDetails({
           <h3>{probe.blocking ? "Blocking probe" : "Advisory probe"}</h3>
           <p>{probe.purpose}</p>
           <p>
-            Exit {probe.exitCode ?? "none"} · {probe.reproducible ? "reproducible" : "not reproducible"}
+            Exit {probe.exitCode ?? "none"} ·{" "}
+            {probe.reproducible ? "reproducible" : "not reproducible"}
           </p>
           {probe.stdout && <pre>{probe.stdout.slice(0, 1200)}</pre>}
         </section>
