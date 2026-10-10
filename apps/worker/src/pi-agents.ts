@@ -388,11 +388,12 @@ abstract class TaskAgent extends Agent<PiEnv, unknown, TaskAdmission> {
       .sql`CREATE TABLE IF NOT EXISTS task_models(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)`;
     const [prior] = this.sql<{ value: string }>`SELECT value FROM task_models WHERE id=1`;
     const admitted = prior ? (JSON.parse(prior.value) as TaskAdmission | null) : undefined;
-    // start() rebinds only models; it must preserve the parent's immutable deadline.
-    deadline ??= admitted?.deadline;
-    credentialActor ??= admitted?.credentialActor;
-    artifactAdmission ??= admitted?.artifactAdmission;
-    runId ??= admitted?.runId;
+    // Parent props/jobs may re-enter with a fresh wall-clock deadline. Keep the first
+    // admitted identity; start() may only restate the same frozen models.
+    deadline = admitted?.deadline ?? deadline;
+    credentialActor = admitted?.credentialActor ?? credentialActor;
+    artifactAdmission = admitted?.artifactAdmission ?? artifactAdmission;
+    runId = admitted?.runId ?? runId;
     const serialized = JSON.stringify(
       runModels || deadline !== undefined
         ? { runModels, role, deadline, credentialActor, artifactAdmission, runId }
