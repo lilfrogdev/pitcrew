@@ -51,8 +51,6 @@ graph. Pipeline stages behind those roles are coordinator-owned traces
 `review` → `stop` → `done`). Inline `pnpm test` is the `test` / TestRunner stage; exploratory
 probes go through `TestAgent`.
 
-![Pitcrew agent orchestration crew graph](docs/evidence/agent-orchestration.svg)
-
 ```mermaid
 flowchart LR
   User --> RepositoryAgent
