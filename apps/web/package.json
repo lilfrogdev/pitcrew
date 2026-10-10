@@ -12,6 +12,7 @@
   "dependencies": {
     "@pitcrew/protocol": "workspace:*",
     "@tabler/icons-react": "^3.48.0",
+    "@xyflow/react": "^12.12.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

@@ -4,6 +4,7 @@ export interface CredentialEnv {
   EXECUTION_MODE?: string;
   INFRASTRUCTURE_ADMISSION_ENABLED?: string;
   CLOUD_CONVERSATION_ENABLED?: string;
+  OPENROUTER_API_KEY?: string;
 }
 export interface EncryptedCredential {
   version: 1;

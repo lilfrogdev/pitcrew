@@ -841,6 +841,50 @@ pre {
   font-size: 12px;
   margin-top: 10px;
 }
+.plan-cue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 30px 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.plan-approval {
+  padding: 4px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-approval-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.plan-approval-head .eyebrow,
+.plan-meta {
+  margin: 0;
+}
+.plan-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+.plan-approval-head button {
+  flex: none;
+  background: var(--text);
+  color: var(--surface);
+  border-color: transparent;
+}
+.plan-approval-body {
+  overflow: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+.plan-approval-body p,
+.plan-approval-body li {
+  margin: 0 0 8px;
+}
 .empty {
   color: var(--muted);
   text-align: center;
@@ -1146,4 +1190,40 @@ textarea::placeholder {
     transform: none;
     transition: none;
   }
+}
+.mission-panel {
+  margin: 0 24px 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  display: grid;
+  gap: 12px;
+}
+.mission-panel h2,
+.mission-heading {
+  margin: 0;
+}
+.mission-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.mission-panel form,
+.mission-evidence {
+  display: grid;
+  gap: 8px;
+}
+.mission-panel textarea,
+.mission-panel input {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  background: var(--canvas);
+}
+.mission-panel button {
+  justify-self: start;
 }

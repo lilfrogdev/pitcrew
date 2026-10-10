@@ -651,9 +651,82 @@ export function api(
     await dispatch(run.id);
     return c.json(run, 201);
   });
+
+  app.post("/api/projects/:projectId/missions", (c) => {
+    if (c.req.param("projectId") !== coordinator.state.project.id)
+      throw new AdmissionError("not_found", 404);
+    const body = c.get("body");
+    return c.json(
+      coordinator.createMission(
+        body.threadId as string,
+        body.request as string,
+        body.idempotencyKey as string,
+        access?.identity.actor ?? identity.actor,
+      ),
+      201,
+    );
+  });
+  app.get("/api/threads/:threadId/mission", (c) => {
+    access?.requireThread(c.req.param("threadId"));
+    return c.json({ mission: coordinator.threadMission(c.req.param("threadId")) ?? null });
+  });
+  app.post("/api/missions/:missionId/answers", async (c) => {
+    const body = c.get("body");
+    return c.json(
+      await coordinator.answerMission(
+        c.req.param("missionId"),
+        body.questionId as string,
+        body.answer as string,
+        body.idempotencyKey as string,
+        access?.identity.actor ?? identity.actor,
+      ),
+    );
+  });
+  app.post("/api/missions/:missionId/proposal", async (c) => {
+    const body = c.get("body");
+    return c.json(
+      await coordinator.reviseMission(
+        c.req.param("missionId"),
+        {
+          summary: body.summary as string,
+          affectedArea: body.affectedArea as string,
+          criterion: body.criterion as string,
+        },
+        body.idempotencyKey as string,
+        access?.identity.actor ?? identity.actor,
+      ),
+    );
+  });
+  app.post("/api/missions/:missionId/approval", (c) => {
+    const body = c.get("body");
+    return c.json(
+      coordinator.approveMission(
+        c.req.param("missionId"),
+        body.revision as string,
+        body.idempotencyKey as string,
+        access?.identity.actor ?? identity.actor,
+      ),
+    );
+  });
+  app.post("/api/missions/:missionId/start", async (c) => {
+    if (executionDisabled) throw new AdmissionError("execution_disabled", 503);
+    const run = await coordinator.startMission(
+      c.req.param("missionId"),
+      c.get("body").idempotencyKey as string,
+      access?.identity.actor ?? identity.actor,
+    );
+    await dispatch(run.id);
+    return c.json({ mission: coordinator.mission(c.req.param("missionId")), run }, 201);
+  });
   app.get("/api/threads/:threadId/runs", (c) => {
     coordinator.thread(c.req.param("threadId"));
     return c.json(coordinator.state.runs.filter((r) => r.threadId === c.req.param("threadId")));
+  });
+  app.get("/api/threads/:threadId/trace", (c) => {
+    access?.requireThread(c.req.param("threadId"));
+    const after = Number(c.req.query("after") ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0) throw new AdmissionError("invalid_cursor");
+    return c.json(coordinator.threadTrace(c.req.param("threadId"), after));
   });
   app.get("/api/runs/:runId/evidence", (c) => c.json(coordinator.evidence(c.req.param("runId"))));
   app.get("/api/runs/:runId/reviews", (c) =>

@@ -74,6 +74,8 @@ export function App({
 }) {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceWidth, setWorkspaceWidth] = useState(380);
+  const [plansRequest, setPlansRequest] = useState(0);
+  const [planReady, setPlanReady] = useState(false);
   const keyboardFocus = useKeyboardFocus();
   const [section, setSection] = useState<WorkspaceSection>("work");
   const [landingEnabled, setLandingEnabled] = useState(false);
@@ -956,11 +958,23 @@ export function App({
                         <strong>
                           {message.role === "user"
                             ? authorName
-                            : message.role === "coordinator"
-                              ? "Repository agent"
-                              : message.role === "worker"
+                            : message.crew === "planner"
+                              ? "Planner"
+                              : message.crew === "implementer"
                                 ? "Change worker"
-                                : "Reviewer"}
+                                : message.crew === "test_runner"
+                                  ? "Test runner"
+                                  : message.crew === "test_agent"
+                                    ? "Test agent"
+                                    : message.crew === "reviewer"
+                                      ? "Reviewer"
+                                      : message.crew === "coordinator"
+                                        ? "Coordinator"
+                                        : message.role === "coordinator"
+                                          ? "Repository agent"
+                                          : message.role === "worker"
+                                            ? "Change worker"
+                                            : "Reviewer"}
                         </strong>
                         <time dateTime={message.createdAt}>
                           {new Date(message.createdAt).toLocaleTimeString([], {
@@ -1035,6 +1049,14 @@ export function App({
           {attachmentCompatibilityError && (
             <p className="composer-error" role="alert">
               {attachmentCompatibilityError}
+            </p>
+          )}
+          {planReady && (
+            <p className="plan-cue" role="status">
+              A plan is ready.{" "}
+              <button type="button" onClick={() => setPlansRequest((count) => count + 1)}>
+                Open Plans
+              </button>
             </p>
           )}
           <ComposerStatus
@@ -1128,6 +1150,9 @@ export function App({
           api={api}
           collapsed={workspaceCollapsed}
           onCollapse={setWorkspaceCollapsed}
+          executionEnabled={executionEnabled}
+          plansRequest={plansRequest}
+          onPlanReady={setPlanReady}
           visualizations={
             visualizationSource ? (
               <VisualizationWorkspace source={visualizationSource} authorized />
