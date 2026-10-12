@@ -68,8 +68,7 @@ if (model?.provider === "cloudflare") {
 for (const className of ["ChangeAgent", "ReviewAgent"]) {
   const container = config.containers?.find((item) => item.class_name === className);
   const image = container?.images?.[vars.SANDBOX_IMAGE]?.image;
-  if (container?.max_instances !== 1)
-    blockers.push(`Limit ${className} to one running instance for initial rollout.`);
+  // durable_object containers reject max_instances in Wrangler; concurrency is admission-gated.
   if (
     container?.scheduling_policy !== "durable_object" ||
     !/^registry\.cloudflare\.com\/[a-zA-Z0-9_./-]+@sha256:[a-f0-9]{64}$/.test(image ?? "")

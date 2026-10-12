@@ -145,7 +145,7 @@ Redeploy or update vars so paid admission cannot start unsupervised.
 
 ## Success criteria
 
-- [ ] Digest-pinned sandbox on ChangeAgent and ReviewAgent (`max_instances: 1`)
+- [ ] Digest-pinned sandbox on ChangeAgent and ReviewAgent (`durable_object`; concurrency via admission)
 - [ ] `PROJECT_BASE_SHA` is the seeded Artifacts head
 - [ ] No-model smoke destroyed cleanly; `cloudSmokeVerified: true`
 - [ ] One cloud mission reaches review/evidence; Flow shows stage handoffs

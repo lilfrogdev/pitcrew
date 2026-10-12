@@ -3,7 +3,9 @@
   "name": "pitcrew-backend",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-03",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": false,
   "preview_urls": false,
   "limits": {
@@ -51,43 +53,53 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["RepositoryAgent"]
+      "new_sqlite_classes": [
+        "RepositoryAgent"
+      ]
     },
     {
       "tag": "v2",
-      "new_sqlite_classes": ["ChangeAgent", "ReviewAgent"]
+      "new_sqlite_classes": [
+        "ChangeAgent",
+        "ReviewAgent"
+      ]
     },
     {
       "tag": "v3",
-      "new_sqlite_classes": ["RepoConversationAgent"]
+      "new_sqlite_classes": [
+        "RepoConversationAgent"
+      ]
     },
     {
       "tag": "v4",
-      "new_sqlite_classes": ["UserCredentials"]
+      "new_sqlite_classes": [
+        "UserCredentials"
+      ]
     },
     {
       "tag": "v5",
-      "new_sqlite_classes": ["PlanAgent", "TestAgent"]
+      "new_sqlite_classes": [
+        "PlanAgent",
+        "TestAgent"
+      ]
     }
   ],
   "containers": [
     {
       "class_name": "ChangeAgent",
       "scheduling_policy": "durable_object",
-      "max_instances": 1,
       "images": {
         "sandbox": {
-          "image": "registry.cloudflare.com/REPLACE_AFTER_PUSH/pitcrew-sandbox:UNREGISTERED"
+          "image": "registry.cloudflare.com/004227d2029c56b084ce15356768def3/pitcrew-sandbox@sha256:c4538943ab4087cda56e6a82dbf3fda6f39f2f19ccf14817d4d786e9cd5b8035"
         }
       }
     },
     {
       "class_name": "ReviewAgent",
       "scheduling_policy": "durable_object",
-      "max_instances": 1,
       "images": {
         "sandbox": {
-          "image": "registry.cloudflare.com/REPLACE_AFTER_PUSH/pitcrew-sandbox:UNREGISTERED"
+          "image": "registry.cloudflare.com/004227d2029c56b084ce15356768def3/pitcrew-sandbox@sha256:c4538943ab4087cda56e6a82dbf3fda6f39f2f19ccf14817d4d786e9cd5b8035"
         }
       }
     }
@@ -98,7 +110,7 @@
     "EXECUTION_MODE": "disabled",
     "SANDBOX_IMAGE": "sandbox",
     "ARTIFACT_REPOSITORY": "pitcrew-baseline",
-    "PROJECT_BASE_SHA": "REPLACE_AFTER_ARTIFACTS_SEED_40CHAR",
+    "PROJECT_BASE_SHA": "2564d2128bc49d5498f866e26095db78fb8d8130",
     "CONFIGURATION_REVISION": "cloud-mission-smoke-v1",
     "LANDING_MODE": "disabled",
     "TRUSTED_PUBLISHER_ENABLED": "false",
