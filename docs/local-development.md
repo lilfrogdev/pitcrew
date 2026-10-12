@@ -89,6 +89,7 @@ or the fixed `localhost`/`127.0.0.1:5173` origin. Keep the documented port for t
 | `apps/web/.env.local`                                         | Ignored Vite env file; `VITE_PITCREW_DEMO` is the only quickstart setting |
 | `apps/worker/wrangler.jsonc`                                  | Combined web/Worker build and local `development` environment             |
 | `apps/worker/wrangler.backend.json`                           | Production backend-only target with execution disabled                    |
+| [cloud-mission-smoke.md](cloud-mission-smoke.md)              | Competition cloud enablement runbook (Containers + Artifacts + Flow)      |
 | `PITCREW_REPOSITORY_RELAY`, `PITCREW_ACCESS_SESSION`          | Opt-in cloud relay and saved Access session                               |
 | `PITCREW_OPENROUTER_SETUP`, `PITCREW_OPENROUTER_AUTH_CONTEXT` | Opt-in provider controller and saved Wrangler auth                        |
 

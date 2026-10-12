@@ -10,6 +10,8 @@ for (const [binding, className, tag] of [
   ["CHANGE", "ChangeAgent", "v2"],
   ["REVIEW", "ReviewAgent", "v2"],
   ["CONVERSATION", "RepoConversationAgent", "v3"],
+  ["PLAN", "PlanAgent", "v5"],
+  ["TEST", "TestAgent", "v5"],
 ]) {
   if (
     !config.durable_objects?.bindings?.some(
@@ -90,7 +92,16 @@ console.log(
       repositoryLifecycleEnabled: vars.REPOSITORY_LIFECYCLE === "enabled",
       readyForLiveVerification: blockers.length === 0,
       blockers,
-      next: "OAuth and infrastructure budget are approved; finish runtime guards, service provisioning and authenticated ingress before live verification. No paid inference is authorized.",
+      next: blockers.length
+        ? "Follow docs/cloud-mission-smoke.md: register digest-pinned sandbox, seed pitcrew-baseline, apply pins via scripts/apply-cloud-pins.mjs, no-model smoke, then temporary gate flip. No paid inference is authorized until that runbook completes."
+        : "Offline pins look complete; run no-model container smoke and live verification before enabling EXECUTION_MODE=cloud.",
+      cloudMission: {
+        runbook: "docs/cloud-mission-smoke.md",
+        applyPins: "scripts/apply-cloud-pins.mjs",
+        evidence: "docs/evidence/cloud-mission-smoke-record.md",
+        artifactRepository: vars.ARTIFACT_REPOSITORY ?? null,
+        sandboxImageVar: vars.SANDBOX_IMAGE ?? null,
+      },
     },
     null,
     2,

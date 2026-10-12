@@ -37,6 +37,14 @@
       {
         "name": "USER_CREDENTIALS",
         "class_name": "UserCredentials"
+      },
+      {
+        "name": "PLAN",
+        "class_name": "PlanAgent"
+      },
+      {
+        "name": "TEST",
+        "class_name": "TestAgent"
       }
     ]
   },
@@ -56,12 +64,45 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["UserCredentials"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["PlanAgent", "TestAgent"]
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "ChangeAgent",
+      "scheduling_policy": "durable_object",
+      "max_instances": 1,
+      "images": {
+        "sandbox": {
+          "image": "registry.cloudflare.com/REPLACE_AFTER_PUSH/pitcrew-sandbox:UNREGISTERED"
+        }
+      }
+    },
+    {
+      "class_name": "ReviewAgent",
+      "scheduling_policy": "durable_object",
+      "max_instances": 1,
+      "images": {
+        "sandbox": {
+          "image": "registry.cloudflare.com/REPLACE_AFTER_PUSH/pitcrew-sandbox:UNREGISTERED"
+        }
+      }
     }
   ],
   "vars": {
     "ENVIRONMENT": "production",
     "INFRASTRUCTURE_ADMISSION_ENABLED": "false",
     "EXECUTION_MODE": "disabled",
+    "SANDBOX_IMAGE": "sandbox",
+    "ARTIFACT_REPOSITORY": "pitcrew-baseline",
+    "PROJECT_BASE_SHA": "REPLACE_AFTER_ARTIFACTS_SEED_40CHAR",
+    "CONFIGURATION_REVISION": "cloud-mission-smoke-v1",
+    "LANDING_MODE": "disabled",
+    "TRUSTED_PUBLISHER_ENABLED": "false",
+    "ARTIFACTS_CAS_CONFORMANCE_VERIFIED": "false",
     "ACCESS_ISSUER": "https://purple-mouse-ee03.cloudflareaccess.com",
     "ACCESS_AUDIENCE": "147a2e216894b65c6445fc8dec1a3347c6b1681e01089dd066f875a581e81683",
     "ACCESS_HOSTNAME": "pitcrew-backend.pitcrew-004.workers.dev",

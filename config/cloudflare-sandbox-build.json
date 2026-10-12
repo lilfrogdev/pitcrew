@@ -7,6 +7,16 @@
   "localImageBytes": 145305557,
   "registeredCloudflareImage": null,
   "cloudSmokeVerified": false,
+  "cloudMission": {
+    "branch": "feat/cloud-mission-smoke",
+    "artifactRepository": "pitcrew-baseline",
+    "projectBaseSha": null,
+    "configurationRevision": "cloud-mission-smoke-v1",
+    "applyPinsScript": "scripts/apply-cloud-pins.mjs",
+    "runbook": "docs/cloud-mission-smoke.md",
+    "evidence": "docs/evidence/cloud-mission-smoke-record.md",
+    "appliedAt": null
+  },
   "liteLocalProbe": {
     "memoryMiB": 256,
     "cpu": 0.0625,
