@@ -124,6 +124,9 @@ VITE_PITCREW_DEMO=false \
 pnpm -C apps/web dev --port 5173 --strictPort
 ```
 
+Password-account mode enables the OpenRouter BYOK relay automatically (Profile →
+Providers). Restart Vite after pulling so the API key field is writable.
+
 Open `http://127.0.0.1:5173`. Sign in with a password account. Store OpenRouter
 in **Profile → Providers** (BYOK). Create a conversation and run the greet task
 from [local-agent-status.md](local-agent-status.md):

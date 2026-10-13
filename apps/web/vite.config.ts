@@ -24,7 +24,9 @@ export default defineConfig({
       sessionHeaders: authRelay.sessionHeaders,
     }),
     openRouterConnectionPlugin({
-      enabled: process.env.PITCREW_OPENROUTER_SETUP === "true",
+      // Password-account clients use the shared auth session for BYOK; the
+      // separate OPENROUTER_SETUP flag remains for Access/cache-only setups.
+      enabled: accountsEnabled || process.env.PITCREW_OPENROUTER_SETUP === "true",
       passwordMode,
       userAccessSession,
       sharedApi: accountsEnabled,
