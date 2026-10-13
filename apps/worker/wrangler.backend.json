@@ -6,7 +6,7 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "workers_dev": false,
+  "workers_dev": true,
   "preview_urls": false,
   "limits": {
     "cpu_ms": 1000,
@@ -16,6 +16,14 @@
     {
       "binding": "ARTIFACTS",
       "namespace": "pitcrew"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "pitcrew-auth",
+      "database_id": "2bddc1ef-cddd-47bb-b368-e8ad1bad0095",
+      "migrations_dir": "migrations/auth"
     }
   ],
   "durable_objects": {
@@ -106,6 +114,8 @@
   ],
   "vars": {
     "ENVIRONMENT": "production",
+    "AUTH_MODE": "password-only",
+    "BETTER_AUTH_URL": "https://pitcrew-backend.pitcrew-004.workers.dev",
     "INFRASTRUCTURE_ADMISSION_ENABLED": "false",
     "EXECUTION_MODE": "disabled",
     "SANDBOX_IMAGE": "sandbox",
